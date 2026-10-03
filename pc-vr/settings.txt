@@ -89,7 +89,9 @@
 # 0: do not look for a headset at all, play on the monitor.
 #headset=1
 
-# Where the game is, if not in games\CUSA12392 next to this folder.
+# Where the game is, if it is not in the games folder next to this one: its eboot.bin, its
+# folder, or its .pkg package (which is then unpacked into the games folder). The launcher
+# writes this line itself when it has to ask where the game is.
 #game=C:\path\to\CUSA12392\eboot.bin
 
 # Extra environment variables for the emulator, as many lines as needed.

@@ -2,10 +2,12 @@
 # Packs the files of a GitHub release into build/release/:
 #   AstroQuest-<version>-Quest3.apk           the headset app, build/quest/astro-vr-host.apk
 #   AstroQuest-<version>-PC-VR-Windows.zip    the PC play folder: the emulator from
-#                                             build/win-x64, the launcher, clean settings; no
-#                                             game, saves, logs or caches
+#                                             build/win-x64, the launcher, clean settings, and
+#                                             PkgTool (tools/pkgtool) for unpacking a game
+#                                             package; no game, saves, logs or caches
 #   SHA256SUMS.txt
 #   tools/make-release.sh <version>       (the version must be the APK's versionName)
+# tools/pkgtool is PkgTool-0.2.231.zip of https://github.com/maxton/LibOrbisPkg/releases/tag/v0.2
 set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 version=${1:?usage: tools/make-release.sh <version>}
@@ -32,6 +34,15 @@ cp "$root/pc-vr/launch.ps1" "$pc/pc-vr/"
 cp "$root/Play Astro Bot VR.bat" "$pc/"
 cp "$root/pc-vr/user/input_config/default.ini" "$root/pc-vr/user/input_config/global.ini" \
    "$pc/pc-vr/user/input_config/"
+# What the launcher unpacks a game package with.
+mkdir -p "$pc/pc-vr/pkgtool"
+cp "$root/tools/pkgtool/PkgTool.exe" "$root/tools/pkgtool/LibOrbisPkg.dll" \
+   "$root/tools/pkgtool/LICENSE.txt" "$pc/pc-vr/pkgtool/"
+cat > "$pc/pc-vr/pkgtool/README.txt" <<'EOF'
+PkgTool and LibOrbisPkg 0.2.231, by Maxton, unchanged: the launcher uses them to unpack a game
+package (.pkg). Licensed under the GNU Lesser General Public License, version 3 (LICENSE.txt).
+Source: https://github.com/maxton/LibOrbisPkg (release v0.2).
+EOF
 # The settings file as documented: what the launcher's window saved here is left out.
 sed '/^[a-z_]*=/d' "$root/pc-vr/settings.txt" > "$pc/pc-vr/settings.txt"
 # The emulator's settings as the play folder has them, with everything that names this PC's
@@ -52,30 +63,30 @@ json.dump(config, open(sys.argv[2], "w", encoding="utf-8"), indent=2)
 EOF
 
 cat > "$pc/games/PUT YOUR GAME HERE.txt" <<'EOF'
-Put the folder of your own dump of ASTRO BOT Rescue Mission (European release CUSA12392,
-version 1.00) in this folder, so that it holds CUSA12392\eboot.bin.
+Put your own copy of ASTRO BOT Rescue Mission (European release CUSA12392, version 1.00) in
+this folder, then start "Play Astro Bot VR.bat". Either form will do, anywhere in here:
 
-Or leave it where it is and name its eboot.bin in pc-vr\settings.txt:
-game=D:\wherever\CUSA12392\eboot.bin
+- the game's folder, the one with eboot.bin in it, or
+- the game's .pkg file: it is unpacked the first time, which takes a minute and about 13 GB.
+  (Only a package made from a dump of the game can be unpacked. One downloaded from the
+  PlayStation Store is encrypted and cannot be used.)
 
-Either way, keep the path to the CUSA12392 folder under about 120 characters: some of the
-game's files have long names, and the emulator cannot open a file whose full path is longer
-than 260 characters.
+If the game is somewhere else, just start: a window asks where it is.
 EOF
 cat > "$pc/README.txt" <<EOF
 AstroQuest $version - ASTRO BOT Rescue Mission in VR, played on this PC and shown in a Meta
 Quest through Virtual Desktop. https://github.com/bigmak94/AstroQuest
 
-1. Put your own dump of the game in the games folder (see the note there). Keep this folder's
-   path short, e.g. C:\Games\AstroQuest: the emulator cannot open the game's files whose full
-   path would be longer than 260 characters.
-2. Install the Microsoft Visual C++ Redistributable (x64) if the game does not start:
-   https://aka.ms/vs/17/release/vc_redist.x64.exe
-3. Virtual Desktop: install the Streamer on this PC and choose VDXR as the OpenXR runtime in
+1. Put your own copy of the game in the games folder: its folder (the one with eboot.bin in
+   it) or its .pkg file, which is unpacked the first time. Or skip this: a window asks where
+   the game is. Keep this folder's path short, e.g. C:\Games\AstroQuest: the emulator cannot
+   open the game's files whose full path would be longer than 260 characters.
+2. Virtual Desktop: install the Streamer on this PC and choose VDXR as the OpenXR runtime in
    its Options. In the headset, set Virtual Desktop's frame rate to 120 (Streaming settings).
-4. Connect the DualSense to this PC (USB cable, or Bluetooth paired with the PC, not with the
+3. Connect the DualSense to this PC (USB cable, or Bluetooth paired with the PC, not with the
    headset). Without a gamepad the headset's Touch controllers play.
-5. Connect Virtual Desktop to this PC, then start "Play Astro Bot VR.bat".
+4. Connect Virtual Desktop to this PC, then start "Play Astro Bot VR.bat". (If the Microsoft
+   Visual C++ runtime is missing, it says so and offers Microsoft's download.)
 
 In the game: hold the controller where the outline is on the first screen; look at a planet
 and press X to choose it; hold OPTIONS for a second to reset the view. Settings are in

@@ -36,20 +36,23 @@ over Virtual Desktop and fixed since. Expect rough edges, and please report what
 - **A PS5 DualSense controller.** It stands in for the PS4 controller the game expects:
   buttons, sticks, touchpad, motion sensors, rumble and light bar. (A DualShock 4 may work
   too; untested.) On the PC the Quest's own Touch controllers can stand in for it.
-- **ASTRO BOT Rescue Mission, European release CUSA12392, version 1.00**, as the folder of an
-  extracted game (the one with `eboot.bin`, `sce_sys`, `sce_module` in it, about 13 GB),
-  dumped from your own console and game. Other regions and versions are untested, and the
-  fixes for the game's timing and resolution only apply to this one.
+- **ASTRO BOT Rescue Mission, European release CUSA12392, version 1.00**, dumped from your own
+  console and game: either as the game's folder (the one with `eboot.bin`, `sce_sys`,
+  `sce_module` in it, about 13 GB) or as the `.pkg` package made from the dump, which the PC
+  launcher unpacks by itself. (A package downloaded from the PlayStation Store is encrypted
+  and cannot be used.) Other regions and versions are untested, and the fixes for the game's
+  timing and resolution only apply to this one.
 - To install on the headset: a computer with
   [adb](https://developer.android.com/tools/releases/platform-tools) (or
   [SideQuest](https://sidequestvr.com/)) and the headset in
   [developer mode](https://developers.meta.com/horizon/documentation/native/android/mobile-device-setup/#enable-developer-mode)
   (set in the Meta Horizon app on your phone; on Windows, adb may also need Meta's ADB
   driver, described on the same page).
-- To play on the PC: Windows 10 or 11 (64-bit), a graphics card with Vulkan 1.3, the
-  [Microsoft Visual C++ Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe),
-  and [Virtual Desktop](https://www.vrdesktop.net/) (the app on the Quest, the Streamer on the
-  PC).
+- To play on the PC: Windows 10 or 11 (64-bit), a graphics card with Vulkan 1.3, 16 GB of
+  memory or more (the emulator asks Windows for about 14 GB), the
+  [Microsoft Visual C++ Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe)
+  (the launcher says so if it is missing), and [Virtual Desktop](https://www.vrdesktop.net/)
+  (the app on the Quest, the Streamer on the PC).
 
 ## Installing: Quest 3 on its own
 
@@ -60,7 +63,7 @@ Download `AstroQuest-<version>-Quest3.apk` from the
    debugging in the headset, and run
 
    ```sh
-   adb install -r AstroQuest-0.11-Quest3.apk
+   adb install -r AstroQuest-0.12-Quest3.apk
    ```
 
    (or drag the APK onto SideQuest).
@@ -71,7 +74,10 @@ Download `AstroQuest-<version>-Quest3.apk` from the
    ```
 
    The app also finds it in `/sdcard/Android/data/com.astrobotquest.vrhost/files/games/CUSA12392`,
-   but that folder is deleted with the app if it is ever uninstalled.
+   but that folder is deleted with the app if it is ever uninstalled. The headset needs the
+   game's folder, not a `.pkg`: if a package is what you have, unpack it on a PC first. The PC
+   download below does that: put the package in its `games` folder, start it once, and
+   `games\CUSA12392` is the folder to copy.
 3. **Pair the DualSense with the headset**: Settings > Bluetooth > Pair, and on the
    controller hold Create and the PS button until the light bar flashes.
 4. **Start "Astro VR Host"** from the App Library, under *Unknown Sources*. The first start
@@ -105,9 +111,10 @@ Download `AstroQuest-<version>-PC-VR-Windows.zip` from the
    game's files have long names, and the emulator cannot open a file whose full path is
    longer than Windows' 260 characters: keep the path of the folder that holds `games` under
    about 110 characters.
-2. **Put the game in its `games` folder**, so that `games\CUSA12392\eboot.bin` exists (or
-   point `game=` in `pc-vr\settings.txt` to wherever your `eboot.bin` is, on a path just as
-   short).
+2. **Put your copy of the game in its `games` folder**, anywhere in it: the game's folder
+   (the one with `eboot.bin` in it) or its `.pkg` file. A package is unpacked the first time
+   you start, which takes a minute or so and about 13 GB. You can also leave the game where
+   it is: when the launcher finds none, a window asks where it is and remembers the answer.
 3. **Set up Virtual Desktop**: install the Streamer on the PC and, in its Options, choose
    **VDXR** as the OpenXR runtime. In the headset, in Virtual Desktop's Streaming settings,
    set the frame rate to **120** (the game then runs at 60 frames a second, as on the console).
@@ -149,7 +156,9 @@ kept in `tools/` (not in the repository): LLVM/clang 21 (`tools/llvm`), CMake 4.
   (`bachatas4-0.2.4-release.apk`, SHA-256 `4077b0d0b80e354c71eff1ce2c003f122449ac266eb27a6ac26744d3f9809a08`)
   in the top folder, whose Linux runtime (glibc, its libraries and the Turnip Vulkan driver)
   the app carries.
-- `bash tools/make-release.sh <version>` packs the release files into `build/release/`.
+- `bash tools/make-release.sh <version>` packs the release files into `build/release/`. It
+  puts [PkgTool 0.2.231](https://github.com/maxton/LibOrbisPkg/releases/tag/v0.2), unzipped
+  into `tools/pkgtool`, in the PC package: the launcher unpacks a game package with it.
 
 How it all works, and the tools used to test it on the headset and with a simulated one, is
 described in [README-QUEST-VR.md](README-QUEST-VR.md) and [README-PC-VR.md](README-PC-VR.md).

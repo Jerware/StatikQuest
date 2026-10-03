@@ -28,7 +28,12 @@ in a small window at every start.
    the frame rate to pick is **120**: the game then draws 60 frames a second and each is
    shown for two refreshes, as on a PlayStation VR. (At 90 it draws 45, at 72 36: see "Speed".)
 4. On the desktop you now see in the headset, start **`Play Astro Bot VR.bat`** (in this
-   folder). A small window comes up first: the **resolution** of each eye (a slider, from the
+   folder). It looks for the game in the `games` folder next to it, up to three folders
+   down: an unpacked game (a folder with `eboot.bin` in it) or a `.pkg` package, which it
+   offers to unpack there first (PkgTool does it, in about a minute; only a package made
+   from a dump can be unpacked, not an encrypted one from the PlayStation Store). When it
+   finds neither, a window asks where the game is, and what is chosen there is kept as
+   `game=` in the settings. A small window comes up next: the **resolution** of each eye (a slider, from the
    console's 1440x1536 up to 3600x3840), the **most frames a second**, and the **field of
    view**; Play starts the game with them (they are kept in `pc-vr\settings.txt`; untick "Show
    this window at every start" to go without it). A console window then says what is found
@@ -119,7 +124,7 @@ is connected to the PC takes over at once, and gives the controllers back when i
 | `pace=1` | the older way of saying `fps`: refreshes of the headset a frame is given (takes the place of `fps` when set) |
 | `wait=60` | seconds to wait for a headset before starting on the monitor (`0`: start at once, move over when it connects) |
 | `headset=0` | do not look for a headset, play on the monitor |
-| `game=...` | where the game's `eboot.bin` is, if not in `games\CUSA12392` |
+| `game=...` | where the game is, if not in the `games` folder: its `eboot.bin`, its folder, or its `.pkg` (which is unpacked into `games`). The launcher's "Where is the game?" window writes this line itself |
 | `env=NAME=value` | extra environment variable for the emulator |
 
 The emulator's own settings (window size, input bindings, log) are in `pc-vr\user\config.json`
@@ -307,6 +312,7 @@ is `pc-vr\user\log\shad_log.txt` (the start before it: `shad_log.prev.txt`). Wha
 | `Controllers: standing in for the gamepad; the right one tracked N% of the time ...` | every ten seconds: where the tracked controller is and what is pressed |
 | `The headset is gone: the game waits until it is back` / `... starting over with it` | the session was lost; a new one is made when the headset answers again |
 | `The headset is driven by another graphics card ...` | the PC has two; set `Vulkan/gpu_id` in `config.json` or start with the headset connected |
+| `Windows has ... of memory left to hand out, and the emulator asks for about 14 GB` | (the launcher, before the game starts) the emulator has Windows set the console's whole memory aside in one request (`address_space.cpp`), 14 GB in all at 2880x3072. Windows can usually still find it by enlarging its page file, but may refuse while it does, and the emulator then stops as it starts (`The emulator ended with code -2147483645`). Close other programs, or just start again |
 
 No picture in the headset although the session is focused: look for `failed:` lines (frame
 calls the runtime refused are counted and logged).

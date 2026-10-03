@@ -54,11 +54,468 @@ $widths = @(1440, 1800, 2160, 2520, 2880, 3240, 3600)
 function EyeHeight([int]$width) { return [int]([math]::Round(1536.0 * $width / 1440 / 8) * 8) }
 $caps = @(120, 90, 72, 60, 45, 40, 36, 30)
 
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+[System.Windows.Forms.Application]::EnableVisualStyles()
+
+# A message box, on top of whatever else is on the desktop (which is what the headset shows).
+# Returns the name of the button chosen: OK, Yes, No, Cancel.
+function Show-Box([string]$text, [string]$buttons = "OK", [string]$icon = "Information",
+                  [string]$default = "Button1") {
+    $owner = New-Object System.Windows.Forms.Form
+    $owner.TopMost = $true
+    try {
+        return [System.Windows.Forms.MessageBox]::Show($owner, $text, "Astro Bot VR", $buttons,
+                                                       $icon, $default).ToString()
+    } finally { $owner.Dispose() }
+}
+
+# Shows one of the launcher's windows and waits for it. In its normal size and in front, also
+# when the launcher itself was started minimized (Windows would open its first window the same).
+function Show-Form($form) {
+    $form.Add_Shown({ $this.WindowState = "Normal"; $this.Activate() })
+    return $form.ShowDialog()
+}
+
+# --- the game ---------------------------------------------------------------------------------
+# The game is looked for in the games folder next to this one, as deep as three folders down.
+# An unpacked game is a folder with eboot.bin in it; a package (.pkg) is unpacked first, once.
+# game= in the settings names one that is elsewhere (its eboot.bin, its folder or its package),
+# and when none is found a window asks where it is.
+$gamesFolder = Join-Path $root "games"
+$madeFor = "CUSA12392"
+# The longest path of a file inside that game: the emulator cannot open a file whose whole path
+# is longer than 259 characters.
+$longestInside = 126
+$zeroPasscode = "0" * 32
+$unpackFolder = ".unpacking"
+
+function Gigabytes([double]$bytes) { return ("{0:N1} GB" -f ($bytes / 1073741824.0)) }
+
+# The folders under one, itself first and the nearest first, down to so many levels. What is
+# inside an unpacked game, or one being unpacked, is left out.
+function Get-Folders([string]$top, [int]$depth = 3) {
+    $all = New-Object System.Collections.Generic.List[string]
+    if (-not [System.IO.Directory]::Exists($top)) { return $all }
+    $level = @($top)
+    for ($i = 0; $i -le $depth -and $level.Count -gt 0; $i++) {
+        $next = @()
+        foreach ($folder in $level) {
+            $all.Add($folder)
+            if ([System.IO.File]::Exists([System.IO.Path]::Combine($folder, "eboot.bin"))) { continue }
+            try {
+                foreach ($sub in [System.IO.Directory]::GetDirectories($folder)) {
+                    if ([System.IO.Path]::GetFileName($sub) -ne $unpackFolder) { $next += $sub }
+                }
+            } catch {}
+        }
+        $level = $next
+    }
+    return $all
+}
+
+# What a param.sfo says, by name (TITLE_ID, APP_VER, TITLE...): the texts only.
+function Read-Sfo([string]$path) {
+    $values = @{}
+    try {
+        $bytes = [System.IO.File]::ReadAllBytes($path)
+        if ($bytes.Length -lt 20 -or [System.BitConverter]::ToUInt32($bytes, 0) -ne 0x46535000) {
+            return $values
+        }
+        $keys = [System.BitConverter]::ToInt32($bytes, 8)
+        $data = [System.BitConverter]::ToInt32($bytes, 12)
+        $count = [System.BitConverter]::ToInt32($bytes, 16)
+        for ($i = 0; $i -lt $count; $i++) {
+            $at = 20 + 16 * $i
+            $keyAt = $keys + [System.BitConverter]::ToUInt16($bytes, $at)
+            $format = [System.BitConverter]::ToUInt16($bytes, $at + 2)
+            $length = [System.BitConverter]::ToInt32($bytes, $at + 4)
+            $valueAt = $data + [System.BitConverter]::ToInt32($bytes, $at + 12)
+            $end = [Array]::IndexOf($bytes, [byte]0, $keyAt)
+            $key = [System.Text.Encoding]::ASCII.GetString($bytes, $keyAt, $end - $keyAt)
+            if ($format -eq 0x0204 -and $length -gt 0) {
+                $values[$key] = [System.Text.Encoding]::UTF8.GetString($bytes, $valueAt, $length - 1)
+            }
+        }
+    } catch {}
+    return $values
+}
+function Get-GameInfo([string]$eboot) {
+    $folder = [System.IO.Path]::GetDirectoryName($eboot)
+    return Read-Sfo ([System.IO.Path]::Combine($folder, "sce_sys", "param.sfo"))
+}
+
+# The unpacked game under a folder: the one this is made for, if there are several.
+function Find-Game([string]$top) {
+    $first = $null
+    foreach ($folder in (Get-Folders $top)) {
+        $eboot = [System.IO.Path]::Combine($folder, "eboot.bin")
+        if (-not [System.IO.File]::Exists($eboot)) { continue }
+        if ((Get-GameInfo $eboot)["TITLE_ID"] -eq $madeFor) { return $eboot }
+        if ($null -eq $first) { $first = $eboot }
+    }
+    return $first
+}
+
+# The package under a folder: the largest, if there are several (a game's is larger than its
+# updates').
+function Find-Package([string]$top) {
+    $largest = $null
+    foreach ($folder in (Get-Folders $top)) {
+        try { $files = [System.IO.Directory]::GetFiles($folder, "*.pkg") } catch { continue }
+        foreach ($file in $files) {
+            $info = New-Object System.IO.FileInfo($file)
+            if ($null -eq $largest -or $info.Length -gt $largest.Length) { $largest = $info }
+        }
+    }
+    return $largest
+}
+
+# What a package calls its content ("EP9000-CUSA12392_00-..."), or nothing if the file is not
+# a PlayStation 4 package.
+function Read-PackageId([string]$path) {
+    try {
+        $head = New-Object byte[] 128
+        $stream = [System.IO.File]::OpenRead($path)
+        try { $read = $stream.Read($head, 0, $head.Length) } finally { $stream.Dispose() }
+        if ($read -lt $head.Length) { return $null }
+        if ($head[0] -ne 0x7F -or $head[1] -ne 0x43 -or $head[2] -ne 0x4E -or $head[3] -ne 0x54) {
+            return $null
+        }
+        return [System.Text.Encoding]::ASCII.GetString($head, 0x40, 36).Trim([char]0)
+    } catch { return $null }
+}
+
+# The window shown while a package is unpacked. True when the unpacking ran to its end, false
+# when it was cancelled (and stopped).
+function Show-Unpacking($process, [string]$drive, [double]$freeBefore) {
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = "Astro Bot VR"
+    $form.ClientSize = New-Object System.Drawing.Size(460, 132)
+    $form.StartPosition = "CenterScreen"
+    $form.FormBorderStyle = "FixedDialog"
+    $form.MaximizeBox = $false
+    $form.MinimizeBox = $false
+    $form.ControlBox = $false
+    $form.TopMost = $true
+    $form.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
+
+    $label = New-Object System.Windows.Forms.Label
+    $label.Text = "Unpacking the game. This is done once and takes a minute or a few."
+    $label.SetBounds(16, 14, 428, 22)
+    $form.Controls.Add($label)
+    $bar = New-Object System.Windows.Forms.ProgressBar
+    $bar.Style = "Marquee"
+    $bar.MarqueeAnimationSpeed = 30
+    $bar.SetBounds(16, 44, 428, 18)
+    $form.Controls.Add($bar)
+    $state = New-Object System.Windows.Forms.Label
+    $state.Name = "state"
+    $state.SetBounds(16, 72, 300, 22)
+    $form.Controls.Add($state)
+    $cancel = New-Object System.Windows.Forms.Button
+    $cancel.Name = "cancel"
+    $cancel.Text = "Cancel"
+    $cancel.SetBounds(356, 92, 88, 30)
+    $form.Controls.Add($cancel)
+
+    $timer = New-Object System.Windows.Forms.Timer
+    $timer.Interval = 500
+    $timer.Add_Tick({
+        if ($process.HasExited) {
+            $timer.Stop()
+            $form.DialogResult = [System.Windows.Forms.DialogResult]::OK
+            $form.Close()
+            return
+        }
+        if ($freeBefore -ge 0) {
+            try {
+                $free = (New-Object System.IO.DriveInfo($drive)).AvailableFreeSpace
+                $state.Text = (Gigabytes ([math]::Max(0, $freeBefore - $free))) + " unpacked"
+            } catch {}
+        }
+    })
+    $cancel.Add_Click({
+        $timer.Stop()
+        try { $process.Kill() } catch {}
+        try { $process.WaitForExit(10000) | Out-Null } catch {}
+        $form.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+        $form.Close()
+    })
+    $form.Add_Shown({ $timer.Start() })
+    $result = Show-Form $form
+    $timer.Dispose()
+    $form.Dispose()
+    return ($result -eq [System.Windows.Forms.DialogResult]::OK)
+}
+
+# Unpacks a package into the games folder, under the game's serial, and returns the eboot.bin
+# there; nothing if it was not done. PkgTool (of LibOrbisPkg) does the work. It reads packages
+# that are not encrypted, which is what a dump of a game is; what the PlayStation Store hands
+# out is encrypted and cannot be unpacked by anything here.
+function Expand-Package($package) {
+    $contentId = Read-PackageId $package.FullName
+    if ($null -eq $contentId) {
+        [void](Show-Box ($package.FullName + "`n`nis not a PlayStation 4 package.") "OK" "Warning")
+        return $null
+    }
+    $tool = $null
+    foreach ($candidate in @((Join-Path $here "pkgtool\PkgTool.exe"),
+                             (Join-Path $root "tools\pkgtool\PkgTool.exe"))) {
+        if ([System.IO.File]::Exists($candidate)) { $tool = $candidate; break }
+    }
+    if ($null -eq $tool) {
+        [void](Show-Box ("The game is here as a package:`n" + $package.FullName + "`n`nbut PkgTool, which unpacks packages, is missing from`n" + (Join-Path $here "pkgtool") + "`n`nUnzip the whole AstroQuest package again.") "OK" "Warning")
+        return $null
+    }
+    $serial = "game"
+    if ($contentId -match "[A-Z]{4}[0-9]{5}") { $serial = $Matches[0] }
+    $target = Join-Path $gamesFolder $serial
+    if ($target.Length + 1 + $longestInside -gt 259) {
+        [void](Show-Box ("The game cannot be unpacked into`n" + $target + "`n`nThat path is too long: some of the game's files would have a path of more than 259 characters, which the emulator cannot open. Move the AstroQuest folder somewhere with a shorter path, for example C:\Games\AstroQuest, and start again.") "OK" "Warning")
+        return $null
+    }
+    # What unpacking takes, by this game's own measure (12.5 GB out of a package of 6.9).
+    $needed = $package.Length * 1.85
+    $drive = [System.IO.Path]::GetPathRoot($target)
+    $free = -1
+    try { $free = (New-Object System.IO.DriveInfo($drive)).AvailableFreeSpace } catch {}
+    if ($free -ge 0 -and $free -lt $needed) {
+        [void](Show-Box ("Unpacking the game takes about " + (Gigabytes $needed) + ", and drive " + $drive + " has " + (Gigabytes $free) + " free.`n`nMake room, or move the AstroQuest folder to a drive that has it.") "OK" "Warning")
+        return $null
+    }
+    $answer = Show-Box ("The game is here as a package:`n`n" + $package.Name + "   (" + (Gigabytes $package.Length) + ")`n`nIt has to be unpacked before it can be played. That is done once, takes a minute or a few, and about " + (Gigabytes $needed) + " in`n" + $target + "`n`nUnpack it now?") "YesNo" "Question"
+    if ($answer -ne "Yes") { return $null }
+
+    # Unpacked into a folder of its own first: what is left of an unpacking that did not finish
+    # is never taken for the game.
+    $work = Join-Path $target $unpackFolder
+    try {
+        if ([System.IO.Directory]::Exists($work)) { [System.IO.Directory]::Delete($work, $true) }
+        [void][System.IO.Directory]::CreateDirectory($work)
+    } catch {
+        [void](Show-Box ("Could not write to`n" + $target + "`n`n" + $_.Exception.Message) "OK" "Warning")
+        return $null
+    }
+    $errors = Join-Path $work "pkgtool-errors.txt"
+    $arguments = "pkg_extract --passcode " + $zeroPasscode + " `"" + $package.FullName + "`" `"" + (Join-Path $work "files") + "`""
+    Say ("Unpacking " + $package.FullName)
+    $process = Start-Process -FilePath $tool -ArgumentList $arguments -PassThru -WindowStyle Hidden `
+        -RedirectStandardOutput (Join-Path $work "pkgtool-output.txt") -RedirectStandardError $errors
+    # (Without this the exit code is not to be had later.)
+    $null = $process.Handle
+    $finished = Show-Unpacking $process $drive $free
+
+    $unpacked = Join-Path $work "files\uroot"
+    if (-not [System.IO.Directory]::Exists($unpacked)) { $unpacked = Join-Path $work "files" }
+    $failure = $null
+    if (-not $finished) {
+        $failure = "cancelled"
+    } elseif ($process.ExitCode -ne 0 -or -not [System.IO.File]::Exists((Join-Path $unpacked "eboot.bin"))) {
+        $why = ""
+        try { $why = (@(Get-Content -LiteralPath $errors -ErrorAction Stop | Where-Object { $_.Trim() -ne "" })[0]) } catch {}
+        $failure = "The package could not be unpacked.`n`nOnly a package made from a dump of the game can be: it is not encrypted. A package from the PlayStation Store is, and cannot be used.`n`n" + $package.FullName
+        if ($why) { $failure += "`n`n(PkgTool: " + $why.Trim() + ")" }
+    } else {
+        try {
+            # Into place: over anything of the same name that an earlier attempt left there.
+            foreach ($item in [System.IO.Directory]::GetFileSystemEntries($unpacked)) {
+                $to = Join-Path $target ([System.IO.Path]::GetFileName($item))
+                if ([System.IO.Directory]::Exists($to)) { [System.IO.Directory]::Delete($to, $true) }
+                elseif ([System.IO.File]::Exists($to)) { [System.IO.File]::Delete($to) }
+                [System.IO.Directory]::Move($item, $to)
+            }
+            # What the package keeps outside its file system: the game's own description
+            # (param.sfo, which tells the emulator what game this is), pictures, trophies.
+            # Named ICON0_PNG, PLAYGO_CHUNK_DAT, TROPHY__TROPHY00_TRP... there; icon0.png,
+            # playgo-chunk.dat, trophy/trophy00.trp in the game's sce_sys folder.
+            $leftOut = @("DIGESTS", "ENTRY_KEYS", "IMAGE_KEY", "GENERAL_DIGESTS", "METAS",
+                         "ENTRY_NAMES", "LICENSE_DAT", "LICENSE_INFO")
+            foreach ($line in (& $tool pkg_listentries $package.FullName 2>$null)) {
+                if ($line -notmatch '^0x[0-9A-Fa-f]+\s+0x[0-9A-Fa-f]+\s+[0-9A-Fa-f]+\s+(\d+)\s+(?:\d+\s+)?([A-Z0-9_]+)\s*$') { continue }
+                $index = $Matches[1]
+                $name = $Matches[2]
+                if ($leftOut -contains $name -or $name.EndsWith("_DDS")) { continue }
+                $file = $name.ToLower().Replace("__", "\")
+                $at = $file.LastIndexOf("_")
+                if ($at -gt 0) { $file = $file.Substring(0, $at) + "." + $file.Substring($at + 1) }
+                if ($file.StartsWith("playgo_")) { $file = "playgo-" + $file.Substring(7) }
+                $file = Join-Path (Join-Path $target "sce_sys") $file
+                [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($file))
+                & $tool pkg_extractentry --passcode $zeroPasscode $package.FullName $index $file 2>$null | Out-Null
+            }
+            if (-not [System.IO.File]::Exists((Join-Path $target "sce_sys\param.sfo"))) {
+                $failure = "The package was unpacked, but its description of the game (param.sfo) could not be read from it.`n`n" + $package.FullName
+            }
+        } catch {
+            $failure = "The package was unpacked, but the game could not be put in`n" + $target + "`n`n" + $_.Exception.Message
+        }
+    }
+    try { [System.IO.Directory]::Delete($work, $true) } catch {}
+    if ($failure) {
+        if ($failure -ne "cancelled") { [void](Show-Box $failure "OK" "Warning") }
+        return $null
+    }
+    Say ("Unpacked into " + $target)
+    $answer = Show-Box ("The game is unpacked and ready.`n`nThe package is not needed any more:`n" + $package.FullName + "`n`nDelete it, to get " + (Gigabytes $package.Length) + " back? (Keep it if it is your only copy of the game.)") "YesNo" "Question" "Button2"
+    if ($answer -eq "Yes") {
+        try { [System.IO.File]::Delete($package.FullName) } catch {
+            [void](Show-Box ("Could not delete the package:`n" + $_.Exception.Message) "OK" "Warning")
+        }
+    }
+    return (Join-Path $target "eboot.bin")
+}
+
+# What a path named in the settings, or picked in the window, gives: the eboot.bin to run, or
+# nothing.
+function Use-Path([string]$path) {
+    if ([System.IO.Directory]::Exists($path)) {
+        $eboot = Find-Game $path
+        if ($eboot) { return $eboot }
+        $package = Find-Package $path
+        if ($package) { return Expand-Package $package }
+        return $null
+    }
+    if (-not [System.IO.File]::Exists($path)) { return $null }
+    if ([System.IO.Path]::GetExtension($path) -ieq ".pkg") {
+        return Expand-Package (New-Object System.IO.FileInfo($path))
+    }
+    return $path
+}
+
+# The window for when the game is nowhere to be found. Returns pick (show where it is), again
+# (look again) or quit.
+function Show-NotFound {
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = "Astro Bot VR"
+    $form.ClientSize = New-Object System.Drawing.Size(600, 250)
+    $form.StartPosition = "CenterScreen"
+    $form.FormBorderStyle = "FixedDialog"
+    $form.MaximizeBox = $false
+    $form.MinimizeBox = $false
+    $form.TopMost = $true
+    $form.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
+
+    $title = New-Object System.Windows.Forms.Label
+    $title.Text = "Where is the game?"
+    $title.Font = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold)
+    $title.SetBounds(16, 14, 568, 26)
+    $form.Controls.Add($title)
+    $text = New-Object System.Windows.Forms.Label
+    $text.Text = "ASTRO BOT Rescue Mission was not found. AstroQuest does not contain the game: it plays your own copy of it.`n`nPut that copy in the games folder - either the game's folder (the one with eboot.bin in it) or its .pkg file - and choose Look again. Or leave it where it is and show where that is."
+    $text.SetBounds(16, 50, 568, 96)
+    $form.Controls.Add($text)
+    $where = New-Object System.Windows.Forms.Label
+    $where.Text = "The games folder: " + $gamesFolder
+    $where.ForeColor = [System.Drawing.SystemColors]::GrayText
+    $where.SetBounds(16, 150, 568, 40)
+    $form.Controls.Add($where)
+
+    $pick = New-Object System.Windows.Forms.Button
+    $pick.Name = "pick"
+    $pick.Text = "Show where it is..."
+    $pick.SetBounds(16, 204, 150, 30)
+    $pick.DialogResult = [System.Windows.Forms.DialogResult]::Yes
+    $form.Controls.Add($pick)
+    $open = New-Object System.Windows.Forms.Button
+    $open.Name = "open"
+    $open.Text = "Open the games folder"
+    $open.SetBounds(174, 204, 170, 30)
+    $open.Add_Click({
+        try {
+            [void][System.IO.Directory]::CreateDirectory($gamesFolder)
+            Start-Process explorer.exe -ArgumentList ("`"" + $gamesFolder + "`"")
+        } catch {}
+    })
+    $form.Controls.Add($open)
+    $again = New-Object System.Windows.Forms.Button
+    $again.Name = "again"
+    $again.Text = "Look again"
+    $again.SetBounds(392, 204, 96, 30)
+    $again.DialogResult = [System.Windows.Forms.DialogResult]::Retry
+    $form.Controls.Add($again)
+    $quit = New-Object System.Windows.Forms.Button
+    $quit.Name = "quit"
+    $quit.Text = "Quit"
+    $quit.SetBounds(496, 204, 88, 30)
+    $quit.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    $form.Controls.Add($quit)
+    $form.AcceptButton = $again
+    $form.CancelButton = $quit
+
+    $result = Show-Form $form
+    $form.Dispose()
+    if ($result -eq [System.Windows.Forms.DialogResult]::Yes) { return "pick" }
+    if ($result -eq [System.Windows.Forms.DialogResult]::Retry) { return "again" }
+    return "quit"
+}
+
+# The file picker: the game's eboot.bin or its package, wherever they are.
+function Select-GameFile {
+    $dialog = New-Object System.Windows.Forms.OpenFileDialog
+    $dialog.Title = "Where is ASTRO BOT Rescue Mission? Choose its eboot.bin, or its .pkg file"
+    $dialog.Filter = "The game (eboot.bin, *.pkg)|eboot.bin;*.pkg|All files (*.*)|*.*"
+    $dialog.CheckFileExists = $true
+    if ([System.IO.Directory]::Exists($gamesFolder)) { $dialog.InitialDirectory = $gamesFolder }
+    $owner = New-Object System.Windows.Forms.Form
+    $owner.TopMost = $true
+    try {
+        if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
+            return $dialog.FileName
+        }
+        return $null
+    } finally {
+        $owner.Dispose()
+        $dialog.Dispose()
+    }
+}
+
+# The eboot.bin to run, or nothing when the player gives up.
+function Resolve-Game {
+    $named = Setting "game"
+    if ($named -ne "") {
+        $eboot = Use-Path $named
+        if ($eboot) { return $eboot }
+        Say ("The settings name the game at " + $named + ", where it is not: looking in " + $gamesFolder) "Yellow"
+    }
+    while ($true) {
+        $eboot = Find-Game $gamesFolder
+        if ($eboot) { return $eboot }
+        $package = Find-Package $gamesFolder
+        if ($package) {
+            $eboot = Expand-Package $package
+            if ($eboot) { return $eboot }
+        }
+        $choice = Show-NotFound
+        if ($choice -eq "pick") {
+            $file = Select-GameFile
+            if ($file) {
+                $eboot = Use-Path $file
+                if ($eboot) {
+                    # In the games folder it is found again by itself; elsewhere it is noted.
+                    $inGames = $eboot.StartsWith($gamesFolder + "\", [System.StringComparison]::OrdinalIgnoreCase)
+                    if (-not $inGames) { Save-Setting "game" $eboot }
+                    return $eboot
+                }
+            }
+        } elseif ($choice -ne "again") {
+            return $null
+        }
+    }
+}
+
+# The Microsoft Visual C++ runtime, which the emulator is built against.
+function Test-Runtime {
+    $system = [System.Environment]::SystemDirectory
+    foreach ($name in @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll",
+                        "msvcp140_2.dll", "msvcp140_atomic_wait.dll")) {
+        if (-not [System.IO.File]::Exists((Join-Path $system $name))) { return $false }
+    }
+    return $true
+}
+
 # --- the window -------------------------------------------------------------------------------
 function Show-Menu {
-    Add-Type -AssemblyName System.Windows.Forms
-    Add-Type -AssemblyName System.Drawing
-    [System.Windows.Forms.Application]::EnableVisualStyles()
 
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "Astro Bot VR"
@@ -187,7 +644,7 @@ function Show-Menu {
     $form.Controls.Add($quit)
     $form.CancelButton = $quit
 
-    $result = $form.ShowDialog()
+    $result = Show-Form $form
     if ($result -ne [System.Windows.Forms.DialogResult]::OK) { return $false }
     Save-Setting "resolution" ($widths[$resolution.Value])
     Save-Setting "fps" ($caps[$fps.SelectedIndex])
@@ -197,22 +654,32 @@ function Show-Menu {
     return $true
 }
 
-if (-not $NoMenu -and (Setting "menu" "1") -ne "0") {
-    if (-not (Show-Menu)) { exit 0 }
+$emulator = Join-Path $here "shadps4.exe"
+if (-not [System.IO.File]::Exists($emulator)) {
+    [void](Show-Box ("The emulator, shadps4.exe, is missing from`n" + $here + "`n`nUnzip the whole AstroQuest package again. (Built from the source: run tools/make-pc-vr.sh.)") "OK" "Error")
+    exit 1
+}
+if (-not (Test-Runtime)) {
+    $answer = Show-Box "The emulator needs the Microsoft Visual C++ runtime, which is not installed on this PC.`n`nDownload its installer from Microsoft now? Run it, then start Play Astro Bot VR again." "YesNo" "Warning"
+    if ($answer -eq "Yes") { Start-Process "https://aka.ms/vs/17/release/vc_redist.x64.exe" }
+    exit 1
 }
 
-$game = Setting "game" (Join-Path $root "games\CUSA12392\eboot.bin")
-if (-not (Test-Path $game)) {
-    Say "The game was not found at $game" "Red"
-    Say "Put the extracted game there, or name its eboot.bin with game=... in settings.txt."
-    Read-Host "Press Enter to close"
+$game = Resolve-Game
+if (-not $game) { exit 0 }
+Say ("The game: " + $game)
+$info = Get-GameInfo $game
+if ($info.Count -eq 0) {
+    Say "sce_sys\param.sfo is missing next to it: this is not a complete copy of the game, and the emulator may not know it." "Yellow"
+} elseif ($info["TITLE_ID"] -ne $madeFor -or $info["APP_VER"] -ne "01.00") {
+    Say ("This is " + $info["TITLE"] + ", " + $info["TITLE_ID"] + " version " + $info["APP_VER"] + ". AstroQuest is made for the European release, " + $madeFor + " version 01.00: with another, its fixes for the game's speed and picture do not apply, and it may not run.") "Yellow"
+} elseif ([System.IO.Path]::GetDirectoryName($game).Length + 1 + $longestInside -gt 259) {
+    [void](Show-Box ("The game is in`n" + [System.IO.Path]::GetDirectoryName($game) + "`n`nThat path is too long: some of the game's files have a path of more than 259 characters there, which the emulator cannot open, and the game would stop when it needs them. Move the folder somewhere with a shorter path, for example C:\Games\AstroQuest, and start again.") "OK" "Warning")
     exit 1
 }
-$emulator = Join-Path $here "shadps4.exe"
-if (-not (Test-Path $emulator)) {
-    Say "shadps4.exe is missing from $here (run tools/make-pc-vr.sh)" "Red"
-    Read-Host "Press Enter to close"
-    exit 1
+
+if (-not $NoMenu -and (Setting "menu" "1") -ne "0") {
+    if (-not (Show-Menu)) { exit 0 }
 }
 
 # What the settings mean to the emulator.
@@ -307,6 +774,17 @@ Say "No gamepad: the headset's own controllers play (A jump, B punch, right stic
 Say "press both sticks in to reset the view)."
 Say "Close the game's window to quit."
 Say ""
+# The emulator asks Windows for about 14 GB at once (the console's memory, and what the larger
+# pictures take). Where Windows cannot promise that much, the emulator stops as it starts.
+$memoryShort = $false
+try {
+    $spare = (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).FreeVirtualMemory * 1024.0
+    if ($spare -lt 16GB) {
+        $memoryShort = $true
+        Say ("Windows has " + (Gigabytes $spare) + " of memory left to hand out, and the emulator asks for about 14 GB: if the game does not start, close other programs and start again.") "Yellow"
+        Say ""
+    }
+} catch {}
 
 # --- run --------------------------------------------------------------------------------------
 $logDir = Join-Path $here "user\log"
@@ -316,6 +794,7 @@ if (Test-Path $log) { Copy-Item $log (Join-Path $logDir "shad_log.prev.txt") -Fo
 
 # (In this console, with what it prints kept out of the way: a window style given here would
 # also be the game window's.)
+$startedAt = Get-Date
 $process = Start-Process -FilePath $emulator -ArgumentList @("-g", "`"$game`"") -WorkingDirectory $here `
     -PassThru -NoNewWindow -RedirectStandardOutput (Join-Path $logDir "console.txt") `
     -RedirectStandardError (Join-Path $logDir "console-errors.txt")
@@ -369,6 +848,9 @@ Show-Log
 Say ""
 if ($null -ne $process.ExitCode -and $process.ExitCode -ne 0) {
     Say ("The emulator ended with code " + $process.ExitCode + ". Its log is $log") "Yellow"
+    if ($memoryShort -and ((Get-Date) - $startedAt).TotalSeconds -lt 30) {
+        Say "It stopped as it started, and Windows was short of memory then (see above): close other programs and start again."
+    }
     Read-Host "Press Enter to close"
 } else {
     Say "The game was closed."
