@@ -11,14 +11,21 @@
 
 namespace Core::GuestCpu {
 
+HleCallRegistry::HleCallRegistry()
+    : fast_adapters{std::make_unique<std::atomic<const HleCallAdapter*>[]>(MaxFastOperations)} {}
+
 std::shared_ptr<HleCallAdapter> HleCallRegistry::Register(std::shared_ptr<HleCallAdapter> adapter,
                                                            std::string_view name) {
     std::unique_lock lock{registry_mutex};
     if (adapter == nullptr || next_operation == 0) {
         return {};
     }
-    adapter->AssignOperation(next_operation++, name);
+    const u64 operation = next_operation++;
+    adapter->AssignOperation(operation, name);
     adapters.emplace_back(adapter);
+    if (operation <= MaxFastOperations) {
+        fast_adapters[operation - 1].store(adapter.get(), std::memory_order_release);
+    }
     return adapter;
 }
 
@@ -29,6 +36,20 @@ std::shared_ptr<HleCallAdapter> HleCallRegistry::Find(u64 operation) const {
     }
     return adapters.at(operation - 1);
 }
+
+namespace detail {
+
+HleCallResult UnsupportedHleCallAdapter::Invoke(HleCallFrame& frame) const {
+    // Polling loops call some of these every frame; a few reports per function are enough.
+    if (reports.fetch_add(1, std::memory_order_relaxed) < 4) {
+        std::fprintf(stderr, "Stub: %.*s called, returning zero\n",
+                     static_cast<int>(Name().size()), Name().data());
+    }
+    frame.gpr[0] = 0;
+    return true;
+}
+
+} // namespace detail
 
 HleVeneerAllocator::~HleVeneerAllocator() {
     for (const auto& allocation : allocations) {

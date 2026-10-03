@@ -5,6 +5,9 @@
 #include "gnmdriver.h"
 
 #include <atomic>
+#include <chrono>
+#include <cstdlib>
+#include <thread>
 
 #include "common/assert.h"
 #include "common/debug.h"
@@ -14,6 +17,7 @@
 #include "core/address_space.h"
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
+#include "core/known_title.h"
 #include "core/libraries/gnmdriver/gnm_error.h"
 #include "core/libraries/gnmdriver/gnmdriver_init.h"
 #include "core/libraries/kernel/orbis_error.h"
@@ -2320,6 +2324,16 @@ s32 PS4_SYSV_ABI sceGnmSubmitCommandBuffers(u32 count, const u32* dcb_gpu_addrs[
 int PS4_SYSV_ABI sceGnmSubmitDone() {
     HLE_TRACE;
     LOG_DEBUG(Lib_GnmDriver, "called");
+    // SHADPS4_DBG_FRAME_DELAY_MS holds the title up by so much every frame: what it does when
+    // frames take longer than it was made for can then be looked at on a fast machine.
+    static const int frame_delay = [] {
+        const char* value = std::getenv("SHADPS4_DBG_FRAME_DELAY_MS");
+        return value != nullptr ? std::atoi(value) : 0;
+    }();
+    if (frame_delay > 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{frame_delay});
+    }
+    Core::KnownTitle::OnFrameSubmitted();
     WaitGpuIdle();
     if (!liverpool->IsGpuIdle()) {
         submission_lock = true;

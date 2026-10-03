@@ -68,6 +68,11 @@ static void KernelServiceThread(std::stop_token stoken) {
         {
             std::unique_lock lock{m_asio_req};
             Common::CondvarWait(cv_asio_req, lock, stoken, [] { return asio_requests != 0; });
+            // The requests are taken before the work is run, not cleared afterwards: a timer
+            // armed just as run() was returning had its request wiped and was then serviced by
+            // nobody until some unrelated request came along. A title that paces its frames
+            // with such a timer (and re-arms it only once it has fired) stopped for good.
+            asio_requests = 0;
         }
         if (stoken.stop_requested()) {
             break;
@@ -75,8 +80,6 @@ static void KernelServiceThread(std::stop_token stoken) {
 
         io_context.run();
         io_context.restart();
-
-        asio_requests = 0;
     }
 }
 

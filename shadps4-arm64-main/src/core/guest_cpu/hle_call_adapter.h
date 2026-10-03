@@ -5,6 +5,7 @@
 #include "guest_cpu.h"
 
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
@@ -74,14 +75,29 @@ private:
 
 class HleCallRegistry final {
 public:
+    HleCallRegistry();
+
     std::shared_ptr<HleCallAdapter> Register(std::shared_ptr<HleCallAdapter> adapter,
                                              std::string_view name);
     [[nodiscard]] std::shared_ptr<HleCallAdapter> Find(u64 operation) const;
 
+    /// What the call path uses: a guest makes thousands of HLE calls per frame from all of its
+    /// threads, and taking the registry lock and a reference for each one makes them queue up
+    /// on the same cache line. Adapters are never unregistered, so a plain pointer is safe.
+    [[nodiscard]] const HleCallAdapter* FindForCall(u64 operation) const noexcept {
+        if (operation == 0 || operation > MaxFastOperations) [[unlikely]] {
+            return nullptr;
+        }
+        return fast_adapters[operation - 1].load(std::memory_order_acquire);
+    }
+
 private:
+    static constexpr u64 MaxFastOperations = 1u << 17;
+
     mutable std::shared_mutex registry_mutex;
     u64 next_operation{1};
     std::vector<std::shared_ptr<HleCallAdapter>> adapters;
+    std::unique_ptr<std::atomic<const HleCallAdapter*>[]> fast_adapters;
 };
 
 struct HleVeneerFailure final {
@@ -295,11 +311,33 @@ private:
     Return (*function)(Args...);
 };
 
+// For the few functions that are about the guest's registers rather than about arguments and
+// a return value (context switches). The frame is written back to the guest when the function
+// returns, so whatever it leaves there is what the guest resumes with.
+class RawHleCallAdapter final : public HleCallAdapter {
+public:
+    using Function = void (*)(HleCallFrame& frame);
+
+    explicit RawHleCallAdapter(Function function_) : function{function_} {}
+
+    HleCallResult Invoke(HleCallFrame& frame) const override {
+        function(frame);
+        return true;
+    }
+
+private:
+    Function function;
+};
+
+/// Stands in for a function nobody implements. Like the stubs an x86-64 host resolves such
+/// imports to, it reports the call and returns zero: titles call plenty of functions they can
+/// live without, and treat an error from them as fatal.
 class UnsupportedHleCallAdapter final : public HleCallAdapter {
 public:
-    HleCallResult Invoke(HleCallFrame&) const override {
-        return HleCallFailure{ENOSYS, Name()};
-    }
+    HleCallResult Invoke(HleCallFrame& frame) const override;
+
+private:
+    mutable std::atomic<u32> reports{};
 };
 
 } // namespace detail
@@ -308,6 +346,11 @@ template <typename Function>
 std::shared_ptr<HleCallAdapter> MakeHleCallAdapter(Function function) {
     using Signature = decltype(function);
     return std::make_shared<detail::TypedHleCallAdapter<Signature>>(function);
+}
+
+inline std::shared_ptr<HleCallAdapter> MakeRawHleCallAdapter(
+    detail::RawHleCallAdapter::Function function) {
+    return std::make_shared<detail::RawHleCallAdapter>(function);
 }
 
 inline std::shared_ptr<HleCallAdapter> MakeUnsupportedHleCallAdapter() {

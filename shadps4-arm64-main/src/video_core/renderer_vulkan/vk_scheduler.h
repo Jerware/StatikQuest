@@ -3,10 +3,12 @@
 
 #pragma once
 
+#include <chrono>
 #include <condition_variable>
 #include <mutex>
 #include <thread>
 #include <queue>
+#include <source_location>
 
 #include "common/unique_function.h"
 #include "video_core/amdgpu/regs_color.h"
@@ -51,6 +53,65 @@ struct RenderState {
     }
 };
 static_assert(std::has_unique_object_representations_v<RenderState>);
+
+/// What the guest asked of the GPU, counted between two presented frames. SHADPS4_FRAME_STATS=1
+/// logs the averages every few seconds: they tell a frame made of a handful of passes from one
+/// that restarts rendering to the same targets hundreds of times, which is what costs on a GPU
+/// that renders in tiles. SHADPS4_FRAME_STATS=2 also lists the passes of one frame each time,
+/// with what they were drawn to and which code ended them.
+struct FrameStats {
+    static bool Enabled();
+    static void RenderPass(const RenderState& state);
+    static void PassEnded(const std::source_location& where);
+    static void Draw();
+    static void Compute();
+    static void Submit();
+    /// Called once per presented frame.
+    static void EndFrame();
+
+    /// The way of a frame from the title to the display, for the averages in the log.
+    enum class Stage : u32 {
+        Submitting, ///< From the title's first command list until it handed the frame over.
+        CatchUp,    ///< From there until the GPU thread had translated all of it.
+        Translate, ///< Processor time the GPU thread spent turning the frame into host commands.
+        Queued,    ///< From the frame being handed on until a display refresh took it up.
+        GpuWait,   ///< From there until the GPU had finished drawing it.
+        Latency,   ///< From the title's first command list of the frame until its flip.
+        Count,
+    };
+    static void Time(Stage stage, std::chrono::nanoseconds time);
+
+    /// How often the shortcuts of the draw path are taken, per frame.
+    enum class Counter : u32 {
+        ImageLookups,       ///< Texture cache lookups by address.
+        ImageLookupsShort,  ///< ... answered from what was found before.
+        ImageRegistrations, ///< Images added to or removed from the cache.
+        PipelineBinds,      ///< Graphics pipeline binds asked for.
+        PipelineBindsShort, ///< ... that found the pipeline bound already.
+        Vertices,           ///< Vertices (or indices) drawn, instances counted.
+        Count,
+    };
+    static void Add(Counter counter, u64 amount = 1);
+    /// The title handed a command list over. The first one after a frame was taken marks the
+    /// start of the next.
+    static void GuestSubmit();
+    /// When the frame now being flipped started, or the epoch if nothing was noted.
+    static std::chrono::steady_clock::time_point TakeGuestSubmit();
+    /// Processor time the calling thread has used so far.
+    static std::chrono::nanoseconds ThreadTime();
+
+    /// How busy the GPU is with what the title draws, whether statistics are logged or not.
+    /// Somebody looks many times a second whether the GPU still has work of the title's
+    /// before it (GpuLook); the share of looks that found it busy since the last asking is the
+    /// answer (TakeGpuLoad, below zero when nobody looked).
+    static void GpuLook(bool busy);
+    static float TakeGpuLoad();
+};
+
+/// True when SHADPS4_TRACE_SYNC is set: submissions and fence operations are then written to
+/// stderr with a millisecond clock, to be read next to the GPU driver shim's own trace.
+bool IsSyncTraceEnabled();
+void TraceSync(const char* format, ...) __attribute__((format(printf, 1, 2)));
 
 struct SubmitInfo {
     std::array<vk::Semaphore, 3> wait_semas;
@@ -371,11 +432,37 @@ public:
     void BeginRendering(const RenderState& new_state);
 
     /// Ends current rendering scope.
-    void EndRendering();
+    void EndRendering(std::source_location where = std::source_location::current());
 
     /// Returns the current render state.
     const RenderState& GetRenderState() const {
         return render_state;
+    }
+
+    /// Binds a graphics pipeline for the draws of the title, unless it is the one the last draw
+    /// of this render pass was made with: a run of objects drawn with the same pipeline is
+    /// common, and binding it again makes the driver send the GPU its whole state again.
+    void BindGraphicsPipeline(vk::Pipeline pipeline) {
+        FrameStats::Add(FrameStats::Counter::PipelineBinds);
+        if (bound_pipeline != pipeline) {
+            current_cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
+            bound_pipeline = pipeline;
+        } else {
+            FrameStats::Add(FrameStats::Counter::PipelineBindsShort);
+        }
+    }
+
+    /// Counts a draw towards the next flush (see IsFlushDue).
+    void NoteDraw() {
+        ++draws_since_flush;
+    }
+
+    /// True when enough has been recorded, and a render pass has ended since, for the GPU to be
+    /// given it now instead of at the end of the frame. A frame takes the GPU thread about as
+    /// long to translate as it takes the GPU to draw: handing everything over at the end makes
+    /// the two take turns, handing it over in parts lets them work at the same time.
+    bool IsFlushDue() const {
+        return flush_due;
     }
 
     /// Returns the current pipeline dynamic state tracking.
@@ -450,6 +537,11 @@ private:
     std::jthread priority_pending_ops_thread;
     RenderState render_state;
     bool is_rendering = false;
+    u32 draws_since_flush{};
+    bool flush_due{};
+    /// What BindGraphicsPipeline bound last in the current render pass. Other code binds
+    /// pipelines of its own, always in a pass of its own: nothing is assumed across passes.
+    vk::Pipeline bound_pipeline{};
     tracy::VkCtxScope* profiler_scope{};
 };
 

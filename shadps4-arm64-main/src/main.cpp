@@ -26,6 +26,8 @@
 #include "common/singleton.h"
 #include "emulator.h"
 #include "input/controller.h"
+#include "core/vr/vr_runtime.h"
+#include "input/scripted_input.h"
 #include "imgui/big_picture/big_picture.h"
 #ifdef ENABLE_BACHATA_RUNTIME
 #include "platform/bachata/runtime_client.h"
@@ -37,12 +39,15 @@
 #include <sys/sysctl.h>
 #endif
 
+#include <cstdio>
+#include <cstring>
+
+// The SIGSYS/seccomp trap below only exists for the Android (Linux) runtime.
+#ifdef __linux__
 #include <signal.h>
 #include <unistd.h>
 #include <sys/syscall.h>
 #include <ucontext.h>
-#include <cstdio>
-#include <cstring>
 #ifndef SYS_SECCOMP
 #define SYS_SECCOMP 1
 #endif
@@ -182,9 +187,12 @@ static void InstallBachataSigsysTrap() {
     sigemptyset(&sa.sa_mask);
     sigaction(SIGSYS, &sa, &g_old_sigsys_action);
 }
+#endif // __linux__
 
 int main(int argc, char* argv[]) {
+#ifdef __linux__
     InstallBachataSigsysTrap();
+#endif
 #ifdef _WIN32
     SetConsoleOutputCP(CP_UTF8);
 #endif
@@ -492,6 +500,13 @@ int main(int argc, char* argv[]) {
                 // state that scePadRead reads. On Android no SDL timer does this for us.
                 controller->UpdateGyro(snapshot.gyro);
                 controller->UpdateAcceleration(snapshot.accel);
+                if (snapshot.slot == 0) {
+                    // The tracked controller of a VR title gets its attitude from the same data.
+                    auto& vr = Core::Vr::Runtime::Instance();
+                    vr.UpdatePadAcceleration(
+                        {snapshot.accel[0], snapshot.accel[1], snapshot.accel[2]});
+                    vr.UpdatePadGyro({snapshot.gyro[0], snapshot.gyro[1], snapshot.gyro[2]});
+                }
                 controller->Gyro(0);
                 controller->Acceleration(0);
                 // SDL hotplug sets this when a sensor-bearing gamepad connects; without a
@@ -525,6 +540,10 @@ int main(int argc, char* argv[]) {
         runtime_client.SendStopped(exit_code);
     };
 #endif
+    // Unattended test runs can drive the first controller from a file.
+    if (const char* input_script = std::getenv("SHADPS4_INPUT_SCRIPT")) {
+        Input::StartScriptedInput(input_script);
+    }
     emulator->Run(ebootPath, gameArgs, overrideRoot);
 
     return 0;

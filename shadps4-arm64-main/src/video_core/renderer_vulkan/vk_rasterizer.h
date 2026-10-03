@@ -39,6 +39,13 @@ public:
         return scheduler;
     }
 
+    /// Handles DMA writes that land on a depth target's HTILE surface. Returns true when the
+    /// write was consumed as a depth clear.
+    bool TryHtileClear(VAddr address, std::span<const u32> htile_words);
+
+    /// Logs the next `count` guest draws, dispatches and markers. Debugging aid.
+    static void StartDrawTrace(s32 count);
+
     [[nodiscard]] VideoCore::BufferCache& GetBufferCache() noexcept {
         return buffer_cache;
     }

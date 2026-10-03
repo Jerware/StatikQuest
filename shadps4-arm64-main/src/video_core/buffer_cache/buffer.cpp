@@ -219,9 +219,10 @@ void StreamBuffer::Commit() {
     }
 
     offset += mapped_size;
+    // Everything committed while one command buffer is being recorded becomes free together.
     if (current_watch_cursor != 0 &&
-        current_watches[current_watch_cursor].tick == scheduler->CurrentTick()) {
-        current_watches[current_watch_cursor].upper_bound = offset;
+        current_watches[current_watch_cursor - 1].tick == scheduler->CurrentTick()) {
+        current_watches[current_watch_cursor - 1].upper_bound = offset;
         return;
     }
 

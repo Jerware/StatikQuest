@@ -228,6 +228,30 @@ void EmitSetAttribute(EmitContext& ctx, IR::Attribute attr, Id value, u32 elemen
     if (IR::IsMrt(attr)) {
         const u32 index{u32(attr) - u32(IR::Attribute::RenderTarget0)};
         const auto& info{ctx.frag_outputs.at(index)};
+        // SHADPS4_DBG_TINT=all, or <hash>[,<hash>...]: those pixel shaders write a flat colour
+        // of their own to their first target instead of what they compute, to see in the
+        // picture which shader draws what. (The colour of a shader is logged when it is made.)
+        static const std::string tint = [] {
+            const char* tint_value = std::getenv("SHADPS4_DBG_TINT");
+            return std::string{tint_value != nullptr ? tint_value : ""};
+        }();
+        if (!tint.empty() && index == 0 && ctx.stage == Stage::Fragment &&
+            !OutputAttrComponentType(ctx, attr).second &&
+            (tint == "all" ||
+             tint.find(fmt::format("{:x}", ctx.info.pgm_hash)) != std::string::npos)) {
+            const float hue =
+                std::fmod(static_cast<float>(ctx.info.pgm_hash % 1000003) * 0.618034f, 1.0f);
+            const auto channel = [&](float shift) {
+                const float k = std::fmod(5.0f + hue * 6.0f - shift + 6.0f, 6.0f);
+                return 1.0f - std::max(0.0f, std::min({k, 4.0f - k, 1.0f}));
+            };
+            const float rgb[3] = {channel(0.0f), channel(4.0f), channel(2.0f)};
+            if (element == 0) {
+                LOG_INFO(Render_Recompiler, "Tint of pixel shader {:#x}: {:.2f} {:.2f} {:.2f}",
+                         ctx.info.pgm_hash, rgb[0], rgb[1], rgb[2]);
+            }
+            value = ctx.ConstF32(element < 3 ? rgb[element] : 1.0f);
+        }
         if (info.num_components == 1) {
             return op_store(info.id);
         } else {

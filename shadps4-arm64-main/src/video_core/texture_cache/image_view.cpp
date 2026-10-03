@@ -1,6 +1,10 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <mutex>
+#include <set>
+#include <utility>
+
 #include "common/logging/log.h"
 #include "shader_recompiler/resource.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
@@ -71,14 +75,11 @@ ImageViewInfo::ImageViewInfo(const AmdGpu::DepthBuffer& depth_buffer, AmdGpu::De
     type = range.extent.layers > 1 ? AmdGpu::ImageType::Color2DArray : AmdGpu::ImageType::Color2D;
 }
 
-ImageView::ImageView(const Vulkan::Instance& instance, const ImageViewInfo& info_,
-                     const Image& image)
-    : info{info_} {
-    vk::ImageViewUsageCreateInfo usage_ci{.usage = image.usage_flags};
-    if (!info.is_storage) {
-        usage_ci.usage &= ~vk::ImageUsageFlagBits::eStorage;
-    }
-    // When sampling D32/D16 texture from shader, the T# specifies R32/R16 format so adjust it.
+namespace {
+
+/// When sampling D32/D16 texture from shader, the T# specifies R32/R16 format so adjust it.
+std::pair<vk::Format, vk::ImageAspectFlags> ViewFormatAndAspect(const ImageViewInfo& info,
+                                                                const Image& image) {
     vk::Format format = info.format;
     vk::ImageAspectFlags aspect = image.aspect_mask;
     if (image.aspect_mask & vk::ImageAspectFlagBits::eDepth &&
@@ -91,6 +92,27 @@ ImageView::ImageView(const Vulkan::Instance& instance, const ImageViewInfo& info
         format = image.info.pixel_format;
         aspect = vk::ImageAspectFlagBits::eStencil;
     }
+    return {format, aspect};
+}
+
+} // namespace
+
+vk::Format ImageView::HostFormat(const Vulkan::Instance& instance, const ImageViewInfo& info,
+                                 const Image& image) {
+    return instance.GetSupportedFormat(ViewFormatAndAspect(info, image).first,
+                                       image.format_features);
+}
+
+ImageView::ImageView(const Vulkan::Instance& instance, const ImageViewInfo& info_,
+                     const Image& image)
+    : info{info_} {
+    // A multisampled backing image may have had to give up some usage.
+    vk::ImageViewUsageCreateInfo usage_ci{.usage = image.usage_flags &
+                                                   image.backing->image.image_ci.usage};
+    if (!info.is_storage) {
+        usage_ci.usage &= ~vk::ImageUsageFlagBits::eStorage;
+    }
+    const auto [format, aspect] = ViewFormatAndAspect(info, image);
 
     const vk::ImageViewCreateInfo image_view_ci = {
         .pNext = &usage_ci,
@@ -109,6 +131,19 @@ ImageView::ImageView(const Vulkan::Instance& instance, const ImageViewInfo& info
     if (!IsViewTypeCompatible(info.type, image.info.type)) {
         LOG_ERROR(Render_Vulkan, "image view type {} is incompatible with image type {}",
                   magic_enum::enum_name(info.type), magic_enum::enum_name(image.info.type));
+    }
+    if (image_view_ci.format != image.backing->image.image_ci.format) {
+        // Which reinterpretations a title asks for decides what its images have to allow
+        // (see Image::EnsureViewFormat).
+        static std::mutex seen_mutex;
+        static std::set<std::pair<vk::Format, vk::Format>> seen;
+        std::scoped_lock lock{seen_mutex};
+        if (seen.emplace(image.backing->image.image_ci.format, image_view_ci.format).second) {
+            LOG_INFO(Render_Vulkan, "image of format {} viewed as {} (first seen on {}x{})",
+                     vk::to_string(image.backing->image.image_ci.format),
+                     vk::to_string(image_view_ci.format), image.info.size.width,
+                     image.info.size.height);
+        }
     }
 
     auto [view_result, view] = instance.GetDevice().createImageViewUnique(image_view_ci);

@@ -68,6 +68,10 @@ struct Image;
 
 struct ImageView {
     ImageView(const Vulkan::Instance& instance, const ImageViewInfo& info, const Image& image);
+
+    /// The format a view described by `info` has on the host.
+    static vk::Format HostFormat(const Vulkan::Instance& instance, const ImageViewInfo& info,
+                                 const Image& image);
     ~ImageView();
 
     ImageView(const ImageView&) = delete;

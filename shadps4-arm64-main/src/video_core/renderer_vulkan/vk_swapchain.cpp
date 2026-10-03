@@ -7,6 +7,9 @@
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "core/emulator_settings.h"
+#ifdef ENABLE_OPENXR_HOST
+#include "core/vr/openxr_host.h"
+#endif
 #include "imgui/renderer/imgui_core.h"
 #include "sdl_window.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -20,12 +23,19 @@ static constexpr vk::SurfaceFormatKHR SURFACE_FORMAT_HDR = {
 };
 
 Swapchain::Swapchain(const Instance& instance_, const Frontend::WindowSDL& window_)
-    : instance{instance_}, window{window_}, surface{CreateSurface(instance.GetInstance(), window)} {
-    std::fprintf(stderr, "BACHATA_SWAPCHAIN_FORMAT_ENTER\n");
-    FindPresentFormat();
-    std::fprintf(stderr, "BACHATA_SWAPCHAIN_FORMAT_READY\n");
-    FindPresentMode();
-    std::fprintf(stderr, "BACHATA_SWAPCHAIN_MODE_READY\n");
+    : instance{instance_}, window{window_},
+      headless{window_.GetWindowInfo().type == Frontend::WindowSystemType::Headless},
+      surface{headless ? vk::SurfaceKHR{} : CreateSurface(instance.GetInstance(), window)} {
+    if (headless) {
+        surface_format = {vk::Format::eR8G8B8A8Unorm, vk::ColorSpaceKHR::eSrgbNonlinear};
+        present_mode = vk::PresentModeKHR::eFifo;
+    } else {
+        std::fprintf(stderr, "BACHATA_SWAPCHAIN_FORMAT_ENTER\n");
+        FindPresentFormat();
+        std::fprintf(stderr, "BACHATA_SWAPCHAIN_FORMAT_READY\n");
+        FindPresentMode();
+        std::fprintf(stderr, "BACHATA_SWAPCHAIN_MODE_READY\n");
+    }
 
     Create(window.GetWidth(), window.GetHeight());
     std::fprintf(stderr, "BACHATA_SWAPCHAIN_READY\n");
@@ -36,7 +46,9 @@ Swapchain::Swapchain(const Instance& instance_, const Frontend::WindowSDL& windo
 
 Swapchain::~Swapchain() {
     Destroy();
-    instance.GetInstance().destroySurfaceKHR(surface);
+    if (surface) {
+        instance.GetInstance().destroySurfaceKHR(surface);
+    }
 }
 
 void Swapchain::Create(u32 width_, u32 height_) {
@@ -45,6 +57,12 @@ void Swapchain::Create(u32 width_, u32 height_) {
     needs_recreation = false;
 
     Destroy();
+
+    if (headless) {
+        CreateHeadlessImages();
+        RefreshSemaphores();
+        return;
+    }
 
     SetSurfaceProperties();
 
@@ -110,6 +128,11 @@ void Swapchain::SetHDR(bool hdr) {
 }
 
 bool Swapchain::AcquireNextImage() {
+    if (headless) {
+        image_index = (image_index + 1) % image_count;
+        return true;
+    }
+
     vk::Device device = instance.GetDevice();
     vk::Result result =
         device.acquireNextImageKHR(swapchain, std::numeric_limits<u64>::max(),
@@ -152,6 +175,10 @@ bool Swapchain::AcquireNextImage() {
 }
 
 bool Swapchain::Present() {
+    if (headless) {
+        frame_index = (frame_index + 1) % image_count;
+        return true;
+    }
 
     const vk::PresentInfoKHR present_info = {
         .waitSemaphoreCount = 1,
@@ -254,6 +281,24 @@ void Swapchain::FindPresentMode() {
                     vk::to_string(present_mode), vk::to_string(fallback));
         present_mode = fallback;
     }
+
+#ifdef ENABLE_OPENXR_HOST
+    // With a headset of the machine's own to show frames in, the window only gets a look at
+    // them: it must never hold the thread that shows them up until the monitor's next refresh.
+    if (Core::Vr::OpenXrHost::Instance().IsAvailable() &&
+        present_mode != vk::PresentModeKHR::eMailbox &&
+        present_mode != vk::PresentModeKHR::eImmediate) {
+        for (const auto mode : {vk::PresentModeKHR::eMailbox, vk::PresentModeKHR::eImmediate}) {
+            if (std::ranges::find(modes, mode) != modes.cend()) {
+                LOG_INFO(Render, "The window is presented with {} instead of {}: the headset "
+                                 "sets the pace",
+                         vk::to_string(mode), vk::to_string(present_mode));
+                present_mode = mode;
+                break;
+            }
+        }
+    }
+#endif
 }
 
 void Swapchain::SetSurfaceProperties() {
@@ -305,6 +350,16 @@ void Swapchain::Destroy() {
     if (swapchain) {
         device.destroySwapchainKHR(swapchain);
     }
+    if (headless) {
+        for (const vk::Image image : images) {
+            device.destroyImage(image);
+        }
+        for (const vk::DeviceMemory memory : headless_memory) {
+            device.freeMemory(memory);
+        }
+        images.clear();
+        headless_memory.clear();
+    }
 
     for (const auto& sem : image_acquired) {
         device.destroySemaphore(sem);
@@ -348,6 +403,60 @@ void Swapchain::SetupImages() {
     ASSERT_MSG(images_result == vk::Result::eSuccess, "Failed to create swapchain images: {}",
                vk::to_string(images_result));
     images = std::move(imgs);
+    CreateImageViews();
+}
+
+void Swapchain::CreateHeadlessImages() {
+    static constexpr u32 NumImages = 3;
+
+    const vk::Device device = instance.GetDevice();
+    const auto memory_properties = instance.GetPhysicalDevice().getMemoryProperties();
+    extent = vk::Extent2D{width, height};
+
+    for (u32 i = 0; i < NumImages; ++i) {
+        const auto [image_result, image] = device.createImage(vk::ImageCreateInfo{
+            .imageType = vk::ImageType::e2D,
+            .format = surface_format.format,
+            .extent = {width, height, 1},
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .samples = vk::SampleCountFlagBits::e1,
+            .usage = vk::ImageUsageFlagBits::eColorAttachment |
+                     vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst,
+        });
+        ASSERT_MSG(image_result == vk::Result::eSuccess, "Failed to create headless image: {}",
+                   vk::to_string(image_result));
+
+        const auto requirements = device.getImageMemoryRequirements(image);
+        u32 memory_type = memory_properties.memoryTypeCount;
+        for (u32 type = 0; type < memory_properties.memoryTypeCount; ++type) {
+            if ((requirements.memoryTypeBits & (1u << type)) != 0 &&
+                (memory_properties.memoryTypes[type].propertyFlags &
+                 vk::MemoryPropertyFlagBits::eDeviceLocal)) {
+                memory_type = type;
+                break;
+            }
+        }
+        ASSERT_MSG(memory_type != memory_properties.memoryTypeCount,
+                   "No memory type for headless images");
+        const auto [memory_result, memory] = device.allocateMemory(vk::MemoryAllocateInfo{
+            .allocationSize = requirements.size,
+            .memoryTypeIndex = memory_type,
+        });
+        ASSERT_MSG(memory_result == vk::Result::eSuccess,
+                   "Failed to allocate headless image memory: {}", vk::to_string(memory_result));
+        const auto bind_result = device.bindImageMemory(image, memory, 0);
+        ASSERT_MSG(bind_result == vk::Result::eSuccess, "Failed to bind headless image memory: {}",
+                   vk::to_string(bind_result));
+
+        images.push_back(image);
+        headless_memory.push_back(memory);
+    }
+    CreateImageViews();
+}
+
+void Swapchain::CreateImageViews() {
+    const vk::Device device = instance.GetDevice();
     image_count = static_cast<u32>(images.size());
     images_view.resize(image_count);
     for (u32 i = 0; i < image_count; ++i) {

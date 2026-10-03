@@ -224,6 +224,8 @@ private:
     StreamBuffer download_buffer;
     StreamBuffer device_buffer;
     Buffer gds_buffer;
+    /// Shaders only go through the page table when the direct memory access setting is on.
+    bool uses_bda_pagetable;
     Buffer bda_pagetable_buffer;
     Common::SlotVector<Buffer> slot_buffers;
 

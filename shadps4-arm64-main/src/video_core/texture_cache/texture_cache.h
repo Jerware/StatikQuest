@@ -156,6 +156,15 @@ public:
         return slot_image_views[id];
     }
 
+    /// Visits every image in the cache. Debugging aid.
+    template <typename Func>
+    void ForEachImage(Func&& func) {
+        std::scoped_lock lock{mutex};
+        for (Image& image : slot_images) {
+            func(image);
+        }
+    }
+
     /// Get the associated depth stencil image if it is still valid.
     ImageId GetAssociatedDepth(Image& image) {
         if (!image.depth_id) {
@@ -176,6 +185,12 @@ public:
     /// Returns true if the specified address is a metadata surface.
     bool IsMeta(VAddr address) const {
         return surface_metas.contains(address);
+    }
+
+    /// Returns true if the specified address is the HTILE surface of a depth target.
+    bool IsHtile(VAddr address) const {
+        const auto& it = surface_metas.find(address);
+        return it != surface_metas.end() && it.value().type == MetaDataInfo::Type::HTile;
     }
 
     /// Returns true if a slice of the specified metadata surface has been cleared.
@@ -323,6 +338,24 @@ private:
     BlitHelper blit_helper;
     TileManager tile_manager;
     Common::SlotVector<Image> slot_images;
+
+    /// What FindImage answered the last time it was asked for an image that was there exactly
+    /// as described. A draw asks for the same textures as the draw before it more often than
+    /// not, and looking through every page an image covers for candidates each time is what
+    /// made the question expensive. An answer holds until any image is added or removed.
+    struct FoundImage {
+        VAddr guest_address{};
+        u32 guest_size{};
+        Extent3D size{};
+        SubresourceExtent resources{};
+        vk::Format pixel_format{};
+        AmdGpu::ImageType type{};
+        bool exact_fmt{};
+        ImageId image_id{};
+        u64 registrations{};
+    };
+    std::array<FoundImage, 1024> found_images{};
+    u64 registrations{1};
     Common::SlotVector<ImageView> slot_image_views;
     tsl::robin_map<u64, Sampler> samplers;
     tsl::robin_map<vk::Format, ImageId> null_images;

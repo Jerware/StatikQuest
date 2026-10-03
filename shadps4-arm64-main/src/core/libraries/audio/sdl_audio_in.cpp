@@ -7,6 +7,10 @@
 #include <core/emulator_settings.h>
 #include "audioin.h"
 #include "audioin_backend.h"
+#ifdef ENABLE_OPENXR_HOST
+#include <string>
+#include "core/vr/openxr_host.h"
+#endif
 
 namespace Libraries::AudioIn {
 
@@ -29,6 +33,24 @@ public:
         } else if (micDevStr == "Default Device") {
             devId = SDL_AUDIO_DEVICE_DEFAULT_RECORDING;
             LOG_INFO(Lib_AudioIn, "Using default audio input device");
+#ifdef ENABLE_OPENXR_HOST
+            // Left to the system, the microphone is the headset's, if the runtime of this
+            // machine's headset names a device for it.
+            if (const std::string headset = Core::Vr::OpenXrHost::Instance().AudioInputName();
+                !headset.empty()) {
+                int count = 0;
+                SDL_AudioDeviceID* devices = SDL_GetAudioRecordingDevices(&count);
+                for (int i = 0; devices != nullptr && i < count; ++i) {
+                    const char* name = SDL_GetAudioDeviceName(devices[i]);
+                    if (name != nullptr && headset == name) {
+                        devId = devices[i];
+                        LOG_INFO(Lib_AudioIn, "Using the headset's microphone: {}", headset);
+                        break;
+                    }
+                }
+                SDL_free(devices);
+            }
+#endif
         } else {
             try {
                 devId = static_cast<uint32_t>(std::stoul(micDevStr));

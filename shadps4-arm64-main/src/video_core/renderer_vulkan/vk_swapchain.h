@@ -92,6 +92,12 @@ public:
         return needs_hdr;
     }
 
+    /// True when there is no display: the images are the emulator's own and "presenting" them
+    /// shows them to nobody. They still take screenshots and keep the frame flow going.
+    bool IsHeadless() const {
+        return headless;
+    }
+
 private:
     /// Selects the best available swapchain image format
     void FindPresentFormat();
@@ -108,12 +114,19 @@ private:
     /// Performs creation of image views and framebuffers from the swapchain images
     void SetupImages();
 
+    /// Allocates the images that stand in for a swapchain when there is no display
+    void CreateHeadlessImages();
+
+    /// Creates a view for each image
+    void CreateImageViews();
+
     /// Creates the image acquired and present ready semaphores
     void RefreshSemaphores();
 
 private:
     const Instance& instance;
     const Frontend::WindowSDL& window;
+    bool headless;
     vk::SwapchainKHR swapchain{};
     vk::SurfaceKHR surface{};
     vk::SurfaceFormatKHR surface_format;
@@ -123,6 +136,7 @@ private:
     vk::SurfaceTransformFlagBitsKHR transform;
     vk::CompositeAlphaFlagBitsKHR composite_alpha;
     std::vector<vk::Image> images;
+    std::vector<vk::DeviceMemory> headless_memory;
     std::vector<vk::ImageView> images_view;
     std::vector<vk::Semaphore> image_acquired;
     std::vector<vk::Semaphore> present_ready;

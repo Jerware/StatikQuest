@@ -4,6 +4,7 @@
 #pragma once
 
 #include "common/types.h"
+#include "core/libraries/kernel/equeue.h"
 #include "core/libraries/system/userservice.h"
 
 namespace Core::Loader {
@@ -66,6 +67,52 @@ struct OrbisHmdEyeOffset {
     u8 reserve[20];
 };
 
+struct OrbisHmdReprojectionResourceInfo {
+    void* onion_buff;
+    void* garlic_buff;
+    s32 thread_priority;
+    u32 padding;
+    u64 cpu_affinity_mask;
+    u32 pipe_id;
+    u32 queue_id;
+    u32 reserved[3];
+};
+
+/// Maps view-space tangents to texture coordinates for one eye: uv = tan * scale + offset.
+struct OrbisHmdReprojectionEyeUv {
+    float scale_x;
+    float scale_y;
+    float offset_x;
+    float offset_y;
+};
+
+// The two structures below are not documented anywhere public. Their layout was recovered from
+// how titles fill them in before calling sceHmdReprojectionStart; fields nothing has needed yet
+// keep placeholder names.
+struct OrbisHmdReprojectionParam {
+    const void* texture[2]; ///< sce::Gnm::Texture of the left and right eye images.
+    const void* sampler;    ///< sce::Gnm::Sampler used to read them.
+    OrbisHmdReprojectionEyeUv uv[2];
+    u64* frame_label;
+    u32 unknown_40;
+    u32 padding0;
+    u64 unknown_48;
+    u32 unknown_50;
+    u32 padding1;
+    u8 flags;
+};
+
+/// Head pose the frame was rendered with, copied by the title from its tracker result.
+struct OrbisHmdReprojectionTrackerState {
+    float position[3];
+    float orientation[4];
+    u32 padding0;
+    u64 timestamp;
+    u64 sensor_read_system_timestamp;
+    u32 user_frame_number;
+    u32 padding1;
+};
+
 // Reprojection
 s32 PS4_SYSV_ABI sceHmdReprojectionStartMultilayer();
 s32 PS4_SYSV_ABI sceHmdReprojectionAddDisplayBuffer();
@@ -75,18 +122,24 @@ s32 PS4_SYSV_ABI sceHmdReprojectionDebugGetLastInfo();
 s32 PS4_SYSV_ABI sceHmdReprojectionDebugGetLastInfoMultilayer();
 s32 PS4_SYSV_ABI sceHmdReprojectionFinalize();
 s32 PS4_SYSV_ABI sceHmdReprojectionFinalizeCapture();
-s32 PS4_SYSV_ABI sceHmdReprojectionInitialize();
+s32 PS4_SYSV_ABI sceHmdReprojectionInitialize(const OrbisHmdReprojectionResourceInfo* resource,
+                                              s32 type, void* option);
 s32 PS4_SYSV_ABI sceHmdReprojectionInitializeCapture();
 s32 PS4_SYSV_ABI sceHmdReprojectionQueryGarlicBuffAlign();
 s32 PS4_SYSV_ABI sceHmdReprojectionQueryGarlicBuffSize();
 s32 PS4_SYSV_ABI sceHmdReprojectionQueryOnionBuffAlign();
 s32 PS4_SYSV_ABI sceHmdReprojectionQueryOnionBuffSize();
 s32 PS4_SYSV_ABI sceHmdReprojectionSetCallback();
-s32 PS4_SYSV_ABI sceHmdReprojectionSetDisplayBuffers();
-s32 PS4_SYSV_ABI sceHmdReprojectionSetOutputMinColor();
-s32 PS4_SYSV_ABI sceHmdReprojectionSetUserEventEnd();
-s32 PS4_SYSV_ABI sceHmdReprojectionSetUserEventStart();
-s32 PS4_SYSV_ABI sceHmdReprojectionStart();
+s32 PS4_SYSV_ABI sceHmdReprojectionSetDisplayBuffers(s32 video_out_handle, s32 index0, s32 index1,
+                                                     void* option);
+s32 PS4_SYSV_ABI sceHmdReprojectionSetOutputMinColor(float red, float green, float blue);
+s32 PS4_SYSV_ABI sceHmdReprojectionSetUserEventEnd(Libraries::Kernel::OrbisKernelEqueue eq,
+                                                   s32 id);
+s32 PS4_SYSV_ABI sceHmdReprojectionSetUserEventStart(Libraries::Kernel::OrbisKernelEqueue eq,
+                                                     s32 id);
+s32 PS4_SYSV_ABI sceHmdReprojectionStart(const OrbisHmdReprojectionParam* param,
+                                         const OrbisHmdReprojectionTrackerState* tracker_state,
+                                         s64 flip_arg, s32 option);
 s32 PS4_SYSV_ABI sceHmdReprojectionStart2dVr();
 s32 PS4_SYSV_ABI sceHmdReprojectionStartCapture();
 s32 PS4_SYSV_ABI sceHmdReprojectionStartLiveCapture();
@@ -260,6 +313,9 @@ s32 PS4_SYSV_ABI Func_B16652641FE69F0E();
 s32 PS4_SYSV_ABI Func_B9A6FA0735EC7E49();
 s32 PS4_SYSV_ABI Func_FC193BD653F2AF2E();
 s32 PS4_SYSV_ABI Func_FF2E0E53015FE231();
+
+/// Called by the video output once per display refresh; the headset reprojects at that rate.
+void OnVblank();
 
 void RegisterDistortion(Core::Loader::SymbolsResolver* sym);
 void RegisterReprojection(Core::Loader::SymbolsResolver* sym);

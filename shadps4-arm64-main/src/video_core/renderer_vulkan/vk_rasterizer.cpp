@@ -53,6 +53,19 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_,
 
 Rasterizer::~Rasterizer() = default;
 
+static std::atomic<s32> g_draw_trace_budget{0};
+
+void Rasterizer::StartDrawTrace(s32 count) {
+    g_draw_trace_budget.store(count);
+}
+
+static bool TraceDraw() {
+    if (g_draw_trace_budget.load(std::memory_order_relaxed) <= 0) {
+        return false;
+    }
+    return g_draw_trace_budget.fetch_sub(1) > 0;
+}
+
 void Rasterizer::CpSync() {
     scheduler.EndRendering();
     auto cmdbuf = scheduler.CommandBuffer();
@@ -70,17 +83,31 @@ bool Rasterizer::FilterDraw() {
     const auto& regs = liverpool->regs;
     if (regs.color_control.mode == AmdGpu::ColorControl::OperationMode::EliminateFastClear) {
         // Clears the render target if FCE is launched before any draws
+        if (TraceDraw()) {
+            const auto& col_buf = regs.color_buffers[0];
+            LOG_INFO(Render_Vulkan, "TRACE fce cb0={:#x} fast_clear={} meta_cleared={}",
+                     col_buf.Address(), static_cast<bool>(col_buf.info.fast_clear),
+                     texture_cache.IsMetaCleared(col_buf.CmaskAddress(), col_buf.view.slice_start));
+        }
         EliminateFastClear();
         return false;
     }
     if (regs.color_control.mode == AmdGpu::ColorControl::OperationMode::FmaskDecompress) {
         // TODO: check for a valid MRT1 to promote the draw to the resolve pass.
         LOG_TRACE(Render_Vulkan, "FMask decompression pass skipped");
+        if (TraceDraw()) {
+            LOG_INFO(Render_Vulkan, "TRACE fmask-decompress cb0={:#x}",
+                     regs.color_buffers[0].Address());
+        }
         ScopedMarkerInsert("FmaskDecompress");
         return false;
     }
     if (regs.color_control.mode == AmdGpu::ColorControl::OperationMode::Resolve) {
         LOG_TRACE(Render_Vulkan, "Resolve pass");
+        if (TraceDraw()) {
+            LOG_INFO(Render_Vulkan, "TRACE resolve cb0={:#x} -> cb1={:#x}",
+                     regs.color_buffers[0].Address(), regs.color_buffers[1].Address());
+        }
         Resolve();
         return false;
     }
@@ -112,6 +139,44 @@ bool Rasterizer::FilterDraw() {
 
     return true;
 }
+
+namespace {
+
+struct DepthTargetState {
+    vk::ImageLayout layout;
+    vk::AccessFlags2 access;
+};
+
+/// The layout a depth buffer is attached in for a draw, and what the draw does with it there.
+///
+/// The layouts that allow writing serve draws with and without depth writes alike. Titles
+/// switch depth writes on and off from one draw to the next (a decal, then an opaque object,
+/// then a particle): giving the two kinds different layouts ended the render pass at every
+/// switch, a hundred times a frame. Only a draw that also reads the buffer as a texture needs
+/// a layout that forbids writing depth.
+DepthTargetState GetDepthTargetState(const VideoCore::Image& image, const AmdGpu::Regs& regs) {
+    const bool has_stencil = image.info.props.has_stencil;
+    const bool writes_depth = regs.depth_control.depth_write_enable;
+    const bool sampled = image.binding.is_bound;
+    if (writes_depth || !sampled) {
+        return {has_stencil ? vk::ImageLayout::eDepthStencilAttachmentOptimal
+                            : vk::ImageLayout::eDepthAttachmentOptimal,
+                vk::AccessFlagBits2::eDepthStencilAttachmentWrite |
+                    vk::AccessFlagBits2::eDepthStencilAttachmentRead};
+    }
+    // Stencil writes can be enabled while depth writes are off.
+    if (has_stencil && regs.depth_control.stencil_enable) {
+        return {vk::ImageLayout::eDepthReadOnlyStencilAttachmentOptimal,
+                vk::AccessFlagBits2::eShaderRead |
+                    vk::AccessFlagBits2::eDepthStencilAttachmentRead |
+                    vk::AccessFlagBits2::eDepthStencilAttachmentWrite};
+    }
+    return {has_stencil ? vk::ImageLayout::eDepthStencilReadOnlyOptimal
+                        : vk::ImageLayout::eDepthReadOnlyOptimal,
+            vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eDepthStencilAttachmentRead};
+}
+
+} // namespace
 
 void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
     // Prefetch render targets to handle overlaps with bound textures (e.g. mipgen)
@@ -196,19 +261,82 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
     RENDERER_TRACE;
 
     scheduler.PopPendingOperations();
+    if (scheduler.IsFlushDue()) {
+        Flush();
+    }
 
     if (!FilterDraw()) {
         return;
     }
-
     const auto& regs = liverpool->regs;
     const GraphicsPipeline* pipeline = pipeline_cache.GetGraphicsPipeline();
+    // SHADPS4_DBG_SKIP_PS=<hash>[,<hash>...]: draws whose pixel shader is one of these are left
+    // out, to see in the picture what they draw.
+    static const std::vector<u64> skip_ps = [] {
+        std::vector<u64> hashes;
+        if (const char* value = std::getenv("SHADPS4_DBG_SKIP_PS"); value != nullptr) {
+            for (const char* at = value; *at != '\0';) {
+                char* end = nullptr;
+                hashes.push_back(std::strtoull(at, &end, 16));
+                at = (*end == ',') ? end + 1 : end;
+                if (end == at && *end != '\0') {
+                    break;
+                }
+            }
+        }
+        return hashes;
+    }();
+    if (!skip_ps.empty() && pipeline != nullptr &&
+        pipeline->GetStages()[static_cast<u32>(Shader::LogicalStage::Fragment)] != nullptr &&
+        std::ranges::find(skip_ps,
+                          pipeline->GetStage(Shader::LogicalStage::Fragment).pgm_hash) !=
+            skip_ps.end()) {
+        return;
+    }
+    const bool trace = TraceDraw();
+    if (trace) {
+        static const GraphicsPipelineKey empty_key{};
+        const auto& key = pipeline ? pipeline->GetGraphicsKey() : empty_key;
+        const auto& vp = regs.viewports[0];
+        LOG_INFO(Render_Vulkan,
+                 "TRACE draw idx={} n={} inst={} prim={} pipeline={} cb0={:#x} {}x{} s{} "
+                 "cb_mode={} mask={:#x} db={:#x} z_en={} z_wr={} zfunc={} samples={}/{} "
+                 "vp=({:.1f},{:.1f},{:.1f})+({:.1f},{:.1f},{:.1f}) vs={:#x} ps={:#x} st_en={} "
+                 "st_func={} st_ref={} st_mask={:#x} st_wmask={:#x} zclear={} sclear={} "
+                 "depth_clear={} htile={:#x} htile_cleared={} zfmt={}",
+                 is_indexed, regs.num_indices, regs.num_instances.NumInstances(),
+                 static_cast<u32>(regs.primitive_type), pipeline != nullptr,
+                 regs.color_buffers[0].Address(), regs.color_buffers[0].Pitch(),
+                 regs.color_buffers[0].Height(), regs.color_buffers[0].NumSamples(),
+                 static_cast<u32>(regs.color_control.mode), regs.color_target_mask.raw,
+                 regs.depth_buffer.DepthAddress(),
+                 static_cast<bool>(regs.depth_control.depth_enable),
+                 static_cast<bool>(regs.depth_control.depth_write_enable),
+                 static_cast<u32>(regs.depth_control.depth_func), key.num_samples,
+                 key.depth_samples, vp.xscale, vp.yscale, vp.zscale, vp.xoffset, vp.yoffset,
+                 vp.zoffset, key.stage_hashes[static_cast<u32>(Shader::LogicalStage::Vertex)],
+                 key.stage_hashes[static_cast<u32>(Shader::LogicalStage::Fragment)],
+                 static_cast<bool>(regs.depth_control.stencil_enable),
+                 static_cast<u32>(regs.depth_control.stencil_ref_func),
+                 static_cast<u32>(regs.stencil_ref_front.stencil_test_val),
+                 static_cast<u32>(regs.stencil_ref_front.stencil_mask),
+                 static_cast<u32>(regs.stencil_ref_front.stencil_write_mask),
+                 static_cast<bool>(regs.depth_render_control.depth_clear_enable),
+                 static_cast<bool>(regs.depth_render_control.stencil_clear_enable),
+                 regs.depth_clear, regs.depth_htile_data_base.GetAddress(),
+                 texture_cache.IsMetaCleared(regs.depth_htile_data_base.GetAddress(),
+                                             regs.depth_view.slice_start),
+                 static_cast<u32>(regs.depth_buffer.z_info.format));
+    }
     if (!pipeline) {
         return;
     }
 
     PrepareRenderState(pipeline);
     if (!BindResources(pipeline)) {
+        if (trace) {
+            LOG_INFO(Render_Vulkan, "TRACE   draw dropped: resources could not be bound");
+        }
         return;
     }
     const auto state = BeginRendering(pipeline);
@@ -221,19 +349,31 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
     pipeline->BindResources(set_writes, buffer_barriers, push_data);
     UpdateDynamicState(pipeline, is_indexed);
     scheduler.BeginRendering(state);
+    scheduler.NoteDraw();
+    FrameStats::Draw();
 
     const auto& vs_info = pipeline->GetStage(Shader::LogicalStage::Vertex);
     const auto& fetch_shader = pipeline->GetFetchShader();
     const auto [vertex_offset, instance_offset] = GetDrawOffsets(regs, vs_info, fetch_shader);
 
     const auto cmdbuf = scheduler.CommandBuffer();
-    cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline->Handle());
+    scheduler.BindGraphicsPipeline(pipeline->Handle());
+
+    // SHADPS4_DBG_DRAW_VERTICES=<count> draws no more than that of every draw: with next to
+    // no geometry left, what a frame still costs is what its draws cost as such.
+    static const u32 vertex_limit = [] {
+        const char* value = std::getenv("SHADPS4_DBG_DRAW_VERTICES");
+        return value != nullptr && value[0] != 0 ? static_cast<u32>(std::atoi(value)) : ~0u;
+    }();
+    const u32 num_vertices = std::min<u32>(regs.num_indices, vertex_limit);
+    FrameStats::Add(FrameStats::Counter::Vertices,
+                    u64{num_vertices} * regs.num_instances.NumInstances());
 
     if (is_indexed) {
-        cmdbuf.drawIndexed(regs.num_indices, regs.num_instances.NumInstances(), 0,
+        cmdbuf.drawIndexed(num_vertices, regs.num_instances.NumInstances(), 0,
                            s32(vertex_offset), instance_offset);
     } else {
-        cmdbuf.draw(regs.num_indices, regs.num_instances.NumInstances(), vertex_offset,
+        cmdbuf.draw(num_vertices, regs.num_instances.NumInstances(), vertex_offset,
                     instance_offset);
     }
 
@@ -246,6 +386,9 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
     RENDERER_TRACE;
 
     scheduler.PopPendingOperations();
+    if (scheduler.IsFlushDue()) {
+        Flush();
+    }
 
     if (!FilterDraw()) {
         return;
@@ -279,12 +422,14 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
     pipeline->BindResources(set_writes, buffer_barriers, push_data);
     UpdateDynamicState(pipeline, is_indexed);
     scheduler.BeginRendering(state);
+    scheduler.NoteDraw();
+    FrameStats::Draw();
 
     // We can safely ignore both SGPR UD indices and results of fetch shader parsing, as vertex and
     // instance offsets will be automatically applied by Vulkan from indirect args buffer.
 
     const auto cmdbuf = scheduler.CommandBuffer();
-    cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline->Handle());
+    scheduler.BindGraphicsPipeline(pipeline->Handle());
 
     if (is_indexed) {
         ASSERT(sizeof(VkDrawIndexedIndirectCommand) == stride);
@@ -314,19 +459,34 @@ void Rasterizer::DispatchDirect() {
     RENDERER_TRACE;
 
     scheduler.PopPendingOperations();
+    if (scheduler.IsFlushDue()) {
+        Flush();
+    }
+    FrameStats::Compute();
 
     const auto& cs_program = liverpool->GetCsRegs();
     const ComputePipeline* pipeline = pipeline_cache.GetComputePipeline();
+    const bool trace = TraceDraw();
+    if (trace) {
+        LOG_INFO(Render_Vulkan, "TRACE dispatch {}x{}x{} pipeline={}", cs_program.dim_x,
+                 cs_program.dim_y, cs_program.dim_z, pipeline != nullptr);
+    }
     if (!pipeline) {
         return;
     }
 
     const auto& cs = pipeline->GetStage(Shader::LogicalStage::Compute);
     if (ExecuteShaderHLE(cs, liverpool->regs, cs_program, *this)) {
+        if (trace) {
+            LOG_INFO(Render_Vulkan, "TRACE   dispatch handled by shader HLE");
+        }
         return;
     }
 
     if (!BindResources(pipeline)) {
+        if (trace) {
+            LOG_INFO(Render_Vulkan, "TRACE   dispatch dropped by BindResources");
+        }
         return;
     }
 
@@ -344,6 +504,9 @@ void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
     RENDERER_TRACE;
 
     scheduler.PopPendingOperations();
+    if (scheduler.IsFlushDue()) {
+        Flush();
+    }
 
     const auto& cs_program = liverpool->GetCsRegs();
     const ComputePipeline* pipeline = pipeline_cache.GetComputePipeline();
@@ -389,8 +552,22 @@ void Rasterizer::OnSubmit() {
 }
 
 bool Rasterizer::BindResources(const Pipeline* pipeline) {
-    if (IsComputeImageCopy(pipeline) || IsComputeMetaClear(pipeline) ||
-        IsComputeImageClear(pipeline)) {
+    if (IsComputeImageCopy(pipeline)) {
+        if (g_draw_trace_budget.load(std::memory_order_relaxed) > 0) {
+            LOG_INFO(Render_Vulkan, "TRACE   compute handled as image copy");
+        }
+        return false;
+    }
+    if (IsComputeMetaClear(pipeline)) {
+        if (g_draw_trace_budget.load(std::memory_order_relaxed) > 0) {
+            LOG_INFO(Render_Vulkan, "TRACE   compute handled as meta clear");
+        }
+        return false;
+    }
+    if (IsComputeImageClear(pipeline)) {
+        if (g_draw_trace_budget.load(std::memory_order_relaxed) > 0) {
+            LOG_INFO(Render_Vulkan, "TRACE   compute handled as image clear");
+        }
         return false;
     }
 
@@ -439,6 +616,17 @@ bool Rasterizer::IsComputeMetaClear(const Pipeline* pipeline) {
     // intended to be consumed and in such rare cases (e.g. HTile introspection, CRAA) we
     // will need its full emulation anyways.
     const auto& info = pipeline->GetStage(Shader::LogicalStage::Compute);
+
+    if (g_draw_trace_budget.load(std::memory_order_relaxed) > 0) {
+        for (const auto& desc : info.buffers) {
+            const auto sharp = desc.GetSharp(info);
+            LOG_INFO(Render_Vulkan,
+                     "TRACE   cs buffer base={:#x} size={:#x} written={} special={} is_meta={} xor={}",
+                     sharp.base_address, sharp.GetSize(), static_cast<bool>(desc.is_written),
+                     desc.IsSpecial(), texture_cache.IsMeta(sharp.base_address),
+                     static_cast<bool>(info.has_bitwise_xor));
+        }
+    }
 
     // Assume if a shader reads metadata, it is a copy shader.
     for (const auto& desc : info.buffers) {
@@ -809,6 +997,52 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
         image_descriptor_array_sizes.push_back(num_bindings);
     }
 
+    // While draws are traced: what each shader samples, once a shader, and what the texture
+    // cache found for it.
+    if (g_draw_trace_budget.load(std::memory_order_relaxed) > 0) {
+        static std::mutex traced_mutex;
+        static std::unordered_set<u64> traced_shaders;
+        bool first;
+        {
+            std::scoped_lock lock{traced_mutex};
+            first = traced_shaders.insert(stage.pgm_hash).second;
+        }
+        if (first) {
+            u32 index = 0;
+            for (const auto& image_desc : stage.images) {
+                const auto tsharp = image_desc.GetSharp(stage);
+                const auto& [image_id, desc] = image_bindings[std::min<size_t>(
+                    index, image_bindings.size() - 1)];
+                std::string found = "nothing";
+                if (image_id) {
+                    const auto& image = texture_cache.GetImage(image_id);
+                    found = fmt::format(
+                        "{}x{}x{} {} at {:#x} levels {} layers {} size {:#x}{}{} (asked: levels {} "
+                        "layers {} size {:#x})",
+                        image.info.size.width, image.info.size.height, image.info.size.depth,
+                        vk::to_string(image.info.pixel_format), image.info.guest_address,
+                        image.info.resources.levels, image.info.resources.layers,
+                        image.info.guest_size, image.info.props.is_depth ? " depth" : "",
+                        image.binding.is_target ? " target" : "", desc.info.resources.levels,
+                        desc.info.resources.layers, desc.info.guest_size);
+                }
+                LOG_INFO(Render_Vulkan,
+                         "TRACE   texture {} of shader {:#x} (stage {}, cb0 {:#x}, {} indices): "
+                         "type {} {}x{}x{} fmt {}/{} levels "
+                         "{}-{} at {:#x}{} -> {}",
+                         index, stage.pgm_hash, static_cast<u32>(stage.stage),
+                         liverpool->regs.color_buffers[0].Address(), liverpool->regs.num_indices,
+                         static_cast<u32>(tsharp.GetType()),
+                         tsharp.width + 1, tsharp.height + 1, tsharp.depth + 1,
+                         static_cast<u32>(tsharp.GetDataFmt()),
+                         static_cast<u32>(tsharp.GetNumberFmt()), tsharp.base_level,
+                         tsharp.last_level, tsharp.Address(),
+                         image_desc.is_written ? " written" : "", found);
+                index += image_desc.NumBindings(stage);
+            }
+        }
+    }
+
     // Second pass to re-bind images that were updated after binding
     for (auto& [image_id, desc] : image_bindings) {
         bool is_storage = desc.type == VideoCore::TextureCache::BindingType::Storage;
@@ -853,6 +1087,12 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
                                   vk::AccessFlagBits2::eShaderRead |
                                       vk::AccessFlagBits2::eShaderWrite,
                                   desc.view_info.range);
+                } else if (image.info.props.is_depth && image.binding.is_target) {
+                    // The draw tests against the depth buffer it reads: one state for both
+                    // uses, so that a run of such draws does not go back and forth between
+                    // two (which would end the render pass before each of them).
+                    const auto state = GetDepthTargetState(image, liverpool->regs);
+                    image.Transit(state.layout, state.access, desc.view_info.range);
                 } else {
                     const auto new_layout = image.info.props.is_depth
                                                 ? vk::ImageLayout::eDepthStencilReadOnlyOptimal
@@ -984,21 +1224,8 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
         texture_cache.TouchMeta(htile_address, slice, false);
         ASSERT(desc.view_info.range.extent.levels == 1 && !image.binding.needs_rebind);
 
-        const bool has_stencil = image.info.props.has_stencil;
-        // Stencil writes can be enabled while depth writes are off.
-        const bool stencil_write =
-            has_stencil && regs.depth_control.stencil_enable && !desc.view_info.is_storage;
-        const auto new_layout = desc.view_info.is_storage
-                                    ? has_stencil ? vk::ImageLayout::eDepthStencilAttachmentOptimal
-                                                  : vk::ImageLayout::eDepthAttachmentOptimal
-                                : stencil_write
-                                    ? vk::ImageLayout::eDepthReadOnlyStencilAttachmentOptimal
-                                : has_stencil ? vk::ImageLayout::eDepthStencilReadOnlyOptimal
-                                              : vk::ImageLayout::eDepthReadOnlyOptimal;
-        image.Transit(new_layout,
-                      vk::AccessFlagBits2::eDepthStencilAttachmentWrite |
-                          vk::AccessFlagBits2::eDepthStencilAttachmentRead,
-                      desc.view_info.range);
+        const auto target_state = GetDepthTargetState(image, regs);
+        image.Transit(target_state.layout, target_state.access, desc.view_info.range);
 
         state.width = std::min<u32>(state.width, image.info.size.width);
         state.height = std::min<u32>(state.height, image.info.size.height);
@@ -1108,11 +1335,52 @@ void Rasterizer::DepthStencilCopy(bool is_depth, bool is_stencil) {
     ScopeMarkerEnd();
 }
 
+bool Rasterizer::TryHtileClear(VAddr address, std::span<const u32> htile_words) {
+    if (htile_words.empty() || !texture_cache.IsHtile(address)) {
+        return false;
+    }
+
+    // The low four bits of an HTILE entry are its zmask; zero means every pixel of that 8x8 tile
+    // holds the depth clear value. Titles clear depth by filling the surface with such entries,
+    // or by copying in a template they prepared once. A template may also mark some tiles as
+    // permanently occluded (zero depth range), which is how VR titles skip the part of the eye
+    // buffer the lenses cannot show; those tiles only save work, so a plain clear is equivalent.
+    u64 cleared = 0;
+    u64 written = 0;
+    for (const u32 word : htile_words) {
+        if (word == 0) {
+            // Padding past the end of the surface.
+            continue;
+        }
+        ++written;
+        cleared += (word & 0xf) == 0;
+    }
+    if (cleared * 2 < written || cleared == 0) {
+        return false;
+    }
+    return texture_cache.ClearMeta(address);
+}
+
 void Rasterizer::FillBuffer(VAddr address, u32 num_bytes, u32 value, bool is_gds) {
+    if (TraceDraw()) {
+        LOG_INFO(Render_Vulkan, "TRACE dma-fill dst={:#x} bytes={:#x} value={:#x} gds={} is_meta={}",
+                 address, num_bytes, value, is_gds, texture_cache.IsMeta(address));
+    }
+    if (!is_gds && value != 0 && TryHtileClear(address, std::span{&value, 1})) {
+        return;
+    }
     buffer_cache.FillBuffer(address, num_bytes, value, is_gds);
 }
 
 void Rasterizer::CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, bool src_gds) {
+    if (TraceDraw()) {
+        LOG_INFO(Render_Vulkan, "TRACE dma-copy dst={:#x} src={:#x} bytes={:#x} is_meta={}", dst,
+                 src, num_bytes, texture_cache.IsMeta(dst));
+    }
+    if (!dst_gds && !src_gds &&
+        TryHtileClear(dst, std::span{reinterpret_cast<const u32*>(src), num_bytes / sizeof(u32)})) {
+        return;
+    }
     buffer_cache.CopyBuffer(dst, src, num_bytes, dst_gds, src_gds);
 }
 
@@ -1312,6 +1580,32 @@ void Rasterizer::UpdateViewportScissorState() const {
         scissors.push_back(empty_scissor);
     }
 
+    // A measuring aid, not a setting: SHADPS4_DBG_VIEWPORT_SCALE=<0..1> shrinks everything that is
+    // drawn towards the corner of its target. The picture is wrong, but how much faster the GPU
+    // gets tells how much of its time goes into filling pixels rather than into the draws
+    // themselves.
+    static const float debug_scale = [] {
+        const char* value = std::getenv("SHADPS4_DBG_VIEWPORT_SCALE");
+        const float scale = value != nullptr ? static_cast<float>(std::atof(value)) : 1.0f;
+        return scale > 0.0f && scale < 1.0f ? scale : 1.0f;
+    }();
+    if (debug_scale != 1.0f) {
+        for (auto& viewport : viewports) {
+            viewport.x *= debug_scale;
+            viewport.y *= debug_scale;
+            viewport.width *= debug_scale;
+            viewport.height *= debug_scale;
+        }
+        for (auto& scissor : scissors) {
+            scissor.offset.x = static_cast<s32>(scissor.offset.x * debug_scale);
+            scissor.offset.y = static_cast<s32>(scissor.offset.y * debug_scale);
+            scissor.extent.width =
+                std::max(static_cast<u32>(scissor.extent.width * debug_scale), 1u);
+            scissor.extent.height =
+                std::max(static_cast<u32>(scissor.extent.height * debug_scale), 1u);
+        }
+    }
+
     auto& dynamic_state = scheduler.GetDynamicState();
     dynamic_state.SetViewports(viewports);
     dynamic_state.SetScissors(scissors);
@@ -1321,8 +1615,10 @@ void Rasterizer::UpdateDepthStencilState() const {
     const auto& regs = liverpool->regs;
     auto& dynamic_state = scheduler.GetDynamicState();
 
+    static const bool dbg_no_depth = std::getenv("SHADPS4_DBG_NO_DEPTH") != nullptr;
+    static const bool dbg_no_stencil = std::getenv("SHADPS4_DBG_NO_STENCIL") != nullptr;
     const auto depth_test_enabled =
-        regs.depth_control.depth_enable && regs.depth_buffer.DepthValid();
+        regs.depth_control.depth_enable && regs.depth_buffer.DepthValid() && !dbg_no_depth;
     dynamic_state.SetDepthTestEnabled(depth_test_enabled);
     if (depth_test_enabled) {
         dynamic_state.SetDepthWriteEnabled(regs.depth_control.depth_write_enable &&
@@ -1347,7 +1643,7 @@ void Rasterizer::UpdateDepthStencilState() const {
     }
 
     const auto stencil_test_enabled =
-        regs.depth_control.stencil_enable && regs.depth_buffer.StencilValid();
+        regs.depth_control.stencil_enable && regs.depth_buffer.StencilValid() && !dbg_no_stencil;
     dynamic_state.SetStencilTestEnabled(stencil_test_enabled);
     if (stencil_test_enabled) {
         const StencilOps front_ops{
@@ -1427,6 +1723,9 @@ void Rasterizer::UpdateColorBlendingState(const GraphicsPipeline* pipeline) cons
 }
 
 void Rasterizer::ScopeMarkerBegin(const std::string_view& str, bool from_guest) {
+    if (from_guest && TraceDraw()) {
+        LOG_INFO(Render_Vulkan, "TRACE marker {}", str);
+    }
     if ((from_guest && !EmulatorSettings.IsVkGuestMarkersEnabled()) ||
         (!from_guest && !EmulatorSettings.IsVkHostMarkersEnabled())) {
         return;

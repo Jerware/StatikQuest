@@ -3,11 +3,14 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
+#include <memory>
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "common/debug.h"
 #include "common/logging/log.h"
 #include "common/scope_exit.h"
+#include "core/emulator_settings.h"
 #include "core/memory.h"
 #include "video_core/amdgpu/liverpool.h"
 #include "video_core/amdgpu/pm4_packet.h"
@@ -23,10 +26,31 @@
 namespace VideoCore {
 
 static constexpr size_t DataShareBufferSize = 64_KB;
-static constexpr size_t StagingBufferSize = 512_MB;
+#ifdef ENABLE_BACHATA_RUNTIME
+// On the phones and headsets this runtime is for, GPU memory is system memory, and the kernel
+// driver backs every allocation with pages right away, used or not. A desktop-sized staging ring
+// alone would take a sixteenth of all the memory a headset has.
+static constexpr size_t DefaultStagingBufferSize = 64_MB;
+#else
+static constexpr size_t DefaultStagingBufferSize = 512_MB;
+#endif
+/// SHADPS4_STAGING_MB sets another size: a small ring wraps around all the time, which is the
+/// way to exercise the waits for the GPU that a wrap entails.
+static size_t StagingBufferBytes() {
+    static const size_t bytes = [] {
+        const char* value = std::getenv("SHADPS4_STAGING_MB");
+        const long megabytes = value != nullptr ? std::atol(value) : 0;
+        return megabytes > 0 ? static_cast<size_t>(megabytes) << 20 : DefaultStagingBufferSize;
+    }();
+    return bytes;
+}
 static constexpr size_t DownloadBufferSize = 32_MB;
 static constexpr size_t UboStreamBufferSize = 64_MB;
 static constexpr size_t DeviceBufferSize = 128_MB;
+/// Enough for the copies that still go through the buffer when images can be copied directly.
+static constexpr size_t SmallDeviceBufferSize = 32_MB;
+/// Stands in for the page table when shaders never read guest memory through it.
+static constexpr size_t UnusedPageTableSize = 64_KB;
 
 BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& scheduler_,
                          AmdGpu::Liverpool* liverpool_, TextureCache& texture_cache_,
@@ -34,13 +58,20 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
     : instance{instance_}, scheduler{scheduler_}, liverpool{liverpool_},
       memory{Core::Memory::Instance()}, texture_cache{texture_cache_},
       fault_manager{instance, scheduler, *this, CACHING_PAGEBITS, CACHING_NUMPAGES},
-      staging_buffer{instance, scheduler, MemoryUsage::Upload, StagingBufferSize},
+      staging_buffer{instance, scheduler, MemoryUsage::Upload, StagingBufferBytes()},
       stream_buffer{instance, scheduler, MemoryUsage::Stream, UboStreamBufferSize},
       download_buffer{instance, scheduler, MemoryUsage::Download, DownloadBufferSize},
-      device_buffer{instance, scheduler, MemoryUsage::DeviceLocal, DeviceBufferSize},
+      device_buffer{instance, scheduler, MemoryUsage::DeviceLocal,
+                    instance.IsMaintenance8Supported() ? SmallDeviceBufferSize : DeviceBufferSize},
       gds_buffer{instance, scheduler, MemoryUsage::Stream, 0, AllFlags, DataShareBufferSize},
-      bda_pagetable_buffer{instance, scheduler, MemoryUsage::DeviceLocal,
-                           0,        AllFlags,  BDA_PAGETABLE_SIZE} {
+      uses_bda_pagetable{EmulatorSettings.IsDirectMemoryAccessEnabled()},
+      // The table has an entry for every page of the guest's address space: half a gigabyte.
+      bda_pagetable_buffer{instance,
+                           scheduler,
+                           MemoryUsage::DeviceLocal,
+                           0,
+                           AllFlags,
+                           uses_bda_pagetable ? BDA_PAGETABLE_SIZE : UnusedPageTableSize} {
     Vulkan::SetObjectName(instance.GetDevice(), gds_buffer.Handle(), "GDS Buffer");
     Vulkan::SetObjectName(instance.GetDevice(), bda_pagetable_buffer.Handle(),
                           "BDA Page Table Buffer");
@@ -64,6 +95,12 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
     }
 
     const s64 device_local_memory = static_cast<s64>(instance.GetTotalMemoryBudget());
+#ifdef ENABLE_BACHATA_RUNTIME
+    // See the texture cache: the desktop thresholds are more than this kind of machine has.
+    trigger_gc_memory = static_cast<u64>(device_local_memory / 4);
+    critical_gc_memory = static_cast<u64>(device_local_memory * 4 / 10);
+    return;
+#endif
     const s64 min_spacing_expected = device_local_memory - 1_GB;
     const s64 min_spacing_critical = device_local_memory - 512_MB;
     const s64 mem_threshold = std::min<s64>(device_local_memory, TARGET_GC_THRESHOLD);
@@ -686,6 +723,16 @@ std::pair<Buffer*, u32> BufferCache::ObtainBufferForImage(VAddr gpu_addr, u32 si
         return ObtainBuffer(gpu_addr, size, false, false);
     }
 
+    if (size > staging_buffer.SizeBytes()) {
+        // More than the ring holds: a buffer of its own, kept until the GPU has read it.
+        auto temp_buffer =
+            std::make_unique<Buffer>(instance, scheduler, MemoryUsage::Upload, 0, AllFlags, size);
+        Buffer* const buffer = temp_buffer.get();
+        memory->CopySparseMemory(gpu_addr, buffer->mapped_data.data(), size);
+        scheduler.DeferOperation([buffer = std::move(temp_buffer)]() mutable { buffer.reset(); });
+        return {buffer, 0};
+    }
+
     // Baseline: CPU copy into shared staging StreamBuffer ring.
     const auto [data, offset] = staging_buffer.Map(size, 16);
     memory->CopySparseMemory(gpu_addr, data, size);
@@ -899,20 +946,25 @@ void BufferCache::ChangeRegister(BufferId buffer_id) {
     if constexpr (insert) {
         total_used_memory += Common::AlignUp(size, CACHING_PAGESIZE);
         buffer.SetLRUId(lru_cache.Insert(buffer_id, gc_tick));
-        boost::container::small_vector<vk::DeviceAddress, 128> bda_addrs;
-        bda_addrs.reserve(size_pages);
-        for (u64 i = 0; i < size_pages; ++i) {
-            vk::DeviceAddress addr = buffer.BufferDeviceAddress() + (i << CACHING_PAGEBITS);
-            bda_addrs.push_back(addr);
+        if (uses_bda_pagetable) {
+            boost::container::small_vector<vk::DeviceAddress, 128> bda_addrs;
+            bda_addrs.reserve(size_pages);
+            for (u64 i = 0; i < size_pages; ++i) {
+                vk::DeviceAddress addr = buffer.BufferDeviceAddress() + (i << CACHING_PAGEBITS);
+                bda_addrs.push_back(addr);
+            }
+            WriteDataBuffer(bda_pagetable_buffer, page_begin * sizeof(vk::DeviceAddress),
+                            bda_addrs.data(), bda_addrs.size() * sizeof(vk::DeviceAddress));
         }
-        WriteDataBuffer(bda_pagetable_buffer, page_begin * sizeof(vk::DeviceAddress),
-                        bda_addrs.data(), bda_addrs.size() * sizeof(vk::DeviceAddress));
         buffer_ranges.Add(buffer.CpuAddr(), buffer.SizeBytes(), buffer_id);
     } else {
         total_used_memory -= Common::AlignUp(size, CACHING_PAGESIZE);
         lru_cache.Free(buffer.LRUId());
-        const u64 offset = bda_pagetable_buffer.Offset(page_begin * sizeof(vk::DeviceAddress));
-        bda_pagetable_buffer.Fill(offset, size_pages * sizeof(vk::DeviceAddress), 0);
+        if (uses_bda_pagetable) {
+            const u64 offset =
+                bda_pagetable_buffer.Offset(page_begin * sizeof(vk::DeviceAddress));
+            bda_pagetable_buffer.Fill(offset, size_pages * sizeof(vk::DeviceAddress), 0);
+        }
         buffer_ranges.Subtract(buffer.CpuAddr(), buffer.SizeBytes());
     }
 }
@@ -1067,7 +1119,7 @@ void BufferCache::WriteDataBuffer(Buffer& buffer, VAddr address, const void* val
         .size = num_bytes,
     };
     vk::Buffer src_buffer = staging_buffer.Handle();
-    if (num_bytes < StagingBufferSize) {
+    if (num_bytes < staging_buffer.SizeBytes()) {
         const auto [staging, offset] = staging_buffer.Map(num_bytes);
         std::memcpy(staging, value, num_bytes);
         copy.srcOffset = offset;

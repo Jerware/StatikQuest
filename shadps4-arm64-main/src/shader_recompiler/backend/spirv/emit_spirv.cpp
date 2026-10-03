@@ -28,14 +28,19 @@ static constexpr spv::ExecutionMode GetInputPrimitiveType(AmdGpu::PrimitiveType 
         return spv::ExecutionMode::InputPoints;
     case AmdGpu::PrimitiveType::LineList:
     case AmdGpu::PrimitiveType::LineStrip:
+    case AmdGpu::PrimitiveType::LineLoop:
         return spv::ExecutionMode::InputLines;
     case AmdGpu::PrimitiveType::TriangleList:
     case AmdGpu::PrimitiveType::TriangleStrip:
+    case AmdGpu::PrimitiveType::TriangleFan:
+    case AmdGpu::PrimitiveType::Polygon:
     case AmdGpu::PrimitiveType::RectList:
         return spv::ExecutionMode::Triangles;
     case AmdGpu::PrimitiveType::AdjTriangleList:
+    case AmdGpu::PrimitiveType::AdjTriangleStrip:
         return spv::ExecutionMode::InputTrianglesAdjacency;
     case AmdGpu::PrimitiveType::AdjLineList:
+    case AmdGpu::PrimitiveType::AdjLineStrip:
         return spv::ExecutionMode::InputLinesAdjacency;
     default:
         UNREACHABLE_MSG("Unknown input primitive type {}", u32(type));
@@ -415,6 +420,12 @@ void DefineEntryPoint(const Info& info, EmitContext& ctx, Id main) {
         break;
     case LogicalStage::Geometry:
         execution_model = spv::ExecutionModel::Geometry;
+        LOG_INFO(Render_Recompiler,
+                 "Geometry shader {:#x}: fed with primitive type {}, puts out up to {} vertices as "
+                 "type {}",
+                 info.pgm_hash, u32(ctx.runtime_info.gs_info.in_primitive),
+                 ctx.runtime_info.gs_info.output_vertices,
+                 u32(ctx.runtime_info.gs_info.out_primitive[0]));
         ctx.AddExecutionMode(main, GetInputPrimitiveType(ctx.runtime_info.gs_info.in_primitive));
         ctx.AddExecutionMode(main,
                              GetOutputPrimitiveType(ctx.runtime_info.gs_info.out_primitive[0]));

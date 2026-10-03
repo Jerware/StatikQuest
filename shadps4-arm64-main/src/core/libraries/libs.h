@@ -22,6 +22,17 @@
         /* FEX reaches HLE through an x86 syscall veneer, never an ARM host address. */           \
         sym->AddFunction(sr, Core::GuestCpu::MakeHleCallAdapter(function));                        \
     }
+/* Registers a function that takes the guest register frame instead of decoded arguments. */
+#define LIB_FUNCTION_RAW(nid, lib, libversion, mod, function)                                      \
+    {                                                                                              \
+        Core::Loader::SymbolResolver sr{};                                                         \
+        sr.name = nid;                                                                             \
+        sr.library = lib;                                                                          \
+        sr.library_version = libversion;                                                           \
+        sr.module = mod;                                                                           \
+        sr.type = Core::Loader::SymbolType::Function;                                              \
+        sym->AddFunction(sr, Core::GuestCpu::MakeRawHleCallAdapter(function));                     \
+    }
 #else
 #define LIB_FUNCTION(nid, lib, libversion, mod, function)                                          \
     {                                                                                              \

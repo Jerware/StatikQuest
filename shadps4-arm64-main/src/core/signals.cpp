@@ -19,6 +19,7 @@ static constexpr DWORD MS_VC_EXCEPTION = 0x406D1388;
 #else
 #include <csignal>
 #include <pthread.h>
+#include <unistd.h>
 #ifdef ARCH_X86_64
 #include <Zydis/Formatter.h>
 #endif
@@ -100,6 +101,40 @@ static std::string DisassembleInstruction(void* code_address) {
     return buffer;
 }
 
+#ifdef SHADPS4_ENABLE_FEX_GUEST_CPU
+/// Reads a word of guest memory that may not be mapped. The kernel does the copy, so a bad
+/// address is an error return rather than a second fault inside the fault handler.
+static bool ReadGuestWord(u64 address, u64* value) {
+    static int pipe_ends[2] = {-1, -1};
+    if (pipe_ends[0] < 0 && pipe(pipe_ends) != 0) {
+        return false;
+    }
+    if (write(pipe_ends[1], reinterpret_cast<const void*>(address), sizeof(*value)) !=
+        static_cast<ssize_t>(sizeof(*value))) {
+        return false;
+    }
+    return read(pipe_ends[0], value, sizeof(*value)) == static_cast<ssize_t>(sizeof(*value));
+}
+
+/// The return addresses up the guest's call stack, found through its frame pointers.
+static std::string GuestCallers(u64 frame) {
+    std::string callers;
+    for (int depth = 0; depth < 24 && frame != 0 && (frame & 7) == 0; ++depth) {
+        u64 next = 0;
+        u64 return_address = 0;
+        if (!ReadGuestWord(frame, &next) || !ReadGuestWord(frame + 8, &return_address)) {
+            break;
+        }
+        callers += fmt::format(" {:#x}", return_address);
+        if (next <= frame) {
+            break;
+        }
+        frame = next;
+    }
+    return callers;
+}
+#endif
+
 void SignalHandler(int sig, siginfo_t* info, void* raw_context) {
     Common::ReportCrash(raw_context, sig, info);
     const auto* signals = Signals::Instance();
@@ -129,6 +164,21 @@ void SignalHandler(int sig, siginfo_t* info, void* raw_context) {
             if (::Core::Fex::BachataQueryGuestRipSyscall(&guest_rip, &guest_rax)) {
                 LOG_CRITICAL(Debug, "FEX guest state at fault: rip={:#x} rax={:#x}", guest_rip,
                              guest_rax);
+            }
+            // When the fault is inside an HLE function this tells which call it was: the first
+            // arguments, and who made it.
+            uint64_t gprs[16]{};
+            if (::Core::Fex::BachataQueryGuestRegisters(gprs)) {
+                const uint64_t rsp = gprs[4];
+                uint64_t return_address = 0;
+                if ((rsp & 7) == 0) {
+                    ReadGuestWord(rsp, &return_address);
+                }
+                LOG_CRITICAL(Debug,
+                             "FEX guest registers: rdi={:#x} rsi={:#x} rdx={:#x} rcx={:#x} "
+                             "rsp={:#x} return address={:#x}",
+                             gprs[7], gprs[6], gprs[2], gprs[1], rsp, return_address);
+                LOG_CRITICAL(Debug, "FEX guest callers:{}", GuestCallers(gprs[5]));
             }
 #endif
             UNREACHABLE_MSG("Unhandled access violation at code address {}: {} address {}",

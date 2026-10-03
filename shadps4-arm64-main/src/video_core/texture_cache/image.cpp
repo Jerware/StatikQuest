@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstring>
+#include <cstdlib>
 #include <ranges>
 #include "common/assert.h"
 #include "common/logging/log.h"
@@ -98,8 +100,10 @@ void UniqueImage::Destroy() {
     }
 }
 
-void UniqueImage::Create(const vk::ImageCreateInfo& image_ci) {
+void UniqueImage::Create(const vk::ImageCreateInfo& image_ci,
+                         std::span<const vk::Format> view_formats_) {
     this->image_ci = image_ci;
+    view_formats.assign(view_formats_.begin(), view_formats_.end());
     ASSERT(!image);
     const VmaAllocationCreateInfo alloc_info = {
         .flags = VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT,
@@ -110,7 +114,16 @@ void UniqueImage::Create(const vk::ImageCreateInfo& image_ci) {
         .pUserData = nullptr,
     };
 
-    const VkImageCreateInfo image_ci_unsafe = static_cast<VkImageCreateInfo>(image_ci);
+    VkImageCreateInfo image_ci_unsafe = static_cast<VkImageCreateInfo>(image_ci);
+    const VkImageFormatListCreateInfo format_list = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO,
+        .pNext = image_ci_unsafe.pNext,
+        .viewFormatCount = static_cast<u32>(view_formats.size()),
+        .pViewFormats = reinterpret_cast<const VkFormat*>(view_formats.data()),
+    };
+    if (!view_formats.empty()) {
+        image_ci_unsafe.pNext = &format_list;
+    }
     VkImage unsafe_image{};
     VkResult result = vmaCreateImage(allocator, &image_ci_unsafe, &alloc_info, &unsafe_image,
                                      &allocation, nullptr);
@@ -118,6 +131,71 @@ void UniqueImage::Create(const vk::ImageCreateInfo& image_ci) {
                vk::to_string(vk::Result{result}));
     image = vk::Image{unsafe_image};
 }
+
+namespace {
+
+/// The same format with the other transfer function, if there is one.
+vk::Format SrgbSibling(vk::Format format) {
+    switch (format) {
+    case vk::Format::eR8G8B8A8Unorm:
+        return vk::Format::eR8G8B8A8Srgb;
+    case vk::Format::eR8G8B8A8Srgb:
+        return vk::Format::eR8G8B8A8Unorm;
+    case vk::Format::eB8G8R8A8Unorm:
+        return vk::Format::eB8G8R8A8Srgb;
+    case vk::Format::eB8G8R8A8Srgb:
+        return vk::Format::eB8G8R8A8Unorm;
+    case vk::Format::eBc1RgbUnormBlock:
+        return vk::Format::eBc1RgbSrgbBlock;
+    case vk::Format::eBc1RgbSrgbBlock:
+        return vk::Format::eBc1RgbUnormBlock;
+    case vk::Format::eBc1RgbaUnormBlock:
+        return vk::Format::eBc1RgbaSrgbBlock;
+    case vk::Format::eBc1RgbaSrgbBlock:
+        return vk::Format::eBc1RgbaUnormBlock;
+    case vk::Format::eBc2UnormBlock:
+        return vk::Format::eBc2SrgbBlock;
+    case vk::Format::eBc2SrgbBlock:
+        return vk::Format::eBc2UnormBlock;
+    case vk::Format::eBc3UnormBlock:
+        return vk::Format::eBc3SrgbBlock;
+    case vk::Format::eBc3SrgbBlock:
+        return vk::Format::eBc3UnormBlock;
+    case vk::Format::eBc7UnormBlock:
+        return vk::Format::eBc7SrgbBlock;
+    case vk::Format::eBc7SrgbBlock:
+        return vk::Format::eBc7UnormBlock;
+    default:
+        return vk::Format::eUndefined;
+    }
+}
+
+/// The formats an image of `format` is created to be viewed in: its own and, where one exists,
+/// the one that differs in the transfer function only (titles render to one and sample the
+/// other). SHADPS4_IMAGE_FORMATS=any gives every image the freedom of any compatible format,
+/// as it was before; =own leaves the sibling out (which exercises the fallback).
+boost::container::static_vector<vk::Format, 4> ViewFormatsFor(vk::Format format, bool is_depth) {
+    static const int mode = [] {
+        const char* value = std::getenv("SHADPS4_IMAGE_FORMATS");
+        if (value == nullptr) {
+            return 0;
+        }
+        return std::strcmp(value, "any") == 0 ? 1 : std::strcmp(value, "own") == 0 ? 2 : 0;
+    }();
+    boost::container::static_vector<vk::Format, 4> formats;
+    // Depth buffers are viewed as what they are; drivers do not hold their mutability
+    // against them.
+    if (mode == 1 || is_depth) {
+        return formats;
+    }
+    formats.push_back(format);
+    if (const auto sibling = SrgbSibling(format); mode != 2 && sibling != vk::Format::eUndefined) {
+        formats.push_back(sibling);
+    }
+    return formats;
+}
+
+} // namespace
 
 Image::Image(const Vulkan::Instance& instance_, Vulkan::Scheduler& scheduler_,
              BlitHelper& blit_helper_, Common::SlotVector<ImageView>& slot_image_views_,
@@ -171,8 +249,21 @@ Image::Image(const Vulkan::Instance& instance_, Vulkan::Scheduler& scheduler_,
     supported_samples = image_format_properties.result == vk::Result::eSuccess
                             ? image_format_properties.value.imageFormatProperties.sampleCounts
                             : vk::SampleCountFlagBits::e1;
+    // Drivers have been seen to offer more samples for a format than they can render with.
+    supported_samples &= instance->GetFramebufferSampleCounts();
+    attachment_samples = supported_samples;
+    if (usage_flags & vk::ImageUsageFlagBits::eStorage) {
+        auto attachment_info = format_info;
+        attachment_info.usage = usage_flags & ~vk::ImageUsageFlagBits::eStorage;
+        const auto attachment_properties =
+            instance->GetPhysicalDevice().getImageFormatProperties2(attachment_info);
+        if (attachment_properties.result == vk::Result::eSuccess) {
+            attachment_samples = attachment_properties.value.imageFormatProperties.sampleCounts &
+                                 instance->GetFramebufferSampleCounts();
+        }
+    }
 
-    const vk::ImageCreateInfo image_ci = {
+    vk::ImageCreateInfo image_ci = {
         .flags = flags,
         .imageType = ConvertImageType(info.type),
         .format = supported_format,
@@ -183,16 +274,17 @@ Image::Image(const Vulkan::Instance& instance_, Vulkan::Scheduler& scheduler_,
         },
         .mipLevels = static_cast<u32>(info.resources.levels),
         .arrayLayers = static_cast<u32>(info.resources.layers),
-        .samples = LiverpoolToVK::NumSamples(info.num_samples, supported_samples),
+        .samples = vk::SampleCountFlagBits::e1,
         .tiling = tiling,
         .usage = usage_flags,
         .initialLayout = vk::ImageLayout::eUndefined,
     };
+    SetHostSamples(image_ci, info.num_samples);
 
     backing = &backing_images.emplace_back();
     backing->num_samples = info.num_samples;
     backing->image = UniqueImage{instance->GetDevice(), instance->GetAllocator()};
-    backing->image.Create(image_ci);
+    backing->image.Create(image_ci, ViewFormatsFor(image_ci.format, info.props.is_depth));
 
     Vulkan::SetObjectName(instance->GetDevice(), GetImage(),
                           "Image {}x{}x{} {} {} {:#x}:{:#x} L:{} M:{} S:{}", info.size.width,
@@ -203,10 +295,93 @@ Image::Image(const Vulkan::Instance& instance_, Vulkan::Scheduler& scheduler_,
 
 Image::~Image() = default;
 
+void Image::EnsureViewFormat(vk::Format format) {
+    if (backing->image.AllowsViewFormat(format)) {
+        return;
+    }
+    LOG_WARNING(Render_Vulkan,
+                "image {}x{} of format {} is to be viewed as {}: moving it to an image that "
+                "allows any format",
+                info.size.width, info.size.height, vk::to_string(backing->image.image_ci.format),
+                vk::to_string(format));
+
+    BackingImage* const old_backing = backing;
+    const auto image_ci = old_backing->image.image_ci;
+    // (A deque keeps its elements where they are when one is added at the end.)
+    BackingImage* const new_backing = &backing_images.emplace_back();
+    new_backing->num_samples = old_backing->num_samples;
+    new_backing->image = UniqueImage{instance->GetDevice(), instance->GetAllocator()};
+    new_backing->image.Create(image_ci);
+    Vulkan::SetObjectName(instance->GetDevice(), new_backing->image.image,
+                          "Image {}x{}x{} {} {:#x}:{:#x} (any format)", info.size.width,
+                          info.size.height, info.size.depth, vk::to_string(info.pixel_format),
+                          info.guest_address, info.guest_size);
+
+    // The contents move over as they are: both images have the same format.
+    scheduler->EndRendering();
+    auto barriers = GetBarriers(vk::ImageLayout::eTransferSrcOptimal,
+                                vk::AccessFlagBits2::eTransferRead,
+                                vk::PipelineStageFlagBits2::eTransfer, std::nullopt);
+    barriers.push_back(vk::ImageMemoryBarrier2{
+        .srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+        .srcAccessMask = vk::AccessFlagBits2::eNone,
+        .dstStageMask = vk::PipelineStageFlagBits2::eTransfer,
+        .dstAccessMask = vk::AccessFlagBits2::eTransferWrite,
+        .oldLayout = vk::ImageLayout::eUndefined,
+        .newLayout = vk::ImageLayout::eTransferDstOptimal,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = new_backing->image,
+        .subresourceRange{
+            .aspectMask = aspect_mask,
+            .baseMipLevel = 0,
+            .levelCount = VK_REMAINING_MIP_LEVELS,
+            .baseArrayLayer = 0,
+            .layerCount = VK_REMAINING_ARRAY_LAYERS,
+        },
+    });
+    const auto cmdbuf = scheduler->CommandBuffer();
+    cmdbuf.pipelineBarrier2(vk::DependencyInfo{
+        .imageMemoryBarrierCount = static_cast<u32>(barriers.size()),
+        .pImageMemoryBarriers = barriers.data(),
+    });
+    boost::container::small_vector<vk::ImageCopy, 14> regions;
+    for (u32 mip = 0; mip < image_ci.mipLevels; ++mip) {
+        regions.push_back(vk::ImageCopy{
+            .srcSubresource{
+                .aspectMask = aspect_mask,
+                .mipLevel = mip,
+                .baseArrayLayer = 0,
+                .layerCount = image_ci.arrayLayers,
+            },
+            .dstSubresource{
+                .aspectMask = aspect_mask,
+                .mipLevel = mip,
+                .baseArrayLayer = 0,
+                .layerCount = image_ci.arrayLayers,
+            },
+            .extent{
+                .width = std::max(image_ci.extent.width >> mip, 1u),
+                .height = std::max(image_ci.extent.height >> mip, 1u),
+                .depth = std::max(image_ci.extent.depth >> mip, 1u),
+            },
+        });
+    }
+    cmdbuf.copyImage(old_backing->image, vk::ImageLayout::eTransferSrcOptimal,
+                     new_backing->image, vk::ImageLayout::eTransferDstOptimal, regions);
+
+    new_backing->state.layout = vk::ImageLayout::eTransferDstOptimal;
+    new_backing->state.access_mask = vk::AccessFlagBits2::eTransferWrite;
+    new_backing->state.pl_stage = vk::PipelineStageFlagBits2::eTransfer;
+    old_backing->retired = true;
+    backing = new_backing;
+}
+
 ImageView& Image::FindView(const ImageViewInfo& view_info, bool ensure_guest_samples) {
     if (ensure_guest_samples && backing->num_samples > 1 != info.num_samples > 1) {
         SetBackingSamples(info.num_samples);
     }
+    EnsureViewFormat(ImageView::HostFormat(*instance, view_info, *this));
     const auto& view_infos = backing->image_view_infos;
     const auto it = std::ranges::find(view_infos, view_info);
     if (it != view_infos.end()) {
@@ -229,6 +404,25 @@ Image::Barriers Image::GetBarriers(vk::ImageLayout dst_layout, vk::AccessFlags2 
         subres_range &&
         (subres_range->base != SubresourceBase{} || subres_range->extent != info.resources);
     const bool partially_transited = !subresource_states.empty();
+
+    // A state that writes is followed by a barrier even when nothing changes, so only
+    // requests that read can be known to need nothing.
+    constexpr auto any_write_flags = vk::AccessFlagBits2::eTransferWrite |
+                                     vk::AccessFlagBits2::eShaderWrite |
+                                     vk::AccessFlagBits2::eMemoryWrite;
+    const bool settles = needs_partial_transition && !(dst_mask & any_write_flags);
+    if (settles) {
+        for (const auto& request : backing->settled) {
+            if (request.state_version == backing->state_version && request.layout == dst_layout &&
+                request.access_mask == dst_mask && request.range == *subres_range) {
+                // What the last request was is remembered here as it is further down.
+                last_state.layout = dst_layout;
+                last_state.access_mask = dst_mask;
+                last_state.pl_stage = dst_stage;
+                return {};
+            }
+        }
+    }
 
     Barriers barriers;
     if (needs_partial_transition || partially_transited) {
@@ -292,6 +486,17 @@ Image::Barriers Image::GetBarriers(vk::ImageLayout dst_layout, vk::AccessFlags2 
         if (!needs_partial_transition) {
             subresource_states.clear();
         }
+        if (!barriers.empty()) {
+            ++backing->state_version;
+        }
+        if (settles) {
+            backing->settled[backing->next_settled++ % backing->settled.size()] = {
+                .range = *subres_range,
+                .layout = dst_layout,
+                .access_mask = dst_mask,
+                .state_version = backing->state_version,
+            };
+        }
     } else { // Full resource transition
         constexpr auto write_flags = vk::AccessFlagBits2::eTransferWrite |
                                      vk::AccessFlagBits2::eShaderWrite |
@@ -301,6 +506,7 @@ Image::Barriers Image::GetBarriers(vk::ImageLayout dst_layout, vk::AccessFlags2 
             return {};
         }
 
+        ++backing->state_version;
         barriers.emplace_back(vk::ImageMemoryBarrier2{
             .srcStageMask = last_state.pl_stage,
             .srcAccessMask = last_state.access_mask,
@@ -726,12 +932,35 @@ void Image::Resolve(Image& src_image, const VideoCore::SubresourceRange& mrt0_ra
     SetBackingSamples(1, false);
     scheduler->EndRendering();
 
+    // Where the host holds what the guest multisamples with one sample a pixel, there is
+    // nothing to resolve, and a copy would leave every edge as jagged as it was drawn: the
+    // picture gets its edges smoothed on the way instead.
+    if (blit_helper->SmoothsResolves() && src_image.info.num_samples > 1 &&
+        src_image.backing->image.image_ci.samples == vk::SampleCountFlagBits::e1 &&
+        src_image.info.size == info.size && !info.props.is_depth &&
+        instance->IsFormatSupported(src_image.info.pixel_format,
+                                    vk::FormatFeatureFlagBits2::eSampledImageFilterLinear) &&
+        (src_image.usage_flags & vk::ImageUsageFlagBits::eSampled) &&
+        (usage_flags & vk::ImageUsageFlagBits::eColorAttachment)) {
+        src_image.Transit(vk::ImageLayout::eShaderReadOnlyOptimal,
+                          vk::AccessFlagBits2::eShaderRead, mrt0_range);
+        Transit(vk::ImageLayout::eColorAttachmentOptimal,
+                vk::AccessFlagBits2::eColorAttachmentWrite, mrt1_range);
+        blit_helper->SmoothInto(info.size.width, info.size.height, src_image.info.pixel_format,
+                                info.pixel_format, src_image.GetImage(), mrt0_range.base.layer,
+                                GetImage(), mrt1_range.base.layer);
+        flags |= VideoCore::ImageFlagBits::GpuModified;
+        flags &= ~VideoCore::ImageFlagBits::Dirty;
+        return;
+    }
+
     src_image.Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead,
                       mrt0_range);
     Transit(vk::ImageLayout::eTransferDstOptimal, vk::AccessFlagBits2::eTransferWrite, mrt1_range);
 
     const auto [src_layers, dst_layers] = SanitizeCopyLayers(src_image.info, info, 1);
-    if (src_image.backing->num_samples == 1) {
+    // A guest multisampled image is single sampled where the host cannot multisample it.
+    if (src_image.backing->image.image_ci.samples == vk::SampleCountFlagBits::e1) {
         const vk::ImageCopy region = {
             .srcSubresource{
                 .aspectMask = vk::ImageAspectFlagBits::eColor,
@@ -794,21 +1023,50 @@ void Image::Clear(const vk::ClearValue& clear_value, const VideoCore::Subresourc
                            vk_range);
 }
 
+void Image::SetHostSamples(vk::ImageCreateInfo& image_ci, u32 num_samples) const {
+    image_ci.usage = usage_flags;
+    image_ci.samples = LiverpoolToVK::NumSamples(num_samples, supported_samples);
+    if (num_samples == 1 || image_ci.samples != vk::SampleCountFlagBits::e1) {
+        return;
+    }
+    // Drivers without multisampled storage images, which is every mobile one, report that an
+    // image which may be bound as a storage image cannot be multisampled at all. The depth
+    // buffer and the pipeline it is used with are multisampled though, and a single sampled
+    // color target among them garbles the picture. A multisampled image could not be bound as
+    // a storage image on such a driver anyway, so that usage is what gets dropped.
+    const auto samples = LiverpoolToVK::NumSamples(num_samples, attachment_samples);
+    if (samples != vk::SampleCountFlagBits::e1) {
+        image_ci.samples = samples;
+        image_ci.usage &= ~vk::ImageUsageFlagBits::eStorage;
+    }
+}
+
 void Image::SetBackingSamples(u32 num_samples, bool copy_backing) {
     if (!backing || backing->num_samples == num_samples) {
         return;
     }
     ASSERT_MSG(!info.props.is_depth, "Swapping samples is only valid for color images");
-    BackingImage* new_backing;
-    auto it = std::ranges::find(backing_images, num_samples, &BackingImage::num_samples);
-    if (it == backing_images.end()) {
-        auto new_image_ci = backing->image.image_ci;
-        new_image_ci.samples = LiverpoolToVK::NumSamples(num_samples, supported_samples);
+    auto new_image_ci = backing->image.image_ci;
+    SetHostSamples(new_image_ci, num_samples);
+    if (new_image_ci.samples == backing->image.image_ci.samples) {
+        // A host that stops at fewer samples than the guest uses ends up with the same image for
+        // several guest sample counts. That one image serves them all: there is nothing to
+        // create and, above all, nothing to copy back and forth every time the guest goes from
+        // drawing to the image to reading it.
+        backing->num_samples = num_samples;
+        return;
+    }
 
+    BackingImage* new_backing;
+    auto it = std::ranges::find_if(backing_images, [&](const BackingImage& candidate) {
+        return !candidate.retired && candidate.image.image_ci.samples == new_image_ci.samples;
+    });
+    if (it == backing_images.end()) {
+        // What the current image allows its views goes for this one too.
+        const auto view_formats = backing->image.view_formats;
         new_backing = &backing_images.emplace_back();
-        new_backing->num_samples = num_samples;
         new_backing->image = UniqueImage{instance->GetDevice(), instance->GetAllocator()};
-        new_backing->image.Create(new_image_ci);
+        new_backing->image.Create(new_image_ci, view_formats);
 
         Vulkan::SetObjectName(instance->GetDevice(), new_backing->image.image,
                               "Image {}x{}x{} {} {} {:#x}:{:#x} L:{} M:{} S:{} (backing)",
@@ -819,6 +1077,7 @@ void Image::SetBackingSamples(u32 num_samples, bool copy_backing) {
     } else {
         new_backing = std::addressof(*it);
     }
+    new_backing->num_samples = num_samples;
 
     if (copy_backing) {
         scheduler->EndRendering();
@@ -857,10 +1116,12 @@ void Image::SetBackingSamples(u32 num_samples, bool copy_backing) {
             .pImageMemoryBarriers = barriers.data(),
         });
 
-        // Copy between ms and non ms backing images
+        // Copy between ms and non ms backing images. What counts is what the host images are:
+        // both are single sampled where the host cannot multisample this format.
         blit_helper->CopyBetweenMsImages(
-            info.size.width, info.size.height, new_backing->num_samples, info.pixel_format,
-            backing->num_samples > 1, backing->image, new_backing->image);
+            info.size.width, info.size.height, new_backing->image.image_ci.samples,
+            info.pixel_format, backing->image.image_ci.samples != vk::SampleCountFlagBits::e1,
+            backing->image, new_backing->image);
 
         // Update current layout in tracker to new backings layout
         new_backing->state.layout = dst_layout;

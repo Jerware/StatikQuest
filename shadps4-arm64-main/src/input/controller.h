@@ -135,7 +135,14 @@ public:
 
 private:
     void PushState();
+    void ApplyTouch(int touchIndex, bool touchDown, float x, float y);
+    /// Lets the right stick stand in for a finger on the touchpad (see controller.cpp).
+    void UpdateStickTouch();
 
+    bool m_finger_down = false;
+    bool m_stick_touch = false;
+    float m_stick_touch_x = 0.5f;
+    float m_stick_touch_y = 0.5f;
     bool m_connected = false;
     int m_connected_count = 0;
     u8 m_touch_count = 0;

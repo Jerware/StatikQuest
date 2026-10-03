@@ -1,6 +1,12 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+#include <bit>
+#include <cstdlib>
+#ifdef ENABLE_BACHATA_RUNTIME
+#include <unistd.h>
+#endif
 #include <boost/container/static_vector.hpp>
 #include <fmt/format.h>
 #include <fmt/ranges.h>
@@ -8,6 +14,9 @@
 #include "common/assert.h"
 #include "common/debug.h"
 #include "common/types.h"
+#ifdef ENABLE_OPENXR_HOST
+#include "core/vr/openxr_host.h"
+#endif
 #include "imgui/renderer/imgui_core.h"
 #include "sdl_window.h"
 #include "video_core/renderer_vulkan/legacy_vertex_attributes.h"
@@ -106,6 +115,25 @@ Instance::Instance(Frontend::WindowSDL& window, s32 physical_device_index,
     ASSERT_MSG(num_physical_devices > 0, "No physical devices found");
     LOG_INFO(Render_Vulkan, "Found {} physical devices", num_physical_devices);
 
+#ifdef ENABLE_OPENXR_HOST
+    // A headset of the machine's own is driven from one graphics card, and takes pictures from
+    // nowhere else.
+    if (const vk::PhysicalDevice headset_device =
+            Core::Vr::OpenXrHost::Instance().PreferredPhysicalDevice(*instance)) {
+        const auto it = std::ranges::find(physical_devices, headset_device);
+        if (it != physical_devices.end()) {
+            const s32 index = static_cast<s32>(std::distance(physical_devices.begin(), it));
+            if (physical_device_index >= 0 && physical_device_index != index) {
+                LOG_WARNING(Render_Vulkan,
+                            "The headset is driven by graphics card {}, which is used instead "
+                            "of the configured {}",
+                            index, physical_device_index);
+            }
+            physical_device_index = index;
+        }
+    }
+#endif
+
     if (physical_device_index < 0) {
         std::vector<
             std::tuple<size_t, vk::PhysicalDeviceProperties2, vk::PhysicalDeviceMemoryProperties>>
@@ -157,6 +185,12 @@ Instance::Instance(Frontend::WindowSDL& window, s32 physical_device_index,
     available_extensions = GetSupportedExtensions(physical_device);
     format_properties = GetFormatProperties(physical_device);
     properties = physical_device.getProperties();
+    // Multisampling is what costs a mobile GPU the most; this trades edge quality for speed.
+    if (const char* max_msaa = std::getenv("SHADPS4_MAX_MSAA")) {
+        const u32 max_samples = std::clamp(static_cast<u32>(std::atoi(max_msaa)), 1u, 64u);
+        sample_count_cap = vk::SampleCountFlags{std::bit_floor(max_samples) * 2 - 1};
+        LOG_INFO(Render_Vulkan, "Multisampling limited to {} samples", std::bit_floor(max_samples));
+    }
     memory_properties = physical_device.getMemoryProperties();
     CollectDeviceParameters();
     ASSERT_MSG(properties.apiVersion >= TargetVulkanApiVersion,
@@ -231,7 +265,13 @@ bool Instance::CreateDevice() {
         return false;
     }
 
-    boost::container::static_vector<const char*, 32> enabled_extensions;
+#ifdef ENABLE_OPENXR_HOST
+    // What the runtime of the machine's own headset wants of a device it is handed pictures
+    // by. (The names have to outlive the making of the device.)
+    const std::vector<std::string> headset_extensions =
+        Core::Vr::OpenXrHost::Instance().VulkanDeviceExtensions();
+#endif
+    boost::container::static_vector<const char*, 96> enabled_extensions;
     const auto add_extension = [&](std::string_view extension) -> bool {
         const auto result =
             std::find_if(available_extensions.begin(), available_extensions.end(),
@@ -320,8 +360,14 @@ bool Instance::CreateDevice() {
     image_load_store_lod = add_extension(VK_AMD_SHADER_IMAGE_LOAD_STORE_LOD_EXTENSION_NAME);
     amd_gcn_shader = add_extension(VK_AMD_GCN_SHADER_EXTENSION_NAME);
     amd_shader_trinary_minmax = add_extension(VK_AMD_SHADER_TRINARY_MINMAX_EXTENSION_NAME);
-    nv_framebuffer_mixed_samples = add_extension(VK_NV_FRAMEBUFFER_MIXED_SAMPLES_EXTENSION_NAME);
-    amd_mixed_attachment_samples = add_extension(VK_AMD_MIXED_ATTACHMENT_SAMPLES_EXTENSION_NAME);
+    // Mobile GPUs have neither extension. SHADPS4_NO_MIXED_SAMPLES forces the same fallback on
+    // a desktop GPU so that path can be exercised without the device.
+    if (std::getenv("SHADPS4_NO_MIXED_SAMPLES") == nullptr) {
+        nv_framebuffer_mixed_samples =
+            add_extension(VK_NV_FRAMEBUFFER_MIXED_SAMPLES_EXTENSION_NAME);
+        amd_mixed_attachment_samples =
+            add_extension(VK_AMD_MIXED_ATTACHMENT_SAMPLES_EXTENSION_NAME);
+    }
     shader_atomic_float = add_extension(VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME);
     shader_atomic_float2 = add_extension(VK_EXT_SHADER_ATOMIC_FLOAT_2_EXTENSION_NAME);
     if (shader_atomic_float2) {
@@ -356,6 +402,16 @@ bool Instance::CreateDevice() {
                  image_2d_view_of_3d_features.sampler2DViewOf3D);
     }
     supports_memory_budget = add_extension(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+    external_memory_dma_buf = add_extension(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME) &&
+                              add_extension(VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME);
+#ifdef ENABLE_OPENXR_HOST
+    for (const std::string& name : headset_extensions) {
+        if (std::ranges::none_of(enabled_extensions,
+                                 [&](const char* enabled) { return name == enabled; })) {
+            add_extension(name);
+        }
+    }
+#endif
     const bool calibrated_timestamps =
         TRACY_GPU_ENABLED ? add_extension(VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME) : false;
 
@@ -694,6 +750,11 @@ void Instance::CreateAllocator() {
         .flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT,
         .physicalDevice = physical_device,
         .device = *device,
+#ifdef ENABLE_BACHATA_RUNTIME
+        // The default block is a quarter of a gigabyte, which the kernel drivers of phones and
+        // headsets back with real pages whether anything has been placed in it or not.
+        .preferredLargeHeapBlockSize = 32ULL << 20,
+#endif
         .pVulkanFunctions = &functions,
         .instance = *instance,
         .vulkanApiVersion = TargetVulkanApiVersion,
@@ -771,6 +832,17 @@ void Instance::CollectPhysicalMemoryInfo() {
     const s64 available_memory = static_cast<s64>(total_memory_budget - device_initial_usage);
     total_memory_budget =
         static_cast<u64>(std::max<s64>(available_memory - 8_GB, static_cast<s64>(local_memory)));
+#ifdef ENABLE_BACHATA_RUNTIME
+    // A phone or headset: the "heap" the driver reports is most of the system's memory, which
+    // the guest's own memory, the system and everything else running have to fit into as well.
+    // A quarter of what the machine has is what the GPU caches may plan with.
+    const s64 pages = sysconf(_SC_PHYS_PAGES);
+    const s64 page_size = sysconf(_SC_PAGESIZE);
+    if (pages > 0 && page_size > 0) {
+        total_memory_budget =
+            std::min<u64>(total_memory_budget, static_cast<u64>(pages) * page_size / 4);
+    }
+#endif
 }
 
 void Instance::CollectImageFormatInfo() {

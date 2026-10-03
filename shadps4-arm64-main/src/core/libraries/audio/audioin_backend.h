@@ -28,4 +28,10 @@ public:
     std::unique_ptr<PortInBackend> Open(PortIn& port) override;
 };
 
+/// The microphone of the device the host app runs on, see bachata_audio_in.cpp.
+class BachataAudioIn final : public AudioInBackend {
+public:
+    std::unique_ptr<PortInBackend> Open(PortIn& port) override;
+};
+
 } // namespace Libraries::AudioIn

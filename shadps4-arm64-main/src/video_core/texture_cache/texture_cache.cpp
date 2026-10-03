@@ -113,6 +113,14 @@ TextureCache::TextureCache(const Vulkan::Instance& instance_, Vulkan::Scheduler&
     }
 
     const s64 device_local_memory = static_cast<s64>(instance.GetTotalMemoryBudget());
+#ifdef ENABLE_BACHATA_RUNTIME
+    // GPU memory is system memory here and the budget is small: start dropping images that have
+    // not been used for a while long before the desktop thresholds, which exceed the budget.
+    pressure_gc_memory = static_cast<u64>(device_local_memory * 4 / 10);
+    critical_gc_memory = static_cast<u64>(device_local_memory * 6 / 10);
+    trigger_gc_memory = 0;
+    return;
+#endif
     const s64 min_spacing_expected = device_local_memory - 1_GB;
     const s64 min_spacing_critical = device_local_memory - 512_MB;
     const s64 mem_threshold = std::min<s64>(device_local_memory, TARGET_GC_THRESHOLD);
@@ -342,9 +350,9 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, Bindi
             new_image.Transit(vk::ImageLayout::eDepthAttachmentOptimal,
                               vk::AccessFlagBits2::eDepthStencilAttachmentWrite, {});
             blit_helper.ReinterpretColorAsMsDepth(
-                new_info.size.width, new_info.size.height, new_info.num_samples,
-                cache_image.info.pixel_format, new_info.pixel_format, cache_image.GetImage(),
-                new_image.GetImage());
+                new_info.size.width, new_info.size.height,
+                new_image.backing->image.image_ci.samples, cache_image.info.pixel_format,
+                new_info.pixel_format, cache_image.GetImage(), new_image.GetImage());
         } else {
             LOG_WARNING(Render_Vulkan, "Unimplemented depth overlap copy");
         }
@@ -666,6 +674,30 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
     }
 
     std::scoped_lock lock{mutex};
+    Vulkan::FrameStats::Add(Vulkan::FrameStats::Counter::ImageLookups);
+
+    auto& found = found_images[((info.guest_address >> 6) ^ (info.guest_address >> 17) ^
+                                static_cast<u64>(info.pixel_format)) %
+                               found_images.size()];
+    if (found.registrations == registrations && found.guest_address == info.guest_address &&
+        found.guest_size == info.guest_size && found.size == info.size &&
+        found.resources == info.resources && found.pixel_format == info.pixel_format &&
+        found.type == info.type && found.exact_fmt == exact_fmt) {
+        // The image may have changed since; what made it the answer is checked again.
+        Image& image = slot_images[found.image_id];
+        if (image.info.guest_address == info.guest_address &&
+            image.info.guest_size == info.guest_size && image.info.size == info.size &&
+            IsVulkanFormatCompatible(image.info.pixel_format, info.pixel_format) &&
+            IsViewTypeCompatible(info.type, image.info.type) &&
+            (!exact_fmt || info.pixel_format == image.info.pixel_format) &&
+            !(image.info.resources < info.resources)) {
+            image.tick_accessed_last = scheduler.CurrentTick();
+            TouchImage(image);
+            Vulkan::FrameStats::Add(Vulkan::FrameStats::Counter::ImageLookupsShort);
+            return found.image_id;
+        }
+    }
+
     ImageIds image_ids;
     ForEachImageInRegion(info.guest_address, info.guest_size,
                          [&](ImageId image_id, Image& image) { image_ids.push_back(image_id); });
@@ -693,6 +725,8 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
         }
         image_id = cache_id;
     }
+
+    const ImageId perfect_match = image_id;
 
     // Try to resolve overlaps (if any)
     int view_mip{-1};
@@ -734,6 +768,20 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
     Image& image = slot_images[image_id];
     image.tick_accessed_last = scheduler.CurrentTick();
     TouchImage(image);
+
+    if (perfect_match && image_id == perfect_match) {
+        found = {
+            .guest_address = info.guest_address,
+            .guest_size = info.guest_size,
+            .size = info.size,
+            .resources = info.resources,
+            .pixel_format = info.pixel_format,
+            .type = info.type,
+            .exact_fmt = exact_fmt,
+            .image_id = image_id,
+            .registrations = registrations,
+        };
+    }
 
     // If the image requested is a subresource of the image from cache record its location.
     if (view_mip > 0) {
@@ -851,7 +899,12 @@ ImageView& TextureCache::FindDepthTarget(ImageId image_id, const ImageDesc& desc
         stencil_image.AssociateDepth(image_id, image.image_uid);
     }
 
-    return image.FindView(desc.view_info, false);
+    // The description says whether depth is written, which makes no difference to the view (a
+    // depth buffer is never a storage image). Draws with and without depth writes get the same
+    // one, and with it the same render pass.
+    auto view_info = desc.view_info;
+    view_info.is_storage = true;
+    return image.FindView(view_info, false);
 }
 
 void TextureCache::RefreshImage(Image& image) {
@@ -977,6 +1030,8 @@ void TextureCache::RegisterImage(ImageId image_id) {
     ASSERT_MSG(False(image.flags & ImageFlagBits::Registered),
                "Trying to register an already registered image");
     image.flags |= ImageFlagBits::Registered;
+    ++registrations;
+    Vulkan::FrameStats::Add(Vulkan::FrameStats::Counter::ImageRegistrations);
     total_used_memory += Common::AlignUp(image.info.guest_size, 1024);
     image.lru_id = lru_cache.Insert(image_id, gc_tick);
     ForEachPage(image.info.guest_address, image.info.guest_size,
@@ -988,6 +1043,8 @@ void TextureCache::UnregisterImage(ImageId image_id) {
     ASSERT_MSG(True(image.flags & ImageFlagBits::Registered),
                "Trying to unregister an already unregistered image");
     image.flags &= ~ImageFlagBits::Registered;
+    ++registrations;
+    Vulkan::FrameStats::Add(Vulkan::FrameStats::Counter::ImageRegistrations);
     lru_cache.Free(image.lru_id);
     total_used_memory -= Common::AlignUp(image.info.guest_size, 1024);
     ForEachPage(image.info.guest_address, image.info.guest_size, [this, image_id](u64 page) {

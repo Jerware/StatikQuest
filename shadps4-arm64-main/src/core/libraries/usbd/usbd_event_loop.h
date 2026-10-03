@@ -6,7 +6,9 @@
 #include <chrono>
 #include <thread>
 
-#if !defined(_WIN32)
+#if defined(_WIN32)
+#include <winsock2.h> // timeval
+#else
 #include <unistd.h>
 #endif
 

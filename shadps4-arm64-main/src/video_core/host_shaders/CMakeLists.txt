@@ -17,6 +17,7 @@ set(SHADER_FILES
     fs_tri.vert
     fsr.comp
     post_process.frag
+    resolve_aa.frag
     tiling.comp
 )
 

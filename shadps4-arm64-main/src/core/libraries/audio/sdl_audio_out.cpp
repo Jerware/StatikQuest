@@ -3,8 +3,10 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <thread>
 #include <SDL3/SDL_audio.h>
 #include <SDL3/SDL_hints.h>
@@ -13,7 +15,12 @@
 #include "core/emulator_settings.h"
 #include "core/libraries/audio/audioout.h"
 #include "core/libraries/audio/audioout_backend.h"
+#include "core/libraries/audio/surround_virtualizer.h"
 #include "core/libraries/kernel/threads.h"
+#include "core/vr/vr_runtime.h"
+#ifdef ENABLE_OPENXR_HOST
+#include "core/vr/openxr_host.h"
+#endif
 
 // SIMD support detection
 #if defined(__x86_64__) || defined(_M_X64)
@@ -62,6 +69,15 @@ public:
           buffer_frames(port.buffer_frames), sample_rate(port.sample_rate),
           num_channels(port.format_info.num_channels), is_float(port.format_info.is_float),
           is_std(port.format_info.is_std), channel_layout(port.format_info.channel_layout) {
+        // With a headset on, what plays the sound is a pair of speakers at the ears: surround
+        // sound is rendered for that (a title mixes it for where the head points) instead of
+        // being folded down to left and right. SHADPS4_VIRTUAL_SURROUND=0 turns it off.
+        const char* surround = std::getenv("SHADPS4_VIRTUAL_SURROUND");
+        if (num_channels == 8 && Core::Vr::Runtime::Instance().IsHeadsetConnected() &&
+            (surround == nullptr || surround[0] != '0')) {
+            virtualizer.emplace(channel_layout, sample_rate);
+            output_channels = 2;
+        }
 
         if (!Initialize(port.type)) {
             LOG_ERROR(Lib_AudioOut, "Failed to initialize SDL audio backend");
@@ -83,7 +99,16 @@ public:
 
         UpdateVolumeIfChanged();
         const u64 current_time = Kernel::sceKernelGetProcessTime();
-        convert(ptr, internal_buffer, buffer_frames, nullptr);
+        if (virtualizer) {
+            auto* const stereo = static_cast<float*>(internal_buffer);
+            if (is_float) {
+                virtualizer->Process(static_cast<const float*>(ptr), buffer_frames, stereo);
+            } else {
+                virtualizer->Process(static_cast<const s16*>(ptr), buffer_frames, stereo);
+            }
+        } else {
+            convert(ptr, internal_buffer, buffer_frames, nullptr);
+        }
         HandleTiming(current_time);
 
         if ((output_count++ & 0xF) == 0) { // Check every 16 outputs
@@ -139,7 +164,7 @@ private:
         period_us = (1000000ULL * buffer_frames + sample_rate / 2) / sample_rate;
 
         // Allocate aligned internal buffer for SIMD operations
-        internal_buffer_size = buffer_frames * sizeof(float) * num_channels;
+        internal_buffer_size = buffer_frames * sizeof(float) * output_channels;
 
 #ifdef _WIN32
         internal_buffer = _aligned_malloc(internal_buffer_size, AUDIO_BUFFER_ALIGNMENT);
@@ -257,7 +282,7 @@ private:
     bool OpenDevice(OrbisAudioOutPort type) {
         const SDL_AudioSpec fmt = {
             .format = SDL_AUDIO_F32LE,
-            .channels = static_cast<u8>(num_channels),
+            .channels = static_cast<u8>(output_channels),
             .freq = static_cast<int>(sample_rate),
         };
 
@@ -297,8 +322,10 @@ private:
             return false;
         }
 
-        LOG_INFO(Lib_AudioOut, "Opened audio device: {} ({} Hz, {} ch, gain: {:.3f})", device_name,
-                 sample_rate, num_channels, initial_gain);
+        LOG_INFO(Lib_AudioOut,
+                 "Opened audio device: {} ({} Hz, {} ch{}, gain: {:.3f})", device_name,
+                 sample_rate, num_channels,
+                 virtualizer ? " rendered for two speakers at the ears" : "", initial_gain);
         return true;
     }
 
@@ -343,7 +370,8 @@ private:
     }
 
     bool ConfigureChannelMap() {
-        if (num_channels == 0) {
+        if (num_channels == 0 || virtualizer) {
+            // (Left and right, as they come out of the surround stage.)
             return true;
         }
 
@@ -365,15 +393,30 @@ private:
     }
 
     std::string GetDeviceName(OrbisAudioOutPort type) const {
+        std::string name;
         switch (type) {
         case OrbisAudioOutPort::Main:
         case OrbisAudioOutPort::Bgm:
-            return EmulatorSettings.GetSDLMainOutputDevice();
+            name = EmulatorSettings.GetSDLMainOutputDevice();
+            break;
         case OrbisAudioOutPort::PadSpk:
-            return EmulatorSettings.GetSDLPadSpkOutputDevice();
+            name = EmulatorSettings.GetSDLPadSpkOutputDevice();
+            break;
         default:
-            return EmulatorSettings.GetSDLMainOutputDevice();
+            name = EmulatorSettings.GetSDLMainOutputDevice();
+            break;
         }
+#ifdef ENABLE_OPENXR_HOST
+        // Left to the system, the sound goes where the headset of this machine plays it, if
+        // its runtime names a device for that (one that streams to a headset has its own).
+        if (name.empty() || name == "Default Device") {
+            if (const std::string headset = Core::Vr::OpenXrHost::Instance().AudioOutputName();
+                !headset.empty()) {
+                return headset;
+            }
+        }
+#endif
+        return name;
     }
 
     bool SelectConverter() {
@@ -433,8 +476,12 @@ private:
             LOG_WARNING(Lib_AudioOut, "Failed to get SDL buffer size: {}", SDL_GetError());
         }
 
-        const u32 sdl_buffer_size = sdl_buffer_frames * sizeof(float) * num_channels;
-        queue_threshold = std::max(guest_buffer_size, sdl_buffer_size) * QUEUE_MULTIPLIER;
+        // What is queued is what comes out of the conversion: as many channels as go out.
+        const u32 sdl_buffer_size = sdl_buffer_frames * sizeof(float) * output_channels;
+        queue_threshold =
+            std::max(buffer_frames * static_cast<u32>(sizeof(float)) * output_channels,
+                     sdl_buffer_size) *
+            QUEUE_MULTIPLIER;
 
         LOG_DEBUG(Lib_AudioOut, "Audio queue threshold: {} bytes (SDL buffer: {} frames)",
                   queue_threshold, sdl_buffer_frames);
@@ -571,6 +618,10 @@ private:
     const bool is_float;
     const bool is_std;
     const std::array<int, 8> channel_layout;
+    /// Channels handed to the device: the port's own, or two where surround sound is
+    /// rendered for a pair of speakers at the ears.
+    u32 output_channels{num_channels};
+    std::optional<SurroundVirtualizer> virtualizer;
 
     alignas(64) u64 period_us{0};
     alignas(64) std::atomic<u64> last_output_time{0};

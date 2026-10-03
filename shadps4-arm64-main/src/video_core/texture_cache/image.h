@@ -3,6 +3,10 @@
 
 #pragma once
 
+#include <algorithm>
+
+#include <span>
+
 #include "common/enum.h"
 #include "common/incremental_id.h"
 #include "common/types.h"
@@ -49,16 +53,28 @@ struct UniqueImage {
     UniqueImage(UniqueImage&& other)
         : allocator{std::exchange(other.allocator, VK_NULL_HANDLE)},
           allocation{std::exchange(other.allocation, VK_NULL_HANDLE)},
-          image{std::exchange(other.image, VK_NULL_HANDLE)}, image_ci{std::move(other.image_ci)} {}
+          image{std::exchange(other.image, VK_NULL_HANDLE)}, image_ci{std::move(other.image_ci)},
+          view_formats{std::move(other.view_formats)} {}
     UniqueImage& operator=(UniqueImage&& other) {
         image = std::exchange(other.image, VK_NULL_HANDLE);
         allocator = std::exchange(other.allocator, VK_NULL_HANDLE);
         allocation = std::exchange(other.allocation, VK_NULL_HANDLE);
         image_ci = std::move(other.image_ci);
+        view_formats = std::move(other.view_formats);
         return *this;
     }
 
-    void Create(const vk::ImageCreateInfo& image_ci);
+    /// `view_formats` names the formats views of the image will have. Without it a mutable
+    /// image may be viewed in any compatible format, and a driver has to store it in a way
+    /// that allows that: on Adreno that means neither compressed nor tiled, which costs
+    /// memory bandwidth every time the image is drawn to or sampled.
+    void Create(const vk::ImageCreateInfo& image_ci, std::span<const vk::Format> view_formats = {});
+
+    /// Whether a view of this image may have `format`.
+    bool AllowsViewFormat(vk::Format format) const {
+        return view_formats.empty() ||
+               std::ranges::find(view_formats, format) != view_formats.end();
+    }
 
     void Destroy();
 
@@ -76,6 +92,8 @@ public:
     VmaAllocation allocation{};
     vk::Image image{};
     vk::ImageCreateInfo image_ci{};
+    /// Empty when views may have any compatible format.
+    boost::container::static_vector<vk::Format, 4> view_formats;
 };
 
 constexpr Common::SlotId NULL_IMAGE_ID{0};
@@ -142,7 +160,16 @@ struct Image {
                  const VideoCore::SubresourceRange& mrt1_range);
     void Clear(const vk::ClearValue& clear_value, const VideoCore::SubresourceRange& range);
 
+    /// Makes sure a view of the image can have `format`. Images are created for the formats
+    /// titles usually view them in; one that asks for another gets the image moved to one
+    /// that allows any.
+    void EnsureViewFormat(vk::Format format);
+
     void SetBackingSamples(u32 num_samples, bool copy_backing = true);
+
+    /// Sets the sample count, and the usage that goes with it, of a backing image the guest sees
+    /// as having `num_samples` samples.
+    void SetHostSamples(vk::ImageCreateInfo& image_ci, u32 num_samples) const;
 
 public:
     const Vulkan::Instance* instance;
@@ -152,6 +179,8 @@ public:
     ImageInfo info;
     vk::ImageAspectFlags aspect_mask = vk::ImageAspectFlagBits::eColor;
     vk::SampleCountFlags supported_samples = vk::SampleCountFlagBits::e1;
+    /// Sample counts available when the image gives up being usable as a storage image.
+    vk::SampleCountFlags attachment_samples = vk::SampleCountFlagBits::e1;
     ImageFlagBits flags = ImageFlagBits::Dirty;
     VAddr track_addr = 0;
     VAddr track_addr_end = 0;
@@ -172,7 +201,24 @@ public:
         std::vector<State> subresource_states;
         boost::container::small_vector<ImageViewInfo, 4> image_view_infos;
         boost::container::small_vector<ImageViewId, 4> image_view_ids;
+        /// Requests for part of the image that found, or left, that part in the state asked
+        /// for. They stay true until some state changes (`state_version` counts those): a
+        /// draw asks for the same thing as the one before it far more often than not, and
+        /// going through every layer and mip level of the request to find nothing to do is
+        /// what made binding a texture expensive.
+        struct SettledRequest {
+            SubresourceRange range;
+            vk::ImageLayout layout;
+            vk::AccessFlags2 access_mask;
+            u64 state_version;
+        };
+        std::array<SettledRequest, 4> settled{};
+        u32 next_settled{};
+        u64 state_version{1};
         u32 num_samples;
+        /// Replaced by another image that holds the contents now; only kept because views of
+        /// it may still be in use.
+        bool retired{};
     };
     std::deque<BackingImage> backing_images;
     BackingImage* backing{};

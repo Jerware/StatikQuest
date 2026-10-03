@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
 #include <mutex>
 #include <queue>
 #include <vector>
@@ -121,6 +122,13 @@ int PS4_SYSV_ABI sceUserServiceGetDiscPlayerFlag() {
 
 std::queue<OrbisUserServiceEvent> user_service_event_queue = {};
 static std::mutex g_event_mutex;
+// Whether the title has started the service. Until it has, it is told of no event: a title may
+// look for events on one thread from the moment it starts (Astro Bot does) and, on the thread
+// that starts the service, throw away what is waiting right after starting it, to take who is
+// logged in from the list instead. Handed the login of the first player before that, it hears
+// of them twice; Astro Bot then takes them for a player who left and came back, does not read
+// their save and starts the adventure over.
+static std::atomic<bool> g_service_started{false};
 static OrbisUserServiceEventCallback g_event_callback = nullptr;
 static OrbisUserServiceEvent* g_guest_event_slot = nullptr;
 
@@ -186,6 +194,9 @@ void AddUserServiceEvent(const OrbisUserServiceEvent e) {
 
 s32 PS4_SYSV_ABI sceUserServiceGetEvent(OrbisUserServiceEvent* event) {
     LOG_TRACE(Lib_UserService, "called");
+    if (!g_service_started.load(std::memory_order_relaxed)) {
+        return ORBIS_USER_SERVICE_ERROR_NOT_INITIALIZED;
+    }
 
     OrbisUserServiceEvent temp{};
     {
@@ -1235,11 +1246,13 @@ int PS4_SYSV_ABI sceUserServiceGetVolumeForSidetone() {
 
 s32 PS4_SYSV_ABI sceUserServiceInitialize(const OrbisUserServiceInitializeParams* initParams) {
     LOG_WARNING(Lib_UserService, "(dummy) called");
+    g_service_started.store(true, std::memory_order_relaxed);
     return ORBIS_OK;
 }
 
 int PS4_SYSV_ABI sceUserServiceInitialize2() {
     LOG_ERROR(Lib_UserService, "(STUBBED) called");
+    g_service_started.store(true, std::memory_order_relaxed);
     return ORBIS_OK;
 }
 

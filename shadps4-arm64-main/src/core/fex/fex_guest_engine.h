@@ -72,6 +72,9 @@ bool DeliverGuestOrbisSignal(int orbis_sig, siginfo_t* info, void* rawContext,
 // FEX thread is active on the current host thread. Designed for use inside a SIGSYS
 // signal handler — touches only thread-local pointer state and frame registers.
 bool BachataQueryGuestRipSyscall(uint64_t* out_rip, uint64_t* out_syscall) noexcept;
+/// Copies the 16 general purpose registers of the guest thread running on this host thread, as
+/// they were at its last HLE/JIT boundary and in x86 encoding order. Async-signal-safe.
+bool BachataQueryGuestRegisters(uint64_t* out_gprs) noexcept;
 
 // Deliver any Orbis guest signal queued by DeliverGuestOrbisSignal for the
 // current thread, running its handler via nested HandleCallback at this safe HLE

@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <array>
+#include <cstring>
+#include <memory>
 #include "common/assert.h"
 #include "core/libraries/kernel/process.h"
 #include "core/libraries/videoout/buffer.h"
@@ -117,7 +120,45 @@ ImageInfo::ImageInfo(const AmdGpu::DepthBuffer& buffer, u32 num_slices, VAddr ht
     }
 }
 
+namespace {
+
+/// What a texture descriptor was worked out to describe. Every draw describes each of its
+/// textures anew, and the layout of all mip levels in guest memory is part of the answer:
+/// the same few hundred descriptors, thousands of times a frame.
+struct DescribedTexture {
+    std::array<u64, 4> sharp{};
+    u32 traits{};
+    bool valid{};
+    ImageInfo info;
+};
+
+constexpr size_t NumDescribedTextures = 1024;
+
+std::array<DescribedTexture, NumDescribedTextures>& DescribedTextures() {
+    static thread_local std::unique_ptr<std::array<DescribedTexture, NumDescribedTextures>>
+        entries;
+    if (!entries) {
+        entries = std::make_unique<std::array<DescribedTexture, NumDescribedTextures>>();
+    }
+    return *entries;
+}
+
+} // namespace
+
 ImageInfo::ImageInfo(const AmdGpu::Image& image, const Shader::ImageResource& desc) noexcept {
+    static_assert(sizeof(AmdGpu::Image) == sizeof(std::array<u64, 4>));
+    std::array<u64, 4> sharp;
+    std::memcpy(sharp.data(), &image, sizeof(sharp));
+    // Everything else the result depends on.
+    const u32 traits = (desc.is_depth ? 1u : 0u) | (desc.Is1DHostedAs2D(image) ? 2u : 0u);
+    const u64 hash = (sharp[0] * 0x9E3779B97F4A7C15ULL) ^ (sharp[1] * 0xC2B2AE3D27D4EB4FULL) ^
+                     (sharp[2] * 0x165667B19E3779F9ULL) ^ (sharp[3] + traits);
+    auto& entry = DescribedTextures()[(hash ^ (hash >> 29)) % NumDescribedTextures];
+    if (entry.valid && entry.sharp == sharp && entry.traits == traits) {
+        *this = entry.info;
+        return;
+    }
+
     tile_mode = image.GetTileMode();
     array_mode = AmdGpu::GetArrayMode(tile_mode);
     pixel_format = LiverpoolToVK::SurfaceFormat(image.GetDataFmt(), image.GetNumberFmt());
@@ -144,6 +185,11 @@ ImageInfo::ImageInfo(const AmdGpu::Image& image, const Shader::ImageResource& de
 
     alt_tile = Libraries::Kernel::sceKernelIsNeoMode() && image.alt_tile_mode;
     UpdateSize();
+
+    entry.sharp = sharp;
+    entry.traits = traits;
+    entry.info = *this;
+    entry.valid = true;
 }
 
 bool ImageInfo::IsCompatible(const ImageInfo& info) const {

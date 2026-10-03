@@ -177,6 +177,10 @@ public:
     GuestFunctionResult RunGuestFunction(VAddr entry, std::span<const u64> arguments = {},
                                          VAddr stack_top = 0);
     GuestFunctionResult RunGuestMain(EntryParams* params);
+    /// Makes an emulator function that no module imports callable from guest code. Returns the
+    /// guest address to call or return to, or 0 on failure.
+    VAddr AllocateHleVeneer(std::shared_ptr<GuestCpu::HleCallAdapter> adapter,
+                            std::string_view name);
 #endif
 
 private:

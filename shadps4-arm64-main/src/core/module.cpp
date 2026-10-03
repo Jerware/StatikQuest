@@ -15,6 +15,7 @@
 #include "core/loader/dwarf.h"
 #include "core/memory.h"
 #include "core/linker.h"
+#include "core/known_title.h"
 #include "core/module.h"
 #include "core/tls.h"
 
@@ -273,6 +274,7 @@ void Module::LoadModuleToMemory(u32& max_tls_index) {
             MemoryPatcher::g_eboot_address = base_virtual_addr;
             MemoryPatcher::g_eboot_image_size = base_size;
             MemoryPatcher::OnGameLoaded();
+            Core::KnownTitle::OnGameLoaded(base_virtual_addr, base_size);
         }
     }
 }

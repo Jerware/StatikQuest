@@ -259,6 +259,15 @@ public:
       FEXCore::Config::Load();
       FEXCore::Config::Set(FEXCore::Config::CONFIG_IS64BIT_MODE, "1");
       FEXCore::Config::Set(FEXCore::Config::CONFIG_DISABLETELEMETRY, "1");
+      // x86 promises an order of memory writes between threads that ARM does not. FEX keeps the
+      // promise by making every guest memory access a little slower. SHADPS4_FEX_TSO=0 gives it
+      // up for speed: most code never relies on it, the code that does breaks in rare and
+      // unrepeatable ways, so this is for trying out, not a default. (Astro Bot Rescue Mission
+      // relies on it: without it the game stops within half a minute.)
+      if (const char* tso = std::getenv("SHADPS4_FEX_TSO"); tso != nullptr && tso[0] == '0') {
+        FEXCore::Config::Set(FEXCore::Config::CONFIG_TSOENABLED, "0");
+        std::fprintf(stderr, "FEX: memory ordering emulation (TSO) is off\n");
+      }
       const bool traceEnabled = std::getenv("BACHATA_FEX_TRACE") != nullptr;
       FEXCore::Config::Set(FEXCore::Config::CONFIG_X86DISASSEMBLE,
                            traceEnabled ? "1" : "0");
@@ -931,6 +940,19 @@ bool BachataQueryGuestRipSyscall(uint64_t* out_rip, uint64_t* out_syscall) noexc
   }
   if (out_syscall != nullptr) {
     *out_syscall = state.gregs[FEXCore::X86State::REG_RAX];
+  }
+  return true;
+}
+
+bool BachataQueryGuestRegisters(uint64_t* out_gprs) noexcept {
+  const auto& exec = ActiveFexExecution;
+  if (out_gprs == nullptr || exec.Context == nullptr || exec.Thread == nullptr ||
+      exec.Thread->CurrentFrame == nullptr) {
+    return false;
+  }
+  const auto& state = exec.Thread->CurrentFrame->State;
+  for (size_t index = 0; index < 16; ++index) {
+    out_gprs[index] = state.gregs[index];
   }
   return true;
 }

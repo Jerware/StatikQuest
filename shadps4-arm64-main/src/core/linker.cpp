@@ -284,6 +284,21 @@ void SetGuestIntegerArguments(GuestExecutionRequest& request,
 
 } // namespace
 
+VAddr Linker::AllocateHleVeneer(std::shared_ptr<GuestCpu::HleCallAdapter> adapter,
+                                std::string_view name) {
+    const auto registered = m_hle_symbols.GetHleCallRegistry().Register(std::move(adapter), name);
+    if (registered == nullptr) {
+        return 0;
+    }
+    const auto veneer = m_hle_veneers->Allocate(*registered);
+    if (const auto* failure = std::get_if<GuestCpu::HleVeneerFailure>(&veneer)) {
+        LOG_ERROR(Core_Linker, "Unable to allocate FEX HLE veneer for {}: {}", name,
+                  failure->error);
+        return 0;
+    }
+    return std::get<u64>(veneer);
+}
+
 std::optional<GuestExecutionFailure> Linker::InitializeFexRuntime() {
     std::scoped_lock lock{m_fex_runtime_mutex};
     if (m_fex_backend != nullptr) return std::nullopt;
@@ -804,7 +819,7 @@ bool Linker::Resolve(const std::string& name, Loader::SymbolType sym_type, Modul
         } else {
             return_info->hle_adapter = m_hle_symbols.AddUnsupportedFunction(sr);
         }
-        LOG_WARNING(Core_Linker, "FEX: unresolved HLE {} uses temporary ENOSYS fallback",
+        LOG_WARNING(Core_Linker, "FEX: unresolved HLE {} is a stub that returns zero",
                     return_info->name);
         return false;
 #endif

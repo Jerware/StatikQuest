@@ -433,13 +433,20 @@ public:
 
     /// Returns the sample count flags supported by color buffers.
     vk::SampleCountFlags GetColorSampleCounts() const {
-        return properties.limits.framebufferColorSampleCounts;
+        return properties.limits.framebufferColorSampleCounts & sample_count_cap;
     }
 
     /// Returns the sample count flags supported by depth buffer.
     vk::SampleCountFlags GetDepthSampleCounts() const {
         return properties.limits.framebufferDepthSampleCounts &
-               properties.limits.framebufferStencilSampleCounts;
+               properties.limits.framebufferStencilSampleCounts & sample_count_cap;
+    }
+
+    /// Returns the sample counts that everything taking part in a render pass can have: color
+    /// and depth attachments and the pipeline. Images have to stay within these even when the
+    /// driver says a format could do more, or they disagree with the pipelines drawing to them.
+    vk::SampleCountFlags GetFramebufferSampleCounts() const {
+        return GetColorSampleCounts() & GetDepthSampleCounts();
     }
 
     /// Returns true if logic ops are supported by the device.
@@ -454,6 +461,11 @@ public:
     }
 
     /// Returns whether VK_IMAGE_CREATE_2D_VIEW_COMPATIBLE_BIT_EXT is supported on 3D images
+    /// Returns true when an image can be backed by a dma-buf another process handed over.
+    bool IsDmaBufImportSupported() const {
+        return external_memory_dma_buf;
+    }
+
     bool Is2dViewOf3dSupported() const {
         return image_2d_view_of_3d && image_2d_view_of_3d_features.image2DViewOf3D &&
                image_2d_view_of_3d_features.sampler2DViewOf3D;
@@ -496,6 +508,8 @@ private:
     vk::PhysicalDevice physical_device;
     vk::UniqueDevice device;
     vk::PhysicalDeviceProperties properties;
+    /// Sample counts allowed by the SHADPS4_MAX_MSAA setting, all of them by default.
+    vk::SampleCountFlags sample_count_cap{~0u};
     vk::PhysicalDeviceMemoryProperties memory_properties;
     vk::PhysicalDeviceVulkan11Properties vk11_props;
     vk::PhysicalDeviceVulkan12Properties vk12_props;
@@ -549,6 +563,7 @@ private:
     bool attachment_feedback_loop{};
     bool image_2d_view_of_3d{};
     bool supports_memory_budget{};
+    bool external_memory_dma_buf{};
     bool supports_block_texel_view{};
     u64 total_memory_budget{};
     std::vector<size_t> valid_heaps;

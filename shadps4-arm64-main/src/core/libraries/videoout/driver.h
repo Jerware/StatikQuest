@@ -8,6 +8,7 @@
 #include "core/libraries/videoout/flip_label_tracker.h"
 #include "core/libraries/videoout/video_out.h"
 
+#include <chrono>
 #include <condition_variable>
 #include <mutex>
 #include <queue>
@@ -88,7 +89,7 @@ public:
     VideoOutDriver(u32 width, u32 height);
     ~VideoOutDriver();
 
-    int Open(const ServiceThreadParams* params);
+    int Open(const ServiceThreadParams* params, s32 bus_type);
     void Close(s32 handle);
 
     VideoOutPort* GetPort(s32 handle);
@@ -101,6 +102,7 @@ public:
 
     bool SubmitFlip(VideoOutPort* port, s32 index, s64 flip_arg, bool is_eop = false,
                     u64 lock_generation = FlipLabelTracker::kInvalidGeneration);
+    bool SubmitHmdFrame(VideoOutPort* port, const HmdFrame& hmd_frame);
 
 private:
     struct Request {
@@ -110,22 +112,39 @@ private:
         s32 index;
         bool eop;
         u64 lock_generation;
+        bool is_hmd{};
+        Core::Vr::PresentedFrame hmd_frame{};
+        /// When the title started on the frame and when it was ready to be shown, for the
+        /// frame statistics.
+        std::chrono::steady_clock::time_point started{};
+        std::chrono::steady_clock::time_point prepared{};
+        /// The same picture for the headset of the machine itself, where it has one: `frame`
+        /// is then what the window shows of it, and may be missing.
+        Vulkan::Frame* export_frame{};
 
         operator bool() const noexcept {
-            return frame != nullptr;
+            return frame != nullptr || export_frame != nullptr;
         }
     };
 
     void Flip(const Request& req);
+    void FinishFlip(VideoOutPort* port, s32 index, s64 flip_arg, bool is_eop, u64 lock_generation);
+    void SignalVblank(VideoOutPort& port);
     void DrawBlankFrame(); // Video port out not open
     void DrawLastFrame();  // Used when there is no flip request
     void SubmitFlipInternal(VideoOutPort* port, s32 index, s64 flip_arg, bool is_eop,
                             u64 lock_generation);
+    void SubmitHmdFrameInternal(VideoOutPort* port, const HmdFrame& hmd_frame, u32 frame_id,
+                                std::chrono::steady_clock::time_point started,
+                                std::chrono::steady_clock::time_point handed_over);
     void PresentThread(std::stop_token token);
     void ApplyDueLabelRetirement();
 
     std::mutex mutex;
     VideoOutPort main_port{};
+    // The TV while a headset is in use. Titles can drive it separately from the headset; nothing
+    // is shown from it, but its flips and vblanks have to keep running.
+    VideoOutPort social_port{};
     std::jthread present_thread;
     std::queue<Request> requests;
 };

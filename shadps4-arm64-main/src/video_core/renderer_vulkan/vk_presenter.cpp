@@ -10,6 +10,9 @@
 #include "core/devtools/layer.h"
 #include "core/emulator_settings.h"
 #include "core/libraries/system/systemservice.h"
+#ifdef ENABLE_OPENXR_HOST
+#include "core/vr/openxr_host.h"
+#endif
 #include "imgui/notifications_layer.h"
 #include "imgui/renderer/imgui_core.h"
 #include "imgui/renderer/imgui_impl_vulkan.h"
@@ -40,6 +43,7 @@
 #include <sstream>
 #include <system_error>
 #include <vector>
+#include <boost/container/static_vector.hpp>
 #include <imgui.h>
 #include <png.h>
 #include <vk_mem_alloc.h>
@@ -522,6 +526,22 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
                     instance.GetAllocator(), num_images);
     pp_pass.Create(instance, draw_scheduler.GetMasterSemaphore(),
                    swapchain.GetSurfaceFormat().format);
+    vr_exporter = std::make_unique<VrExporter>(instance, draw_scheduler);
+#ifdef ENABLE_OPENXR_HOST
+    if (vr_exporter->HasLocalHost()) {
+        // The machine has a headset of its own: its session is made on this device.
+        hmd_pp_pass.Create(instance, draw_scheduler.GetMasterSemaphore(),
+                           Core::Vr::OpenXrHost::FrameFormat);
+        Core::Vr::OpenXrHost::Instance().Start({
+            .instance = instance.GetInstance(),
+            .physical_device = instance.GetPhysicalDevice(),
+            .device = instance.GetDevice(),
+            .queue = instance.GetGraphicsQueue(),
+            .queue_family = instance.GetGraphicsQueueFamilyIndex(),
+            .queue_index = 0,
+        });
+    }
+#endif
 
     ImGui::Layer::AddLayer(Common::Singleton<Core::Devtools::Layer>::Instance());
 }
@@ -561,7 +581,13 @@ void Presenter::RecreateFrame(Frame* frame, u32 width, u32 height) {
     }
 
     const vk::Format format = swapchain.GetSurfaceFormat().format;
+    // Naming the format the views will have lets the driver keep the image compressed.
+    const vk::ImageFormatListCreateInfo format_list = {
+        .viewFormatCount = 1,
+        .pViewFormats = &format,
+    };
     const vk::ImageCreateInfo image_info = {
+        .pNext = &format_list,
         .flags = vk::ImageCreateFlagBits::eMutableFormat,
         .imageType = vk::ImageType::e2D,
         .format = format,
@@ -617,11 +643,28 @@ void Presenter::RecreateFrame(Frame* frame, u32 width, u32 height) {
 }
 
 Frame* Presenter::PrepareLastFrame() {
-    if (last_submit_frame == nullptr) {
+    // Once presented, a frame goes back to the pool and from there to the renderer, for the next
+    // picture. It can only be shown again while it is still in the pool, and it is taken out of
+    // it for as long as that takes: a renderer that starts on the frame half way through
+    // replaces the tick its presentation waits for, and a presentation that waits for a tick
+    // nobody will ever submit blocks the queue, and with it the emulator, for good.
+    Frame* frame = nullptr;
+    {
+        std::scoped_lock lock{free_mutex};
+        const size_t count = last_submit_frame != nullptr ? free_queue.size() : 0;
+        for (size_t i = 0; i < count; ++i) {
+            Frame* const candidate = free_queue.front();
+            free_queue.pop();
+            if (candidate == last_submit_frame && frame == nullptr) {
+                frame = candidate;
+            } else {
+                free_queue.push(candidate);
+            }
+        }
+    }
+    if (frame == nullptr) {
         return nullptr;
     }
-
-    Frame* frame = last_submit_frame;
 
     while (true) {
         vk::Result result = instance.GetDevice().waitForFences(frame->present_done, false,
@@ -671,6 +714,7 @@ Frame* Presenter::PrepareLastFrame() {
     });
 
     // Flush frame creation commands.
+    frame->ready_timeline = scheduler.GetMasterSemaphore();
     frame->ready_semaphore = scheduler.GetMasterSemaphore()->Handle();
     frame->ready_tick = scheduler.CurrentTick();
     SubmitInfo info{};
@@ -793,11 +837,444 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     }
 
     // Flush frame creation commands.
+    frame->ready_timeline = draw_scheduler.GetMasterSemaphore();
     frame->ready_semaphore = draw_scheduler.GetMasterSemaphore()->Handle();
     frame->ready_tick = draw_scheduler.CurrentTick();
     SubmitInfo info{};
     draw_scheduler.Flush(info);
     return frame;
+}
+
+HmdFrames Presenter::PrepareHmdFrame(std::span<const AmdGpu::Image, 2> eye_textures, u32 frame_id,
+                                     u32& eye_width, u32& eye_height) {
+    // The guest hands the eyes over as plain textures; they were rendered as color targets, so
+    // the cache already holds their contents.
+    std::array<VideoCore::TextureCache::ImageDesc, 2> descs;
+    std::array<VideoCore::ImageId, 2> image_ids;
+    for (u32 eye = 0; eye < 2; ++eye) {
+        descs[eye] = VideoCore::TextureCache::ImageDesc{eye_textures[eye], Shader::ImageResource{}};
+        image_ids[eye] = texture_cache.FindImage(descs[eye]);
+        texture_cache.UpdateImage(image_ids[eye]);
+    }
+
+    // Diagnostics: creating <UserDir>/dump_render_targets dumps what the guest has rendered so
+    // far, once, to tell a guest that draws nothing apart from output that gets lost on the way.
+    {
+        std::error_code ec;
+        const auto dump_flag =
+            Common::FS::GetUserPath(Common::FS::PathType::UserDir) / "dump_render_targets";
+        static u32 frames_until_check = 0;
+        if (frames_until_check-- == 0) {
+            frames_until_check = 120;
+            if (std::filesystem::exists(dump_flag, ec)) {
+                std::filesystem::remove(dump_flag, ec);
+                DumpGpuImages();
+                Rasterizer::StartDrawTrace(3000);
+            }
+        }
+    }
+
+    static u32 logged_frames = 0;
+    if (logged_frames < 3 || (logged_frames % 600) == 0) {
+        for (u32 eye = 0; eye < 2; ++eye) {
+            const auto& image = texture_cache.GetImage(image_ids[eye]);
+            LOG_INFO(Render_Vulkan,
+                     "HMD frame {} eye {}: image {} at {:#x}, {}x{}, format {}, samples {}, "
+                     "flags {:#x}",
+                     frame_id, eye, image_ids[eye].index, image.info.guest_address,
+                     image.info.size.width, image.info.size.height,
+                     vk::to_string(image.info.pixel_format), image.info.num_samples,
+                     static_cast<u32>(image.flags));
+        }
+    }
+    ++logged_frames;
+
+    const auto& left_info = texture_cache.GetImage(image_ids[0]).info;
+    eye_width = left_info.size.width;
+    eye_height = left_info.size.height;
+
+    // With a VR host attached the frame goes into one of its buffers instead of the window. A
+    // headset of the machine's own gets a frame of its own next to the window's: the eyes'
+    // pictures at their full size, where the window only has a look at them.
+    Frame* frame = vr_exporter->Acquire(swapchain.GetSurfaceFormat().format);
+    const bool exported = frame != nullptr;
+    Frame* const local = exported ? nullptr : vr_exporter->AcquireLocal(eye_width * 2, eye_height);
+    if (!exported) {
+        expected_ratio = static_cast<float>(eye_width * 2) / static_cast<float>(eye_height);
+        frame = GetRenderFrame();
+        if (!frame && !local) {
+            return {};
+        }
+    }
+
+    draw_scheduler.EndRendering();
+    const auto cmdbuf = draw_scheduler.CommandBuffer();
+    boost::container::static_vector<vk::ImageMemoryBarrier2, 2> pre_barriers;
+    for (const Frame* target : {frame, local}) {
+        if (target == nullptr) {
+            continue;
+        }
+        pre_barriers.push_back(vk::ImageMemoryBarrier2{
+            .srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+            .srcAccessMask = vk::AccessFlagBits2::eColorAttachmentRead,
+            .dstStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+            .dstAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
+            .oldLayout = vk::ImageLayout::eUndefined,
+            .newLayout = vk::ImageLayout::eColorAttachmentOptimal,
+            .image = target->image,
+            .subresourceRange{
+                .aspectMask = vk::ImageAspectFlagBits::eColor,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = VK_REMAINING_ARRAY_LAYERS,
+            },
+        });
+    }
+    cmdbuf.pipelineBarrier2(vk::DependencyInfo{
+        .imageMemoryBarrierCount = static_cast<u32>(pre_barriers.size()),
+        .pImageMemoryBarriers = pre_barriers.data(),
+    });
+
+    std::array<vk::ImageView, 2> eye_views;
+    for (u32 eye = 0; eye < 2; ++eye) {
+        auto view_info = descs[eye].view_info;
+        // Exclude alpha from output frame to avoid blending with UI.
+        view_info.mapping.a = vk::ComponentSwizzle::eOne;
+
+        auto& image = texture_cache.GetImage(image_ids[eye]);
+        image.Transit(vk::ImageLayout::eShaderReadOnlyOptimal, vk::AccessFlagBits2::eShaderRead,
+                      {}, cmdbuf);
+        eye_views[eye] = *image.FindView(view_info).image_view;
+    }
+    // Left eye on the left half, right eye on the right half.
+    const auto regions_for = [&](const Frame& target) {
+        const u32 half_width = target.width / 2;
+        std::array<HostPasses::PostProcessingPass::Region, 2> regions;
+        for (u32 eye = 0; eye < 2; ++eye) {
+            regions[eye] = {
+                .input = eye_views[eye],
+                .area{
+                    .offset{.x = static_cast<s32>(eye * half_width), .y = 0},
+                    .extent{.width = half_width, .height = target.height},
+                },
+            };
+        }
+        return regions;
+    };
+    // The eyes' pictures are shown far larger than they are drawn (a headset's display has
+    // several pixels for each of theirs), which blurs them: SHADPS4_VR_SHARPEN=<0..1> sharpens
+    // them on the way by that much.
+    static const float sharpen = [] {
+        const char* value = std::getenv("SHADPS4_VR_SHARPEN");
+        return value != nullptr ? std::clamp(static_cast<float>(std::atof(value)), 0.0f, 1.0f)
+                                : 0.0f;
+    }();
+    auto hmd_settings = pp_settings;
+    hmd_settings.sharpen = sharpen;
+    if (frame != nullptr) {
+        // The marker is for hosts that only see the picture; a VR host is told the frame's id.
+        pp_pass.Render(cmdbuf, regions_for(*frame), *frame, hmd_settings,
+                       exported ? std::nullopt : std::optional<u32>{frame_id});
+        if (exported) {
+            vr_exporter->Finalize(frame, cmdbuf);
+        }
+        DebugState.output_resolution = {frame->width, frame->height};
+    }
+    if (local != nullptr) {
+        // An image that encodes for display itself.
+        auto local_settings = hmd_settings;
+        local_settings.linear_out = 1;
+        hmd_pp_pass.Render(cmdbuf, regions_for(*local), *local, local_settings);
+        DebugState.output_resolution = {local->width, local->height};
+    }
+    DebugState.game_resolution = {eye_width * 2, eye_height};
+
+    // Flush frame creation commands.
+    for (Frame* target : {frame, local}) {
+        if (target != nullptr) {
+            target->ready_timeline = draw_scheduler.GetMasterSemaphore();
+            target->ready_semaphore = draw_scheduler.GetMasterSemaphore()->Handle();
+            target->ready_tick = draw_scheduler.CurrentTick();
+        }
+    }
+    SubmitInfo info{};
+    draw_scheduler.Flush(info);
+    return {.shown = frame, .exported = local};
+}
+
+bool Presenter::IsFrameFinished(const Frame* frame) {
+    return frame == nullptr || draw_scheduler.IsFree(frame->ready_tick);
+}
+
+bool Presenter::IsGpuBusy() {
+    // The tick being recorded has not been handed to the GPU yet; the one before it has.
+    const u64 recording = draw_scheduler.CurrentTick();
+    return recording > 1 && !draw_scheduler.IsFree(recording - 1);
+}
+
+bool Presenter::DeliverHmdFrame(Frame* frame, const Core::Vr::PresentedFrame& info) {
+    if (frame == nullptr || frame->host_buffer < 0) {
+        return false;
+    }
+    vr_exporter->Deliver(frame, info);
+    return true;
+}
+
+void Presenter::DumpGpuImages() {
+    // SHADPS4_DUMP_WIDTH=<pixels>: how wide the pictures are at most (640 unless told; the
+    // targets' own width for looking at what is in a pixel).
+    static const u32 ThumbWidth = [] {
+        const char* value = std::getenv("SHADPS4_DUMP_WIDTH");
+        const int width = value != nullptr ? std::atoi(value) : 0;
+        return width >= 64 ? static_cast<u32>(width) : 640u;
+    }();
+    const auto dump_dir = Common::FS::GetUserPath(Common::FS::PathType::UserDir) / "rt_dump";
+    std::error_code ec;
+    std::filesystem::remove_all(dump_dir, ec);
+    std::filesystem::create_directories(dump_dir, ec);
+
+    // Collect first: transitions and submits below must not run under the cache lock.
+    std::vector<VideoCore::Image*> images;
+    texture_cache.ForEachImage([&](VideoCore::Image& image) {
+        const auto& info = image.info;
+        LOG_INFO(Render_Vulkan,
+                 "cache image at {:#x}: {}x{}x{}, {}, samples {}, levels {}, layers {}, flags {:#x}{}",
+                 info.guest_address, info.size.width, info.size.height, info.size.depth,
+                 vk::to_string(info.pixel_format), info.num_samples, info.resources.levels,
+                 info.resources.layers, static_cast<u32>(image.flags),
+                 info.props.is_depth ? ", depth" : "");
+        if (!(image.flags & VideoCore::ImageFlagBits::GpuModified) || info.props.is_depth ||
+            info.props.is_volume || info.size.width < 64 || info.size.height < 64) {
+            return;
+        }
+        images.push_back(&image);
+    });
+
+    const vk::Device device = instance.GetDevice();
+    u32 index = 0;
+    for (VideoCore::Image* image : images) {
+        const auto& info = image->info;
+        const u32 width = std::min(info.size.width, ThumbWidth);
+        const u32 height = std::max(1u, info.size.height * width / info.size.width);
+
+        const vk::ImageCreateInfo thumb_ci = {
+            .imageType = vk::ImageType::e2D,
+            .format = vk::Format::eR8G8B8A8Unorm,
+            .extent = {width, height, 1},
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .samples = vk::SampleCountFlagBits::e1,
+            .usage = vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc,
+        };
+        const VmaAllocationCreateInfo alloc_info = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+        VkImage thumb_handle{};
+        VmaAllocation thumb_allocation{};
+        const VkImageCreateInfo thumb_ci_raw = static_cast<VkImageCreateInfo>(thumb_ci);
+        if (vmaCreateImage(instance.GetAllocator(), &thumb_ci_raw, &alloc_info, &thumb_handle,
+                           &thumb_allocation, nullptr) != VK_SUCCESS) {
+            LOG_ERROR(Render_Vulkan, "Could not allocate a thumbnail for the render target dump");
+            return;
+        }
+        const vk::Image thumb{thumb_handle};
+
+        ScreenshotReadback readback{instance,
+                                    draw_scheduler,
+                                    ScreenshotKind::GameOnly,
+                                    {},
+                                    width,
+                                    height,
+                                    vk::Format::eR8G8B8A8Unorm,
+                                    false};
+
+        draw_scheduler.EndRendering();
+        const auto cmdbuf = draw_scheduler.CommandBuffer();
+        const vk::ImageSubresourceRange color_range = {
+            .aspectMask = vk::ImageAspectFlagBits::eColor,
+            .levelCount = 1,
+            .layerCount = 1,
+        };
+        const auto thumb_barrier = [&](vk::ImageLayout from, vk::ImageLayout to) {
+            const vk::ImageMemoryBarrier barrier = {
+                .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+                .dstAccessMask = vk::AccessFlagBits::eTransferRead,
+                .oldLayout = from,
+                .newLayout = to,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = thumb,
+                .subresourceRange = color_range,
+            };
+            cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+                                   vk::PipelineStageFlagBits::eAllCommands, {}, {}, {}, barrier);
+        };
+
+        image->Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead, {},
+                       cmdbuf);
+
+        // Multisampled targets cannot be blitted, they are resolved into a scratch image first.
+        const u32 samples = static_cast<u32>(image->backing->image.image_ci.samples);
+        vk::Image blit_source = image->GetImage();
+        VkImage resolved_handle{};
+        VmaAllocation resolved_allocation{};
+        if (samples > 1) {
+            const vk::ImageCreateInfo resolved_ci = {
+                .imageType = vk::ImageType::e2D,
+                .format = info.pixel_format,
+                .extent = {info.size.width, info.size.height, 1},
+                .mipLevels = 1,
+                .arrayLayers = 1,
+                .samples = vk::SampleCountFlagBits::e1,
+                .usage = vk::ImageUsageFlagBits::eTransferDst |
+                         vk::ImageUsageFlagBits::eTransferSrc |
+                         vk::ImageUsageFlagBits::eColorAttachment,
+            };
+            const VkImageCreateInfo resolved_ci_raw = static_cast<VkImageCreateInfo>(resolved_ci);
+            if (vmaCreateImage(instance.GetAllocator(), &resolved_ci_raw, &alloc_info,
+                               &resolved_handle, &resolved_allocation, nullptr) != VK_SUCCESS) {
+                vmaDestroyImage(instance.GetAllocator(), thumb_handle, thumb_allocation);
+                continue;
+            }
+            const vk::Image resolved{resolved_handle};
+            const auto resolved_barrier = [&](vk::ImageLayout from, vk::ImageLayout to) {
+                const vk::ImageMemoryBarrier barrier = {
+                    .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+                    .dstAccessMask = vk::AccessFlagBits::eTransferRead,
+                    .oldLayout = from,
+                    .newLayout = to,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = resolved,
+                    .subresourceRange = color_range,
+                };
+                cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+                                       vk::PipelineStageFlagBits::eAllCommands, {}, {}, {},
+                                       barrier);
+            };
+            resolved_barrier(vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal);
+            cmdbuf.resolveImage(image->GetImage(), vk::ImageLayout::eTransferSrcOptimal, resolved,
+                                vk::ImageLayout::eTransferDstOptimal,
+                                vk::ImageResolve{
+                                    .srcSubresource = MakeImageSubresourceLayers(),
+                                    .dstSubresource = MakeImageSubresourceLayers(),
+                                    .extent = {info.size.width, info.size.height, 1},
+                                });
+            resolved_barrier(vk::ImageLayout::eTransferDstOptimal,
+                             vk::ImageLayout::eTransferSrcOptimal);
+            blit_source = resolved;
+        }
+
+        thumb_barrier(vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal);
+        cmdbuf.blitImage(blit_source, vk::ImageLayout::eTransferSrcOptimal, thumb,
+                         vk::ImageLayout::eTransferDstOptimal,
+                         MakeImageBlitStretch(info.size.width, info.size.height, width, height),
+                         vk::Filter::eLinear);
+        thumb_barrier(vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eTransferSrcOptimal);
+        CopyImageToReadback(cmdbuf, thumb, vk::ImageLayout::eTransferSrcOptimal, readback);
+        draw_scheduler.Finish();
+
+        std::vector<u8> rgba(static_cast<size_t>(width) * height * 4);
+        std::memcpy(rgba.data(), readback.buffer.mapped_data.data(), rgba.size());
+        for (size_t i = 3; i < rgba.size(); i += 4) {
+            rgba[i] = 0xff;
+        }
+        const auto path = dump_dir / fmt::format("{:03}_{:x}_{}x{}_{}_s{}.png", index++,
+                                                 info.guest_address, info.size.width,
+                                                 info.size.height,
+                                                 vk::to_string(info.pixel_format), samples);
+        WritePng(path, rgba, width, height);
+        vmaDestroyImage(instance.GetAllocator(), thumb_handle, thumb_allocation);
+        if (resolved_handle) {
+            vmaDestroyImage(instance.GetAllocator(), resolved_handle, resolved_allocation);
+        }
+    }
+    LOG_INFO(Render_Vulkan, "Dumped {} render targets to {}", index, dump_dir.string());
+
+    // SHADPS4_DUMP_IMAGE=<address>: the texture at that address as it is held, every level with
+    // all its layers, raw (rt_dump/image_<address>_level<n>_<w>x<h>x<layers>_<format>.bin): for
+    // what the pictures above leave out, textures the game only reads.
+    const char* wanted_text = std::getenv("SHADPS4_DUMP_IMAGE");
+    if (wanted_text == nullptr) {
+        return;
+    }
+    // (Several addresses may be given, apart by commas.)
+    std::vector<VAddr> wanted_list;
+    for (const char* at = wanted_text; *at != ' ';) {
+        char* end = nullptr;
+        wanted_list.push_back(std::strtoull(at, &end, 16));
+        if (end == at) {
+            break;
+        }
+        at = *end == ',' ? end + 1 : end;
+    }
+    std::vector<VideoCore::Image*> raw_images;
+    texture_cache.ForEachImage([&](VideoCore::Image& image) {
+        if (std::ranges::find(wanted_list, image.info.guest_address) != wanted_list.end() &&
+            image.info.num_samples == 1) {
+            raw_images.push_back(&image);
+        }
+    });
+    for (VideoCore::Image* image : raw_images) {
+        const auto& info = image->info;
+        const bool block = info.props.is_block;
+        const u32 unit = info.num_bits / 8; // bytes a pixel, or a block of 4x4 for compressed
+        for (u32 level = 0; level < info.resources.levels; ++level) {
+            const u32 w = std::max(info.size.width >> level, 1u);
+            const u32 h = std::max(info.size.height >> level, 1u);
+            const u32 units_w = block ? (w + 3) / 4 : w;
+            const u32 units_h = block ? (h + 3) / 4 : h;
+            const u64 bytes = u64{units_w} * units_h * unit * info.resources.layers;
+            VideoCore::Buffer buffer{instance,
+                                     draw_scheduler,
+                                     VideoCore::MemoryUsage::Download,
+                                     0,
+                                     vk::BufferUsageFlagBits::eTransferDst,
+                                     bytes};
+            draw_scheduler.EndRendering();
+            const auto cmdbuf = draw_scheduler.CommandBuffer();
+            image->Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead,
+                           {}, cmdbuf);
+            const vk::BufferImageCopy region = {
+                .bufferOffset = 0,
+                .bufferRowLength = 0,
+                .bufferImageHeight = 0,
+                .imageSubresource =
+                    {
+                        .aspectMask = info.props.is_depth ? vk::ImageAspectFlagBits::eDepth
+                                                          : vk::ImageAspectFlagBits::eColor,
+                        .mipLevel = level,
+                        .baseArrayLayer = 0,
+                        .layerCount = info.resources.layers,
+                    },
+                .imageOffset = {0, 0, 0},
+                .imageExtent = {w, h, 1},
+            };
+            cmdbuf.copyImageToBuffer(image->GetImage(), vk::ImageLayout::eTransferSrcOptimal,
+                                     buffer.Handle(), region);
+            draw_scheduler.Finish();
+            const auto path =
+                dump_dir / fmt::format("image_{:x}_level{}_{}x{}x{}_{}.bin", info.guest_address,
+                                       level, w, h, info.resources.layers,
+                                       vk::to_string(info.pixel_format));
+            std::ofstream out{path, std::ios::binary};
+            out.write(reinterpret_cast<const char*>(buffer.mapped_data.data()),
+                      static_cast<std::streamsize>(bytes));
+        }
+        // And what the game's memory holds there, for comparison.
+        {
+            const auto path = dump_dir / fmt::format("image_{:x}_guest_{:x}_tile{}.bin",
+                                                     info.guest_address, info.guest_size,
+                                                     static_cast<u32>(info.tile_mode));
+            std::ofstream out{path, std::ios::binary};
+            out.write(reinterpret_cast<const char*>(info.guest_address),
+                      static_cast<std::streamsize>(info.guest_size));
+        }
+        LOG_INFO(Render_Vulkan,
+                 "Dumped the texture at {:#x}: {} levels, {} layers, tile mode {}, {} bytes in "
+                 "memory, flags {:#x}",
+                 info.guest_address, info.resources.levels, info.resources.layers,
+                 static_cast<u32>(info.tile_mode), info.guest_size, static_cast<u32>(image->flags));
+    }
 }
 
 Frame* Presenter::PrepareBlankFrame(bool present_thread) {
@@ -869,6 +1346,7 @@ Frame* Presenter::PrepareBlankFrame(bool present_thread) {
     });
 
     // Flush frame creation commands.
+    frame->ready_timeline = scheduler.GetMasterSemaphore();
     frame->ready_semaphore = scheduler.GetMasterSemaphore()->Handle();
     frame->ready_tick = scheduler.CurrentTick();
     SubmitInfo info{};
@@ -879,6 +1357,9 @@ Frame* Presenter::PrepareBlankFrame(bool present_thread) {
 void Presenter::Present(Frame* frame, bool is_reusing_frame) {
     static std::atomic_uint32_t present_traces{};
     const u32 trace_id = present_traces.fetch_add(1, std::memory_order_relaxed);
+    if (!is_reusing_frame) {
+        FrameStats::EndFrame();
+    }
 
     // Bachata diagnostics: dump the guest output buffer every N presents when
     // the file <UserDir>/auto_shot_every exists (device black-screen triage;
@@ -902,17 +1383,42 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame) {
         VideoCore::RequestScreenshot(VideoCore::ScreenshotRequest::GameOnly);
         VideoCore::RequestScreenshot(VideoCore::ScreenshotRequest::WithOverlays);
     }
+    // SHADPS4_SHOT_SECONDS=<n>[,<from>]: a picture every n seconds by the clock instead (from
+    // so many seconds in), so that runs at different frame rates can be compared moment by
+    // moment.
+    {
+        using Clock = std::chrono::steady_clock;
+        static double shot_from = 0.0;
+        static const double shot_seconds = [] {
+            const char* value = std::getenv("SHADPS4_SHOT_SECONDS");
+            if (value == nullptr) {
+                return 0.0;
+            }
+            if (const char* comma = std::strchr(value, ','); comma != nullptr) {
+                shot_from = std::atof(comma + 1);
+            }
+            return std::atof(value);
+        }();
+        static const auto shot_start = Clock::now();
+        static u32 shots_taken = 0;
+        if (shot_seconds > 0.0 &&
+            std::chrono::duration<double>(Clock::now() - shot_start).count() >=
+                shot_from + shot_seconds * (shots_taken + 1)) {
+            ++shots_taken;
+            VideoCore::RequestScreenshot(VideoCore::ScreenshotRequest::WithOverlays);
+        }
+    }
     // Log first 64, then every 16th, always around suspected 32-present boundary.
     const bool trace = trace_id < 64 || (trace_id % 16u) == 0u ||
                        (trace_id >= 28 && trace_id <= 40);
-    // Free the frame for reuse
+    // Free the frame for reuse. One that was shown again was taken out of the pool for that.
     const auto free_frame = [&] {
+        std::scoped_lock fl{free_mutex};
         if (!is_reusing_frame) {
             last_submit_frame = frame;
-            std::scoped_lock fl{free_mutex};
-            free_queue.push(frame);
-            free_cv.notify_one();
         }
+        free_queue.push(frame);
+        free_cv.notify_one();
     };
 
     // Recreate the swapchain if the window was resized.
@@ -942,6 +1448,13 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame) {
     // Reset fence for queue submission. Do it here instead of GetRenderFrame() because we may
     // skip frame because of slow swapchain recreation. If a frame skip occurs, we skip signal
     // the frame's present fence and future GetRenderFrame() call will hang waiting for this frame.
+    if (IsSyncTraceEnabled()) {
+        TraceSync("present frame %d reuse %d: reset fence %llx, waits for tick %llu", int(frame->id),
+                  is_reusing_frame ? 1 : 0,
+                  static_cast<unsigned long long>(
+                      reinterpret_cast<uintptr_t>(static_cast<VkFence>(frame->present_done))),
+                  static_cast<unsigned long long>(frame->ready_tick));
+    }
     const auto reset_result = instance.GetDevice().resetFences(frame->present_done);
     if (reset_result == vk::Result::eErrorDeviceLost) {
         LOG_CRITICAL(Render_Vulkan, "Device lost while resetting present done fence");
@@ -1156,9 +1669,26 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame) {
     }
 
     SubmitInfo info{};
-    info.AddWait(swapchain.GetImageAcquiredSemaphore());
+    if (!swapchain.IsHeadless()) {
+        info.AddWait(swapchain.GetImageAcquiredSemaphore());
+    }
+#ifdef ENABLE_BACHATA_RUNTIME
+    // The frame has to be finished before it is presented. Drivers that emulate timeline
+    // semaphores (Turnip on the Adreno kernel driver) do that by holding the submission back
+    // while the tick it waits for is still executing, and only look at it again the next time
+    // the application calls them. The renderer may well be waiting for this very presentation
+    // by then, so that call never comes and both stop for good. Waiting here costs the present
+    // thread the time the GPU needs for the frame, and nobody anything else. (Through the
+    // timeline's own wait: the driver must not be asked for ticks out of order.)
+    if (frame->ready_timeline != nullptr) {
+        frame->ready_timeline->Wait(frame->ready_tick);
+    }
+#else
     info.AddWait(frame->ready_semaphore, frame->ready_tick);
-    info.AddSignal(swapchain.GetPresentReadySemaphore());
+#endif
+    if (!swapchain.IsHeadless()) {
+        info.AddSignal(swapchain.GetPresentReadySemaphore());
+    }
     info.AddSignal(frame->present_done);
     scheduler.Flush(info);
     if (trace) {
@@ -1220,6 +1750,12 @@ Frame* Presenter::GetRenderFrame() {
 
     const u64 timeout_ns = AmdGpu::PresentFenceTimeoutNs(
         liverpool && liverpool->IsGpuThread(), liverpool && liverpool->InGfxTask());
+    if (IsSyncTraceEnabled()) {
+        TraceSync("get render frame %d: wait fence %llx, timeout %s", int(frame->id),
+                  static_cast<unsigned long long>(
+                      reinterpret_cast<uintptr_t>(static_cast<VkFence>(frame->present_done))),
+                  timeout_ns == 0 ? "none" : "forever");
+    }
     const auto wait = [&]() {
         result = device.waitForFences(frame->present_done, false, timeout_ns);
         return result;

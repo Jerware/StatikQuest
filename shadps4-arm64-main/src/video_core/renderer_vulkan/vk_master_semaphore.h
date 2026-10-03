@@ -4,6 +4,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <thread>
 #include <queue>
@@ -46,7 +47,13 @@ public:
     /// Waits for a tick to be hit on the GPU
     void Wait(u64 tick);
 
+    /// The same, giving up after about `limit`: false if the tick was not reached by then.
+    bool Wait(u64 tick, std::chrono::nanoseconds limit);
+
 protected:
+    /// Records that the GPU has got as far as `tick`, however that came to be known.
+    void NoteReached(u64 tick) noexcept;
+
     const Instance& instance;
     vk::UniqueSemaphore semaphore;    ///< Timeline semaphore.
     std::atomic<u64> gpu_tick{0};     ///< Current known GPU tick.

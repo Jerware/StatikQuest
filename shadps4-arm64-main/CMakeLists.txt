@@ -42,6 +42,9 @@ option(ENABLE_TESTS "Build unit tests (requires GTest)" OFF)
 option(ENABLE_BACHATA_RUNTIME "Build x86-64 Android-container runtime mode" OFF)
 option(ENABLE_SYSTEM_LIBRARIES "Enable building against system libraries" OFF)
 option(ENABLE_FEX_GUEST_CPU "Build the native ARM64 FEXCore guest CPU backend" OFF)
+# The headset of the machine the emulator runs on, through that machine's OpenXR runtime
+# (Virtual Desktop, SteamVR, ...): where the frames of an emulated PlayStation VR are shown.
+cmake_dependent_option(ENABLE_OPENXR "Show the emulated headset's frames in a headset of this machine" ON "WIN32;NOT ENABLE_BACHATA_RUNTIME" OFF)
 set(FEXCORE_GUEST_CPU_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/runtime/sources/fex" CACHE PATH
     "Checked-out FEX source directory for the FEXCore guest CPU backend")
 set(FEXCORE_GUEST_CPU_BUILD_DIR "${CMAKE_CURRENT_SOURCE_DIR}/runtime/build/fexcore-smoke-build" CACHE PATH
@@ -74,6 +77,19 @@ if (ARCHITECTURE STREQUAL "x86_64")
     # Target x86-64-v3 CPU architecture as this is a good balance between supporting performance critical
     # instructions like AVX2 and maintaining support for older CPUs.
     add_compile_options(-march=x86-64-v3)
+endif()
+
+# Source paths end up in the binaries (__FILE__ in asserts and log lines): count them from the
+# folder above this one, so that a build does not carry the folders of the machine it was made
+# on, user names among them.
+if (CMAKE_C_COMPILER_ID MATCHES "Clang" OR CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    get_filename_component(SHADPS4_PATH_ROOT "${CMAKE_SOURCE_DIR}/.." ABSOLUTE)
+    if (MSVC)
+        set(SHADPS4_PREFIX_MAP "/clang:-ffile-prefix-map=${SHADPS4_PATH_ROOT}/=")
+    else()
+        set(SHADPS4_PREFIX_MAP "-ffile-prefix-map=${SHADPS4_PATH_ROOT}/=")
+    endif()
+    add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:${SHADPS4_PREFIX_MAP}>")
 endif()
 
 if (ENABLE_FEX_GUEST_CPU)
@@ -329,6 +345,7 @@ set(AUDIO_LIB src/core/libraries/audio/audioin.cpp
               src/core/libraries/audio/audioin_backend.h
               src/core/libraries/audio/audioin_error.h
               src/core/libraries/audio/sdl_audio_in.cpp
+              src/core/libraries/audio/bachata_audio_in.cpp
               src/core/libraries/voice/voice.cpp
               src/core/libraries/voice/voice.h
               src/core/libraries/audio/audioout.cpp
@@ -338,10 +355,14 @@ set(AUDIO_LIB src/core/libraries/audio/audioin.cpp
               src/core/libraries/audio/sdl_audio_out.cpp
               src/core/libraries/audio/openal_audio_out.cpp
               src/core/libraries/audio/bachata_audio_out.cpp
+              src/core/libraries/audio/surround_virtualizer.cpp
+              src/core/libraries/audio/surround_virtualizer.h
               src/core/libraries/audio/openal_manager.h
               src/core/libraries/ngs2/ngs2.cpp
               src/core/libraries/ngs2/ngs2.h
               src/core/libraries/audio3d/audio3d.cpp
+              src/core/libraries/audio3d/audio3d_spatializer.cpp
+              src/core/libraries/audio3d/audio3d_spatializer.h
               src/core/libraries/audio3d/audio3d_openal.cpp
               src/core/libraries/audio3d/audio3d_openal.h
               src/core/libraries/audio3d/audio3d.h
@@ -499,6 +520,13 @@ set(SYSTEM_LIBS src/core/libraries/system/commondialog.cpp
                 src/core/libraries/ngs2/ngs2.cpp
                 src/core/libraries/ngs2/ngs2.h
                 src/core/libraries/ngs2/ngs2_error.h
+                src/core/libraries/ngs2/ngs2_codec.cpp
+                src/core/libraries/ngs2/ngs2_codec.h
+                src/core/libraries/ngs2/ngs2_dsp.cpp
+                src/core/libraries/ngs2/ngs2_dsp.h
+                src/core/libraries/ngs2/ngs2_engine.cpp
+                src/core/libraries/ngs2/ngs2_engine.h
+                src/core/libraries/ngs2/ngs2_hevag_table.h
                 src/core/libraries/ngs2/ngs2_impl.cpp
                 src/core/libraries/ngs2/ngs2_impl.h
                 src/core/libraries/ngs2/ngs2_custom.cpp
@@ -523,6 +551,8 @@ set(SYSTEM_LIBS src/core/libraries/system/commondialog.cpp
                 src/core/libraries/audio3d/audio3d.cpp
                 src/core/libraries/audio3d/audio3d.h
                 src/core/libraries/audio3d/audio3d_error.h
+                src/core/libraries/audio3d/audio3d_spatializer.cpp
+                src/core/libraries/audio3d/audio3d_spatializer.h
                 src/core/libraries/game_live_streaming/gamelivestreaming.cpp
                 src/core/libraries/game_live_streaming/gamelivestreaming.h
                 src/core/libraries/remote_play/remoteplay.cpp
@@ -634,6 +664,10 @@ set(PLAYGO_LIB src/core/libraries/playgo/playgo.cpp
                src/core/libraries/playgo/playgo_types.h
 )
 
+set(JSON_LIB src/core/libraries/json/json.cpp
+             src/core/libraries/json/json.h
+)
+
 set(RANDOM_LIB src/core/libraries/random/random.cpp
                src/core/libraries/random/random.h
                src/core/libraries/random/random_error.h
@@ -651,11 +685,18 @@ set(USBD_LIB src/core/libraries/usbd/usbd.cpp
              src/core/libraries/usbd/emulated/skylander.h
 )
 
-set(FIBER_LIB src/core/libraries/fiber/fiber_context.s
-              src/core/libraries/fiber/fiber.cpp
+set(FIBER_LIB src/core/libraries/fiber/fiber.cpp
               src/core/libraries/fiber/fiber.h
               src/core/libraries/fiber/fiber_error.h
+              src/core/libraries/fiber/fiber_internal.h
 )
+if (ARCHITECTURE STREQUAL "x86_64")
+    # Fibers switch with native context switches where the guest runs natively...
+    list(APPEND FIBER_LIB src/core/libraries/fiber/fiber_context.s)
+else()
+    # ...and by swapping guest registers where it runs under FEX.
+    list(APPEND FIBER_LIB src/core/libraries/fiber/fiber_fex.cpp)
+endif()
 
 set_source_files_properties(src/core/libraries/fiber/fiber_context.s PROPERTIES COMPILE_OPTIONS -Wno-unused-command-line-argument)
 
@@ -731,9 +772,21 @@ set(VR_LIBS  src/core/libraries/hmd/hmd.cpp
              src/core/libraries/hmd/hmd.h
              src/core/libraries/hmd/hmd_setup_dialog.cpp
              src/core/libraries/hmd/hmd_setup_dialog.h
+             src/core/libraries/social_screen/social_screen.cpp
+             src/core/libraries/social_screen/social_screen.h
              src/core/libraries/vr_tracker/vr_tracker.cpp
              src/core/libraries/vr_tracker/vr_tracker.h
+             src/core/vr/vr_host_link.cpp
+             src/core/vr/vr_host_link.h
+             src/core/vr/vr_protocol.h
+             src/core/vr/vr_runtime.cpp
+             src/core/vr/vr_runtime.h
 )
+if (ENABLE_OPENXR)
+    list(APPEND VR_LIBS src/core/vr/openxr_host.cpp
+                        src/core/vr/openxr_host.h
+    )
+endif()
 
 set(MISC_LIBS  src/core/libraries/screenshot/screenshot.cpp
                src/core/libraries/screenshot/screenshot.h
@@ -851,6 +904,7 @@ set(COMMON src/common/logging/classes.h
            src/common/uint128.h
            src/common/unique_function.h
            src/common/va_ctx.h
+           src/common/wave_dump.h
            src/common/ntapi.h
            src/common/ntapi.cpp
            src/common/number_utils.h
@@ -943,6 +997,7 @@ set(CORE src/core/aerolib/stubs.cpp
          ${JPEG_LIB}
          ${PLAYGO_LIB}
          ${RANDOM_LIB}
+         ${JSON_LIB}
          ${USBD_LIB}
          ${ZLIB_LIB}
          ${MISC_LIBS}
@@ -958,6 +1013,10 @@ set(CORE src/core/aerolib/stubs.cpp
           src/core/debugger.h
           src/core/guest_cpu/guest_cpu.cpp
           src/core/guest_cpu/guest_cpu.h
+          src/core/guest_cpu/guest_watchdog.cpp
+          src/core/guest_cpu/guest_watchdog.h
+          src/core/known_title.cpp
+          src/core/known_title.h
           src/core/linker.cpp
          src/core/linker.h
          src/core/memory.cpp
@@ -989,6 +1048,7 @@ if (ARCHITECTURE STREQUAL "x86_64")
 endif()
 
 if (ENABLE_FEX_GUEST_CPU)
+    list(APPEND CORE ${FIBER_LIB})
     list(APPEND CORE
         src/core/fex/fex_guest_engine.cpp
         src/core/fex/fex_guest_engine.h
@@ -1154,6 +1214,8 @@ set(VIDEO_CORE src/video_core/amdgpu/cb_db_extent.h
                src/video_core/renderer_vulkan/vk_pipeline_serialization.h
                src/video_core/renderer_vulkan/vk_platform.cpp
                src/video_core/renderer_vulkan/vk_platform.h
+               src/video_core/renderer_vulkan/vk_vr_exporter.cpp
+               src/video_core/renderer_vulkan/vk_vr_exporter.h
                src/video_core/renderer_vulkan/vk_presenter.cpp
                src/video_core/renderer_vulkan/vk_presenter.h
                src/video_core/renderer_vulkan/vk_rasterizer.cpp
@@ -1237,6 +1299,8 @@ set(INPUT src/input/controller.cpp
           src/input/input_handler.h
           src/input/input_mouse.cpp
           src/input/input_mouse.h
+          src/input/scripted_input.cpp
+          src/input/scripted_input.h
 )
 
 set(EMULATOR src/emulator.cpp
@@ -1271,13 +1335,19 @@ add_executable(shadps4
 
 if (ENABLE_BACHATA_RUNTIME)
     target_compile_definitions(shadps4 PRIVATE ENABLE_BACHATA_RUNTIME)
-    target_sources(shadps4 PRIVATE
-        src/platform/bachata/runtime_client.cpp
-        src/platform/bachata/controller_snapshot.cpp
-        src/platform/bachata/audio_transport.cpp
-        src/platform/bachata/runtime_client.h
-    )
 endif()
+if (ENABLE_OPENXR)
+    target_compile_definitions(shadps4 PRIVATE ENABLE_OPENXR_HOST)
+    target_link_libraries(shadps4 PRIVATE OpenXR::openxr_loader)
+endif()
+# Common code (video out, audio out) references the runtime client unconditionally, so the
+# platform layer is always built; it degrades to a disabled client outside the Android runtime.
+target_sources(shadps4 PRIVATE
+    src/platform/bachata/runtime_client.cpp
+    src/platform/bachata/controller_snapshot.cpp
+    src/platform/bachata/audio_transport.cpp
+    src/platform/bachata/runtime_client.h
+)
 
 create_target_directory_groups(shadps4)
 
@@ -1439,7 +1509,7 @@ if (WIN32)
     endif()
 endif()
 
-if (WIN32)
+if (WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/dist/shadps4.rc")
     target_sources(shadps4 PRIVATE src/dist/shadps4.rc)
 endif()
 

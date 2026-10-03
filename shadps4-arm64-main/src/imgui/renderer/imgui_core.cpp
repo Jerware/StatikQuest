@@ -91,18 +91,25 @@ void Initialize(const ::Vulkan::Instance& instance, const Frontend::WindowSDL& w
     font_cfg.OversampleV = 1;
     io.Fonts->Flags |= ImFontAtlasFlags_NoPowerOfTwoHeight;
     const int console_language = EmulatorSettings.GetConsoleLanguage();
-    io.FontDefault = FontStack::AddPrimaryUiFont(io.Fonts, 32.0f, console_language, font_cfg, true);
+    // Nobody reads this interface when there is no window, and the full set of fonts makes for
+    // an atlas of over a hundred megabytes, twice while it is uploaded. That is memory a headset
+    // does not have to spare, so there the same fonts are built small and without the large
+    // East Asian character sets. Their number and order stay: other code refers to them by index.
+    const bool headless = window.GetWindowInfo().type == Frontend::WindowSystemType::Headless;
+    io.FontDefault =
+        FontStack::AddPrimaryUiFont(io.Fonts, 32.0f, console_language, font_cfg, !headless);
 
     io.Fonts->AddFontFromMemoryCompressedTTF(imgui_font_proggyvector_regular_compressed_data,
                                              imgui_font_proggyvector_regular_compressed_size,
                                              32.0f);
 
     // Avoid exploding atlas size on Metal/MoltenVK when CJK fallback is enabled.
-    FontStack::AddPrimaryUiFont(io.Fonts, 128.0f, console_language, font_cfg, false);
+    FontStack::AddPrimaryUiFont(io.Fonts, headless ? 32.0f : 128.0f, console_language, font_cfg,
+                                false);
 
     // Big Picture
-    FontStack::AddPrimaryUiFont(ImGui::GetIO().Fonts, 64.0f, EmulatorSettings.GetConsoleLanguage(),
-                                font_cfg, true);
+    FontStack::AddPrimaryUiFont(ImGui::GetIO().Fonts, headless ? 32.0f : 64.0f,
+                                EmulatorSettings.GetConsoleLanguage(), font_cfg, !headless);
 
     std::fprintf(stderr, "BACHATA_IMGUI_FONTS_BUILD\n");
     io.Fonts->Build();

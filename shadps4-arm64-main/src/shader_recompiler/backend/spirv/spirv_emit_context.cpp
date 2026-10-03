@@ -41,22 +41,29 @@ std::string_view StageName(Stage stage) {
 }
 
 static constexpr u32 NumVertices(AmdGpu::PrimitiveType type) {
+    // What a geometry shader is handed is one primitive of what the vertices were assembled
+    // into, whichever way they were laid out for that (list, strip, fan or loop).
     switch (type) {
     case AmdGpu::PrimitiveType::PointList:
         return 1u;
     case AmdGpu::PrimitiveType::LineList:
     case AmdGpu::PrimitiveType::LineStrip:
+    case AmdGpu::PrimitiveType::LineLoop:
         return 2u;
     case AmdGpu::PrimitiveType::TriangleList:
     case AmdGpu::PrimitiveType::TriangleStrip:
+    case AmdGpu::PrimitiveType::TriangleFan:
+    case AmdGpu::PrimitiveType::Polygon:
     case AmdGpu::PrimitiveType::RectList:
         return 3u;
     case AmdGpu::PrimitiveType::AdjTriangleList:
+    case AmdGpu::PrimitiveType::AdjTriangleStrip:
         return 6u;
     case AmdGpu::PrimitiveType::AdjLineList:
+    case AmdGpu::PrimitiveType::AdjLineStrip:
         return 4u;
     default:
-        UNREACHABLE();
+        UNREACHABLE_MSG("Geometry shader fed with primitive type {}", u32(type));
     }
 }
 

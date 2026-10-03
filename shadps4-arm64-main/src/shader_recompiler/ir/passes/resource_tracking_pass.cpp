@@ -896,7 +896,15 @@ IR::Value FixCubeCoords(IR::IREmitter& ir, const AmdGpu::Image& image, const IR:
     // to convert this to the range [0.0, 1.0] to get correct results.
     const auto fixed_x = ir.FPSub(IR::F32{x}, ir.Imm32(1.f));
     const auto fixed_y = ir.FPSub(IR::F32{y}, ir.Imm32(1.f));
-    return ir.CompositeConstruct(fixed_x, fixed_y, face);
+    // The slice of a cube array comes the way AMD hardware takes it: the face (0 to 5) plus
+    // eight times the cube's index. The host holds the faces as layers, six to a cube: taken
+    // as it is, every cube after the first would be read from others' faces, or from layers
+    // past the last (Astro Bot's light probes: the ground lit by the third came out black).
+    const IR::F32 slice{face};
+    const IR::F32 cube{ir.FPFloor(ir.FPMul(slice, ir.Imm32(0.125f)))};
+    const IR::F32 layer{
+        ir.FPAdd(ir.FPMul(cube, ir.Imm32(6.f)), ir.FPSub(slice, ir.FPMul(cube, ir.Imm32(8.f))))};
+    return ir.CompositeConstruct(fixed_x, fixed_y, layer);
 }
 
 void PatchImageSampleArgs(IR::Block& block, IR::Inst& inst, Info& info,

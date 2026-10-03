@@ -13,6 +13,7 @@
 #include "common/debug.h"
 #include "common/logging/log.h"
 #include "common/thread.h"
+#include "core/known_title.h"
 #include "core/emulator_settings.h"
 #include "core/ipc/ipc.h"
 #ifdef ENABLE_DISCORD_RPC
@@ -39,6 +40,10 @@
 #include "core/linker.h"
 #include "core/memory.h"
 #include "core/user_settings.h"
+#ifdef ENABLE_OPENXR_HOST
+#include "core/vr/openxr_host.h"
+#endif
+#include "core/vr/vr_runtime.h"
 #include "emulator.h"
 #include "video_core/cache_storage.h"
 #include "video_core/renderdoc.h"
@@ -363,6 +368,9 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
         LOG_INFO(Loader, "PSVR Supported: {}", (bool)psf_attributes.support_ps_vr.Value());
         LOG_INFO(Loader, "PSVR Required: {}", (bool)psf_attributes.require_ps_vr.Value());
     }
+    Core::Vr::Runtime::Instance().Configure(psf_attributes.support_ps_vr.Value() != 0,
+                                            psf_attributes.require_ps_vr.Value() != 0);
+    Core::KnownTitle::Prepare();
     if (!args.empty()) {
         const auto argc = std::min<size_t>(args.size(), 32);
         for (auto i = 0; i < argc; i++) {
@@ -545,6 +553,9 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
         window->WaitEvent();
     }
 
+#ifdef ENABLE_OPENXR_HOST
+    Core::Vr::OpenXrHost::Instance().Shutdown();
+#endif
     UpdatePlayTime(id);
     Storage::DataBase::Instance().Close();
 

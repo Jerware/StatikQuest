@@ -1,11 +1,16 @@
 ﻿// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
 #include <sstream>
 #include <unordered_set>
 #include <SDL3/SDL.h>
 #include <common/elf_info.h>
 #include <common/singleton.h>
+#include "common/singleton.h"
+#include "core/vr/vr_runtime.h"
 #include "common/logging/log.h"
 #include "controller.h"
 #include "core/emulator_settings.h"
@@ -116,9 +121,33 @@ int GameController::ReadStates(State* states, int states_num, bool* isConnected,
     return ret_num;
 }
 
+/// A VR host drives the real controller of the first player.
+static bool IsFirstController(const GameController* controller) {
+    return (*Common::Singleton<GameControllers>::Instance())[0] == controller;
+}
+
+/// Some buttons of the first player's controller also mean something about the view in a
+/// headset (see Core::Vr::Runtime::NotePadButton).
+static void NoteViewButtons(OrbisPadButtonDataOffset before, OrbisPadButtonDataOffset after) {
+    using Core::Vr::Runtime;
+    const auto changed = [&](OrbisPadButtonDataOffset button, Runtime::PadButton gesture) {
+        const bool was = True(before & button);
+        const bool is = True(after & button);
+        if (was != is) {
+            Runtime::Instance().NotePadButton(gesture, is);
+        }
+    };
+    changed(OrbisPadButtonDataOffset::Cross, Runtime::PadButton::Cross);
+    changed(OrbisPadButtonDataOffset::Options, Runtime::PadButton::Options);
+}
+
 void GameController::Button(OrbisPadButtonDataOffset button, bool is_pressed) {
+    const auto before = m_state.buttonsState;
     m_state.OnButton(button, is_pressed);
     PushState();
+    if (IsFirstController(this)) {
+        NoteViewButtons(before, m_state.buttonsState);
+    }
 }
 
 void GameController::Axis(Input::Axis axis, int value, bool smooth) {
@@ -129,21 +158,66 @@ void GameController::Axis(Input::Axis axis, int value, bool smooth) {
 void GameController::ApplyRemoteState(OrbisPadButtonDataOffset buttons,
                                       const std::array<int, 6>& axes, bool touch_down,
                                       float touch_x, float touch_y) {
-    std::lock_guard lock(m_states_queue_mutex);
-    m_connected = true;
-    m_connected_count = 1;
-    m_state.buttonsState = buttons;
-    for (int i = 0; i < std::to_underlying(Axis::AxisMax); ++i) {
-        m_state.OnAxis(static_cast<Input::Axis>(i), axes[i], false);
+    OrbisPadButtonDataOffset before;
+    {
+        std::lock_guard lock(m_states_queue_mutex);
+        before = m_state.buttonsState;
+        m_connected = true;
+        m_connected_count = 1;
+        m_state.buttonsState = buttons;
+        for (int i = 0; i < std::to_underlying(Axis::AxisMax); ++i) {
+            m_state.OnAxis(static_cast<Input::Axis>(i), axes[i], false);
+        }
+        m_state.OnTouchpad(0, touch_down, touch_x, touch_y);
+        m_state.time = Libraries::Kernel::sceKernelGetProcessTime();
+        m_states_queue.Push(m_state);
     }
-    m_state.OnTouchpad(0, touch_down, touch_x, touch_y);
-    m_state.time = Libraries::Kernel::sceKernelGetProcessTime();
-    m_states_queue.Push(m_state);
+    if (IsFirstController(this)) {
+        NoteViewButtons(before, buttons);
+    }
 }
 
 void GameController::Gyro(int id) {
     m_state.OnGyro(gyro_buf);
     PushState();
+    // This is called every few milliseconds for every controller, whatever it has to say.
+    if (IsFirstController(this)) {
+        Core::Vr::Runtime::Instance().PollViewGestures();
+        UpdateStickTouch();
+    }
+}
+
+void GameController::UpdateStickTouch() {
+    // A controller without a touchpad of its own (or whose touchpad nobody touches): the right
+    // stick moves a finger that touches down at the pad's centre. Titles made for a headset
+    // have their players swipe, and have no use for a second stick.
+    // SHADPS4_STICK_TOUCHPAD=0 leaves the stick a stick.
+    static const bool enabled = [] {
+        const char* value = std::getenv("SHADPS4_STICK_TOUCHPAD");
+        return value == nullptr || value[0] != '0';
+    }();
+    if (!enabled || m_sdl_gamepad == nullptr ||
+        !Core::Vr::Runtime::Instance().IsHeadsetConnected()) {
+        return;
+    }
+    const float x =
+        static_cast<float>(SDL_GetGamepadAxis(m_sdl_gamepad, SDL_GAMEPAD_AXIS_RIGHTX)) / 32767.0f;
+    const float y =
+        static_cast<float>(SDL_GetGamepadAxis(m_sdl_gamepad, SDL_GAMEPAD_AXIS_RIGHTY)) / 32767.0f;
+    const bool wanted = !m_finger_down && std::hypot(x, y) > 0.25f;
+    if (wanted) {
+        const float touch_x = std::clamp(0.5f + x * 0.45f, 0.0f, 1.0f);
+        const float touch_y = std::clamp(0.5f + y * 0.45f, 0.0f, 1.0f);
+        if (!m_stick_touch || std::abs(touch_x - m_stick_touch_x) > 0.002f ||
+            std::abs(touch_y - m_stick_touch_y) > 0.002f) {
+            m_stick_touch_x = touch_x;
+            m_stick_touch_y = touch_y;
+            ApplyTouch(0, true, touch_x, touch_y);
+        }
+    } else if (m_stick_touch && !m_finger_down) {
+        ApplyTouch(0, false, m_stick_touch_x, m_stick_touch_y);
+    }
+    m_stick_touch = wanted;
 }
 
 void GameController::Acceleration(int id) {
@@ -170,6 +244,9 @@ void GameController::SetLightBarRGB(u8 const r, u8 const g, u8 const b) {
         return;
     }
     colour = {r, g, b};
+    if (IsFirstController(this)) {
+        Core::Vr::Runtime::Instance().SetPadLight(r, g, b);
+    }
     if (m_sdl_gamepad != nullptr) {
         SDL_SetGamepadLED(m_sdl_gamepad, r, g, b);
     }
@@ -206,6 +283,9 @@ void GameControllers::ResetLightbarColors() {
 }
 
 bool GameController::SetVibration(u8 smallMotor, u8 largeMotor) {
+    if (IsFirstController(this)) {
+        Core::Vr::Runtime::Instance().SetPadVibration(smallMotor, largeMotor);
+    }
     if (m_sdl_gamepad != nullptr) {
         return SDL_RumbleGamepad(m_sdl_gamepad, (smallMotor / 255.0f) * 0xFFFF,
                                  (largeMotor / 255.0f) * 0xFFFF, -1);
@@ -214,6 +294,15 @@ bool GameController::SetVibration(u8 smallMotor, u8 largeMotor) {
 }
 
 void GameController::SetTouchpadState(int touchIndex, bool touchDown, float x, float y) {
+    // A finger on the real touchpad: the right stick stops standing in for one.
+    if (touchIndex == 0) {
+        m_finger_down = touchDown;
+        m_stick_touch = false;
+    }
+    ApplyTouch(touchIndex, touchDown, x, y);
+}
+
+void GameController::ApplyTouch(int touchIndex, bool touchDown, float x, float y) {
     if (touchIndex < 2) {
         bool was_pressed = m_state.touchpad[0].state || m_state.touchpad[1].state;
         m_state.OnTouchpad(touchIndex, touchDown, x, y);
@@ -290,6 +379,21 @@ void GameControllers::TryOpenSDLControllers() {
     std::unordered_set<SDL_JoystickID> assigned_ids;
     std::array<bool, 4> slot_taken{false, false, false, false};
 
+    // The first player gets the best of what is there: a DualSense before other PlayStation
+    // controllers (among which is the copy of a gamepad paired with a headset that Virtual
+    // Desktop puts on the PC, a DualShock 4 without motion sensors or touchpad), those before
+    // anything else.
+    const auto rank = [](SDL_JoystickID id) {
+        const u16 vendor = SDL_GetGamepadVendorForID(id);
+        const u16 product = SDL_GetGamepadProductForID(id);
+        if (vendor == 0x054c && (product == 0x0ce6 || product == 0x0df2)) {
+            return 0;
+        }
+        return vendor == 0x054c ? 1 : 2;
+    };
+    std::stable_sort(new_joysticks, new_joysticks + controller_count,
+                     [&](SDL_JoystickID a, SDL_JoystickID b) { return rank(a) < rank(b); });
+
     for (int i = 0; i < 4; i++) {
         SDL_Gamepad* pad = controllers[i]->m_sdl_gamepad;
         if (pad) {
@@ -314,10 +418,34 @@ void GameControllers::TryOpenSDLControllers() {
         }
     }
 
+    // In a headset there is one player: the best gamepad is theirs, the others stay unused.
+    // (Each would log in a player of its own, and a title made for one player in a headset may
+    // not cope: Astro Bot stops when its second player's controller cannot be tracked. Virtual
+    // Desktop adds a gamepad of its own, made from the headset's controllers.)
+    // (SHADPS4_VR_ONE_PLAYER=0: every gamepad logs in a player of its own all the same.)
+    static const bool one_player_wanted = [] {
+        const char* value = std::getenv("SHADPS4_VR_ONE_PLAYER");
+        return value == nullptr || value[0] != '0';
+    }();
+    const bool one_player =
+        one_player_wanted && Core::Vr::Runtime::Instance().IsHeadsetConnected();
+    static std::unordered_set<SDL_JoystickID> left_unused;
     for (int j = 0; j < controller_count; j++) {
         SDL_JoystickID id = new_joysticks[j];
         if (assigned_ids.contains(id))
             continue;
+        if (one_player && (slot_taken[0] || controllers[0]->m_sdl_gamepad != nullptr)) {
+            if (left_unused.insert(id).second) {
+                const char* name = SDL_GetGamepadNameForID(id);
+                LOG_INFO(Input,
+                         "Controller {} ({:04x}:{:04x}) is not used: in the headset there is one "
+                         "player, and another controller is theirs",
+                         name != nullptr ? name : "unnamed", SDL_GetGamepadVendorForID(id),
+                         SDL_GetGamepadProductForID(id));
+            }
+            continue;
+        }
+        left_unused.erase(id);
 
         SDL_Gamepad* pad = SDL_OpenGamepad(id);
         if (!pad) {
@@ -339,6 +467,22 @@ void GameControllers::TryOpenSDLControllers() {
                 c->user_id = u->user_id;
                 UserManagement.LoginUser(u, i + 1);
                 c->ConnectController(pad);
+                {
+                    const char* name = SDL_GetGamepadName(pad);
+                    const char* path = SDL_GetGamepadPath(pad);
+                    LOG_INFO(Input,
+                             "Controller {} connected: {} ({:04x}:{:04x} at {}; motion sensors {}, "
+                             "touchpad {}, light {})",
+                             i + 1, name != nullptr ? name : "unnamed", SDL_GetGamepadVendor(pad),
+                             SDL_GetGamepadProduct(pad), path != nullptr ? path : "?",
+                             SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO) ? "yes" : "no",
+                             SDL_GetNumGamepadTouchpads(pad) > 0 ? "yes" : "no, the right stick "
+                                                                           "stands in",
+                             SDL_GetBooleanProperty(SDL_GetGamepadProperties(pad),
+                                                    SDL_PROP_GAMEPAD_CAP_RGB_LED_BOOLEAN, false)
+                                 ? "yes"
+                                 : "no");
+                }
                 if (EmulatorSettings.IsMotionControlsEnabled()) {
                     if (SDL_SetGamepadSensorEnabled(c->m_sdl_gamepad, SDL_SENSOR_GYRO, true)) {
                         c->gyro_poll_rate =

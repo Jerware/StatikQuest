@@ -53,6 +53,7 @@
 #include "core/libraries/pad/pad.h"
 #include "core/libraries/playgo/playgo.h"
 #include "core/libraries/playgo/playgo_dialog.h"
+#include "core/libraries/json/json.h"
 #include "core/libraries/random/random.h"
 #include "core/libraries/razor_cpu/razor_cpu.h"
 #include "core/libraries/remote_play/remoteplay.h"
@@ -62,6 +63,7 @@
 #include "core/libraries/screenshot/screenshot.h"
 #include "core/libraries/share_play/shareplay.h"
 #include "core/libraries/signin_dialog/signindialog.h"
+#include "core/libraries/social_screen/social_screen.h"
 #include "core/libraries/sysmodule/sysmodule.h"
 #include "core/libraries/system/commondialog.h"
 #include "core/libraries/system/msgdialog.h"
@@ -124,6 +126,7 @@ void InitHLELibs(Core::Loader::SymbolsResolver* sym) {
     Libraries::PlayGo::RegisterLib(sym);
     Libraries::PlayGo::Dialog::RegisterLib(sym);
     Libraries::Random::RegisterLib(sym);
+    Libraries::Json::RegisterLib(sym);
     Libraries::Usbd::RegisterLib(sym);
     Libraries::Pad::RegisterLib(sym);
     Libraries::Ajm::RegisterLib(sym);
@@ -143,7 +146,7 @@ void InitHLELibs(Core::Loader::SymbolsResolver* sym) {
     Libraries::Remoteplay::RegisterLib(sym);
     Libraries::RazorCpu::RegisterLib(sym);
     Libraries::Move::RegisterLib(sym);
-#ifdef ARCH_X86_64
+#if defined(ARCH_X86_64) || defined(SHADPS4_ENABLE_FEX_GUEST_CPU)
     Libraries::Fiber::RegisterLib(sym);
 #endif
     Libraries::Mouse::RegisterLib(sym);
@@ -151,6 +154,7 @@ void InitHLELibs(Core::Loader::SymbolsResolver* sym) {
     Libraries::Zlib::RegisterLib(sym);
     Libraries::Hmd::RegisterLib(sym);
     Libraries::HmdSetupDialog::RegisterLib(sym);
+    Libraries::SocialScreen::RegisterLib(sym);
     Libraries::DiscMap::RegisterLib(sym);
     Libraries::Ulobjmgr::RegisterLib(sym);
     Libraries::SigninDialog::RegisterLib(sym);

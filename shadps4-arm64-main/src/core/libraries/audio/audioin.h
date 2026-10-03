@@ -37,6 +37,8 @@ struct PortIn {
     u32 freq = 0;
     u32 channels_num = 0;
     u32 sample_size = 0;
+    /// Whether there is a device behind the port, as its backend said when it was opened.
+    bool available = false;
 };
 
 int PS4_SYSV_ABI sceAudioInChangeAppModuleState();

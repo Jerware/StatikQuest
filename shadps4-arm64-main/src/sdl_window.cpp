@@ -26,6 +26,7 @@
 #include "input/controller.h"
 #include "input/input_handler.h"
 #include "input/input_mouse.h"
+#include "core/vr/vr_runtime.h"
 #include "sdl_window.h"
 #include "video_core/renderdoc.h"
 
@@ -101,6 +102,12 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, Input::GameControllers* controller
     if (!SDL_SetHint(SDL_HINT_APP_NAME, "shadPS4")) {
         UNREACHABLE_MSG("Failed to set SDL window hint: {}", SDL_GetError());
     }
+    // With SHADPS4_HEADLESS there is no display to show the game on: the frames go to a VR host
+    // (or nowhere), and SDL only has to provide events.
+    const bool headless = std::getenv("SHADPS4_HEADLESS") != nullptr;
+    if (headless) {
+        SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "dummy");
+    }
     LOG_INFO(Input, "Initializing SDL video subsystem");
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         UNREACHABLE_MSG("Failed to initialize SDL video subsystem: {}", SDL_GetError());
@@ -123,7 +130,8 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, Input::GameControllers* controller
 #endif
     SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, width);
     SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, height);
-    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_FLAGS_NUMBER, SDL_WINDOW_VULKAN);
+    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_FLAGS_NUMBER,
+                          headless ? 0 : SDL_WINDOW_VULKAN);
     SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_RESIZABLE_BOOLEAN, true);
     LOG_INFO(Input, "Creating SDL Vulkan window");
     window = SDL_CreateWindowWithProperties(props);
@@ -155,6 +163,24 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, Input::GameControllers* controller
 
 #ifndef ENABLE_BACHATA_RUNTIME
     SDL_InitSubSystem(SDL_INIT_GAMEPAD);
+    // SHADPS4_TEST_VIRTUAL_GAMEPADS=<n>, for tests: that many gamepads that nobody holds, an
+    // Xbox controller first and DualSenses after it, as if they were plugged in.
+    if (const char* count = std::getenv("SHADPS4_TEST_VIRTUAL_GAMEPADS"); count != nullptr) {
+        for (int i = 0; i < std::clamp(std::atoi(count), 0, 4); ++i) {
+            SDL_VirtualJoystickDesc desc;
+            SDL_INIT_INTERFACE(&desc);
+            desc.type = SDL_JOYSTICK_TYPE_GAMEPAD;
+            desc.naxes = SDL_GAMEPAD_AXIS_COUNT;
+            desc.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
+            desc.axis_mask = (1u << SDL_GAMEPAD_AXIS_COUNT) - 1;
+            desc.button_mask = (1u << SDL_GAMEPAD_BUTTON_COUNT) - 1;
+            desc.vendor_id = i == 0 ? 0x045e : 0x054c;
+            desc.product_id = i == 0 ? 0x028e : 0x0ce6;
+            desc.name = i == 0 ? "Test Xbox 360 Controller" : "Test DualSense";
+            const SDL_JoystickID id = SDL_AttachVirtualJoystick(&desc);
+            LOG_INFO(Input, "Test gamepad {} plugged in: {}", desc.name, id != 0 ? "yes" : SDL_GetError());
+        }
+    }
 #endif
 
 #if defined(SDL_PLATFORM_WIN32)
@@ -180,6 +206,9 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, Input::GameControllers* controller
     window_info.type = WindowSystemType::Metal;
     window_info.render_surface = SDL_Metal_GetLayer(SDL_Metal_CreateView(window));
 #endif
+    if (headless) {
+        window_info = {};
+    }
     // input handler init-s
     Input::ControllerOutput::LinkJoystickAxes();
     Input::ParseInputConfig(std::string(Common::ElfInfo::Instance().GameSerial()));
@@ -432,6 +461,14 @@ void WindowSDL::OnGamepadEvent(const SDL_Event* event) {
                       event->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN;
     Input::InputEvent input_event = Input::InputBinding::GetInputEventFromSDLEvent(*event);
 
+    // The PS button is nothing a title ever sees. In a headset it resets the view.
+    if ((event->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ||
+         event->type == SDL_EVENT_GAMEPAD_BUTTON_UP) &&
+        event->gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE) {
+        Core::Vr::Runtime::Instance().NotePadButton(Core::Vr::Runtime::PadButton::Home,
+                                                    event->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN);
+    }
+
     // the touchpad button shouldn't be rebound to anything else,
     // as it would break the entire touchpad handling
     // You can still bind other things to it though
@@ -451,11 +488,19 @@ void WindowSDL::OnGamepadEvent(const SDL_Event* event) {
             if (gamepad < 5) {
                 controllers[gamepad]->UpdateGyro(event->gsensor.data);
             }
+            if (gamepad == 0) {
+                const float* gyro = event->gsensor.data;
+                Core::Vr::Runtime::Instance().UpdatePadGyro({gyro[0], gyro[1], gyro[2]});
+            }
             break;
         case SDL_SENSOR_ACCEL:
             gamepad = controllers.GetGamepadIndexFromJoystickId(event->gsensor.which);
             if (gamepad < 5) {
                 controllers[gamepad]->UpdateAcceleration(event->gsensor.data);
+            }
+            if (gamepad == 0) {
+                const float* accel = event->gsensor.data;
+                Core::Vr::Runtime::Instance().UpdatePadAcceleration({accel[0], accel[1], accel[2]});
             }
             break;
         default:

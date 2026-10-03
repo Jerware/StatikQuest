@@ -1,8 +1,19 @@
 // SPDX-FileCopyrightText: Copyright 2025 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <cstdarg>
+#include <cstdio>
+#include <cstdlib>
+#include <ctime>
+#include <utility>
+
 #include "common/assert.h"
 #include "common/debug.h"
+#include "common/logging/log.h"
 #include "common/thread.h"
 #include "imgui/renderer/texture_manager.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -11,6 +22,363 @@
 namespace Vulkan {
 
 constexpr u64 MAX_IN_FLIGHT_SUBMISSIONS = 8;
+
+namespace {
+
+/// A count kept by the thread that draws and read by the one that logs. Adding is a plain add:
+/// an atomic one, a dozen times per draw, cost as much as the rest of a draw's bookkeeping.
+/// The reader takes what was added since it last looked.
+struct Tally {
+    std::atomic<u64> value{};
+    u64 taken{};
+
+    void Add(u64 amount = 1) {
+        value.store(value.load(std::memory_order_relaxed) + amount, std::memory_order_relaxed);
+    }
+
+    u64 Take() {
+        const u64 now = value.load(std::memory_order_relaxed);
+        return now - std::exchange(taken, now);
+    }
+};
+
+struct FrameCounters {
+    Tally passes;
+    Tally loading_passes;
+    Tally pass_pixels;
+    Tally draws;
+    Tally computes;
+    Tally submits;
+    std::atomic<u64> frames{};
+    std::chrono::steady_clock::time_point since{std::chrono::steady_clock::now()};
+};
+
+FrameCounters g_frame_counters;
+
+struct StageTimes {
+    std::array<std::atomic<u64>, static_cast<size_t>(FrameStats::Stage::Count)> total{};
+    std::array<std::atomic<u64>, static_cast<size_t>(FrameStats::Stage::Count)> count{};
+    std::atomic<s64> guest_submit{};
+};
+
+StageTimes g_stage_times;
+
+std::array<Tally, static_cast<size_t>(FrameStats::Counter::Count)> g_counters{};
+
+/// Draws after which what has been recorded goes to the GPU at the next end of a render pass;
+/// 0 leaves everything to the end of the frame. SHADPS4_FLUSH_DRAWS sets it.
+u32 FlushDraws() {
+    static const u32 draws = [] {
+        const char* value = std::getenv("SHADPS4_FLUSH_DRAWS");
+#ifdef ENABLE_BACHATA_RUNTIME
+        constexpr u32 Default = 64;
+#else
+        constexpr u32 Default = 0;
+#endif
+        return value != nullptr ? static_cast<u32>(std::max(std::atoi(value), 0)) : Default;
+    }();
+    return draws;
+}
+
+/// One render pass of the frame that is being listed.
+struct PassRecord {
+    u32 width{};
+    u32 height{};
+    u32 colors{};
+    u32 loaded_colors{};
+    bool depth{};
+    bool depth_loaded{};
+    u32 color_view{};
+    u32 depth_view{};
+    vk::ImageLayout depth_layout{};
+    u32 draws{};
+    u64 vertices{};
+    const char* ended_in{};
+    u32 ended_at{};
+
+    bool SameAs(const PassRecord& other) const {
+        return width == other.width && height == other.height && colors == other.colors &&
+               loaded_colors == other.loaded_colors && depth == other.depth &&
+               depth_loaded == other.depth_loaded && color_view == other.color_view &&
+               depth_view == other.depth_view && depth_layout == other.depth_layout &&
+               draws == other.draws && vertices == other.vertices &&
+               ended_in == other.ended_in && ended_at == other.ended_at;
+    }
+};
+
+enum class Listing { Idle, Armed, Recording };
+
+struct FrameListing {
+    std::mutex mutex;
+    Listing state{Listing::Idle};
+    std::vector<PassRecord> passes;
+};
+
+FrameListing g_frame_listing;
+
+int FrameStatsLevel() {
+    static const int level = [] {
+        const char* value = std::getenv("SHADPS4_FRAME_STATS");
+        return value != nullptr ? std::atoi(value) : 0;
+    }();
+    return level;
+}
+
+const char* FileName(const char* path) {
+    const char* name = path;
+    for (const char* at = path; *at != '\0'; ++at) {
+        if (*at == '/' || *at == '\\') {
+            name = at + 1;
+        }
+    }
+    return name;
+}
+
+} // namespace
+
+bool FrameStats::Enabled() {
+    return FrameStatsLevel() > 0;
+}
+
+void FrameStats::RenderPass(const RenderState& state) {
+    if (!Enabled()) {
+        return;
+    }
+    PassRecord record;
+    record.width = state.width;
+    record.height = state.height;
+    record.colors = state.num_color_attachments;
+    for (u32 i = 0; i < state.num_color_attachments; ++i) {
+        const auto& attachment = state.color_attachments[i];
+        if (!attachment.image_view) {
+            continue;
+        }
+        if (record.color_view == 0) {
+            record.color_view = static_cast<u32>(
+                reinterpret_cast<uintptr_t>(static_cast<VkImageView>(attachment.image_view)));
+        }
+        if (!attachment.is_clear) {
+            record.loaded_colors |= 1u << i;
+        }
+    }
+    const auto& db = state.depth_stencil_attachment;
+    record.depth = db.has_depth || db.has_stencil;
+    record.depth_loaded =
+        (db.has_depth && !db.depth_clear) || (db.has_stencil && !db.stencil_clear);
+    if (record.depth) {
+        record.depth_view = static_cast<u32>(
+            reinterpret_cast<uintptr_t>(static_cast<VkImageView>(db.image_view)));
+        record.depth_layout = db.image_layout;
+    }
+
+    const bool has_targets = record.color_view != 0 || record.depth;
+    g_frame_counters.passes.Add();
+    g_frame_counters.loading_passes.Add(record.loaded_colors != 0 || record.depth_loaded ? 1 : 0);
+    // A pass without targets is as large as a framebuffer may be, and costs nothing.
+    g_frame_counters.pass_pixels.Add(has_targets ? u64{state.width} * state.height : 0);
+
+    if (FrameStatsLevel() > 1) {
+        std::scoped_lock lock{g_frame_listing.mutex};
+        if (g_frame_listing.state == Listing::Recording) {
+            g_frame_listing.passes.push_back(record);
+        }
+    }
+}
+
+void FrameStats::PassEnded(const std::source_location& where) {
+    if (FrameStatsLevel() < 2) {
+        return;
+    }
+    std::scoped_lock lock{g_frame_listing.mutex};
+    if (g_frame_listing.state == Listing::Recording && !g_frame_listing.passes.empty() &&
+        g_frame_listing.passes.back().ended_in == nullptr) {
+        g_frame_listing.passes.back().ended_in = FileName(where.file_name());
+        g_frame_listing.passes.back().ended_at = where.line();
+    }
+}
+
+void FrameStats::Draw() {
+    if (!Enabled()) {
+        return;
+    }
+    g_frame_counters.draws.Add();
+    if (FrameStatsLevel() > 1) {
+        std::scoped_lock lock{g_frame_listing.mutex};
+        if (g_frame_listing.state == Listing::Recording && !g_frame_listing.passes.empty()) {
+            ++g_frame_listing.passes.back().draws;
+        }
+    }
+}
+
+void FrameStats::Compute() {
+    if (Enabled()) {
+        g_frame_counters.computes.Add();
+    }
+}
+
+void FrameStats::Submit() {
+    if (Enabled()) {
+        g_frame_counters.submits.Add();
+    }
+}
+
+void FrameStats::Time(Stage stage, std::chrono::nanoseconds time) {
+    if (Enabled() && time.count() >= 0) {
+        g_stage_times.total[static_cast<size_t>(stage)] += static_cast<u64>(time.count());
+        ++g_stage_times.count[static_cast<size_t>(stage)];
+    }
+}
+
+void FrameStats::Add(Counter counter, u64 amount) {
+    if (!Enabled()) {
+        return;
+    }
+    g_counters[static_cast<size_t>(counter)].Add(amount);
+    if (counter == Counter::Vertices && FrameStatsLevel() > 1) {
+        std::scoped_lock lock{g_frame_listing.mutex};
+        if (g_frame_listing.state == Listing::Recording && !g_frame_listing.passes.empty()) {
+            g_frame_listing.passes.back().vertices += amount;
+        }
+    }
+}
+
+void FrameStats::GuestSubmit() {
+    if (!Enabled()) {
+        return;
+    }
+    s64 expected = 0;
+    g_stage_times.guest_submit.compare_exchange_strong(
+        expected, std::chrono::steady_clock::now().time_since_epoch().count());
+}
+
+std::chrono::steady_clock::time_point FrameStats::TakeGuestSubmit() {
+    using Clock = std::chrono::steady_clock;
+    return Clock::time_point{Clock::duration{g_stage_times.guest_submit.exchange(0)}};
+}
+
+namespace {
+std::atomic<u32> g_gpu_looks{};
+std::atomic<u32> g_gpu_busy_looks{};
+} // namespace
+
+void FrameStats::GpuLook(bool busy) {
+    g_gpu_looks.fetch_add(1, std::memory_order_relaxed);
+    if (busy) {
+        g_gpu_busy_looks.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+float FrameStats::TakeGpuLoad() {
+    const u32 looks = g_gpu_looks.exchange(0, std::memory_order_relaxed);
+    const u32 busy = g_gpu_busy_looks.exchange(0, std::memory_order_relaxed);
+    return looks != 0 ? static_cast<float>(busy) / static_cast<float>(looks) : -1.0f;
+}
+
+std::chrono::nanoseconds FrameStats::ThreadTime() {
+#ifdef _WIN32
+    return std::chrono::nanoseconds{0};
+#else
+    timespec time{};
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &time);
+    return std::chrono::seconds{time.tv_sec} + std::chrono::nanoseconds{time.tv_nsec};
+#endif
+}
+
+void FrameStats::EndFrame() {
+    if (!Enabled()) {
+        return;
+    }
+    auto& c = g_frame_counters;
+    const u64 frames = ++c.frames;
+
+    if (FrameStatsLevel() > 1) {
+        std::vector<PassRecord> passes;
+        {
+            std::scoped_lock lock{g_frame_listing.mutex};
+            if (g_frame_listing.state == Listing::Recording) {
+                passes.swap(g_frame_listing.passes);
+                g_frame_listing.state = Listing::Idle;
+            } else if (g_frame_listing.state == Listing::Armed) {
+                g_frame_listing.state = Listing::Recording;
+            }
+        }
+        for (size_t i = 0; i < passes.size();) {
+            const auto& pass = passes[i];
+            size_t run = 1;
+            while (i + run < passes.size() && passes[i + run].SameAs(pass)) {
+                ++run;
+            }
+            LOG_INFO(Render_Vulkan,
+                     "  pass {:3}{}: {}x{} colour {:04x} x{} (loaded {:#x}) depth {:04x}{}{} "
+                     "{} draws, {} thousand vertices, ended by {}:{}",
+                     i, run > 1 ? fmt::format(" (x{})", run) : std::string{}, pass.width,
+                     pass.height, pass.color_view & 0xffff, pass.colors, pass.loaded_colors,
+                     pass.depth_view & 0xffff,
+                     !pass.depth ? " (none)" : pass.depth_loaded ? " (loaded)" : " (cleared)",
+                     pass.depth ? " " + vk::to_string(pass.depth_layout) : std::string{},
+                     pass.draws, (pass.vertices + 500) / 1000,
+                     pass.ended_in != nullptr ? pass.ended_in : "the frame",
+                     pass.ended_at);
+            i += run;
+        }
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    const double seconds = std::chrono::duration<double>(now - c.since).count();
+    // Every five seconds, or as often as SHADPS4_FRAME_STATS_EVERY (seconds) says.
+    static const double interval = [] {
+        const char* value = std::getenv("SHADPS4_FRAME_STATS_EVERY");
+        const double every = value != nullptr ? std::atof(value) : 0.0;
+        return every > 0.0 ? every : 5.0;
+    }();
+    if (seconds < interval) {
+        return;
+    }
+    if (FrameStatsLevel() > 1) {
+        std::scoped_lock lock{g_frame_listing.mutex};
+        if (g_frame_listing.state == Listing::Idle) {
+            g_frame_listing.state = Listing::Armed;
+        }
+    }
+    const double n = static_cast<double>(frames);
+    static const auto start = now;
+    LOG_INFO(Render_Vulkan,
+             "frame stats at {:.0f} s: {:.1f} fps, per frame {:.1f} passes ({:.1f} loading their "
+             "targets, {:.1f} Mpx), {:.0f} draws, {:.1f} dispatches, {:.1f} submits",
+             std::chrono::duration<double>(now - start).count(), n / seconds,
+             c.passes.Take() / n, c.loading_passes.Take() / n, c.pass_pixels.Take() / n / 1e6,
+             c.draws.Take() / n, c.computes.Take() / n, c.submits.Take() / n);
+    const auto stage_ms = [](Stage stage) {
+        const u64 total = g_stage_times.total[static_cast<size_t>(stage)].exchange(0);
+        const u64 count = g_stage_times.count[static_cast<size_t>(stage)].exchange(0);
+        return count != 0 ? static_cast<double>(total) / static_cast<double>(count) / 1e6 : 0.0;
+    };
+    if (g_stage_times.count[static_cast<size_t>(Stage::Latency)] != 0) {
+        LOG_INFO(Render_Vulkan,
+                 "frame path: the title hands its lists over within {:.1f} ms, the GPU thread "
+                 "is through them {:.1f} ms later ({:.1f} ms of its time per frame), the frame "
+                 "is taken {:.1f} ms after that and flipped {:.1f} ms later; {:.1f} ms from the "
+                 "first command list to the flip",
+                 stage_ms(Stage::Submitting), stage_ms(Stage::CatchUp),
+                 stage_ms(Stage::Translate), stage_ms(Stage::Queued), stage_ms(Stage::GpuWait),
+                 stage_ms(Stage::Latency));
+    }
+    const auto per_frame = [n](Counter counter) {
+        return static_cast<double>(g_counters[static_cast<size_t>(counter)].Take()) / n;
+    };
+    const double lookups = per_frame(Counter::ImageLookups);
+    const double binds = per_frame(Counter::PipelineBinds);
+    if (lookups > 0.0 || binds > 0.0) {
+        LOG_INFO(Render_Vulkan,
+                 "frame shortcuts: {:.0f} of {:.0f} image lookups ({:.1f} images added or "
+                 "removed), {:.0f} of {:.0f} pipeline binds; {:.0f} thousand vertices drawn",
+                 per_frame(Counter::ImageLookupsShort), lookups,
+                 per_frame(Counter::ImageRegistrations), per_frame(Counter::PipelineBindsShort),
+                 binds, per_frame(Counter::Vertices) / 1e3);
+    }
+    c.frames = 0;
+    c.since = now;
+}
 
 std::mutex Scheduler::submit_mutex;
 
@@ -30,13 +398,45 @@ Scheduler::~Scheduler() {
 #endif
 }
 
+/// Whether a pass begun with `current` can take a draw that asks for `next`: the same targets in
+/// the same layouts, with nothing left to clear. Titles clear a target with the first draw to
+/// it; ending the pass there, only to load everything again for the second draw, costs a GPU
+/// that renders in tiles a round trip of the targets through memory.
+static bool ContinuesPass(const RenderState& current, const RenderState& next) {
+    if (current.width != next.width || current.height != next.height ||
+        current.num_layers != next.num_layers ||
+        current.num_color_attachments != next.num_color_attachments) {
+        return false;
+    }
+    for (u32 i = 0; i < next.num_color_attachments; ++i) {
+        const auto& ours = current.color_attachments[i];
+        const auto& theirs = next.color_attachments[i];
+        if (ours.image_view != theirs.image_view || ours.image_layout != theirs.image_layout ||
+            theirs.is_clear != 0) {
+            return false;
+        }
+    }
+    const auto& ours = current.depth_stencil_attachment;
+    const auto& theirs = next.depth_stencil_attachment;
+    return ours.image_view == theirs.image_view && ours.image_layout == theirs.image_layout &&
+           ours.has_depth == theirs.has_depth && ours.has_stencil == theirs.has_stencil &&
+           !theirs.depth_clear && !theirs.stencil_clear;
+}
+
 void Scheduler::BeginRendering(const RenderState& new_state) {
     if (is_rendering && render_state == new_state) {
+        return;
+    }
+    if (is_rendering && ContinuesPass(render_state, new_state)) {
+        // From here on the pass is one without clears: a draw that asks for a clear again
+        // means a new one.
+        render_state = new_state;
         return;
     }
     EndRendering();
     is_rendering = true;
     render_state = new_state;
+    bound_pipeline = nullptr;
 
     std::array<vk::RenderingAttachmentInfo, 8> color_attachments;
     for (u32 i = 0; i < render_state.num_color_attachments; ++i) {
@@ -83,13 +483,20 @@ void Scheduler::BeginRendering(const RenderState& new_state) {
     };
 
     current_cmdbuf.beginRendering(rendering_info);
+
+    FrameStats::RenderPass(render_state);
 }
 
-void Scheduler::EndRendering() {
+void Scheduler::EndRendering(std::source_location where) {
     if (!is_rendering) {
         return;
     }
+    FrameStats::PassEnded(where);
     is_rendering = false;
+    bound_pipeline = nullptr;
+    if (const u32 limit = FlushDraws(); limit != 0 && draws_since_flush >= limit) {
+        flush_due = true;
+    }
     current_cmdbuf.endRendering();
 }
 
@@ -118,7 +525,17 @@ void Scheduler::Wait(u64 tick) {
         SubmitInfo info{};
         Flush(info);
     }
-    master_semaphore.Wait(tick);
+    // From here on the tick has been submitted and the wait is for the GPU: milliseconds. A
+    // driver that has lost track of the tick only finds it again when something newer is
+    // submitted, and the thread that would do that is this one.
+    while (!master_semaphore.Wait(tick, std::chrono::seconds{1})) {
+        LOG_WARNING(Render_Vulkan,
+                    "Tick {} was not reached within a second (the GPU is at {}): submitting again "
+                    "to move the driver along",
+                    tick, master_semaphore.KnownGpuTick());
+        SubmitInfo info{};
+        Flush(info);
+    }
 }
 
 void Scheduler::PopPendingOperations() {
@@ -141,6 +558,7 @@ void Scheduler::AllocateWorkerCommandBuffers() {
 
     // Invalidate dynamic state so it gets applied to the new command buffer.
     dynamic_state.Invalidate();
+    bound_pipeline = nullptr;
 
 #if TRACY_GPU_ENABLED
     auto* profiler_ctx = instance.GetProfilerContext();
@@ -150,6 +568,25 @@ void Scheduler::AllocateWorkerCommandBuffers() {
         new (profiler_scope) tracy::VkCtxScope{profiler_ctx, &scope_loc, current_cmdbuf, true};
     }
 #endif
+}
+
+bool IsSyncTraceEnabled() {
+    static const bool enabled = std::getenv("SHADPS4_TRACE_SYNC") != nullptr;
+    return enabled;
+}
+
+void TraceSync(const char* format, ...) {
+    // The monotonic clock, as the driver shim's trace uses.
+    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::steady_clock::now().time_since_epoch())
+                         .count();
+    char line[320];
+    va_list arguments;
+    va_start(arguments, format);
+    std::vsnprintf(line, sizeof(line), format, arguments);
+    va_end(arguments);
+    std::fprintf(stderr, "vk   %ld.%03ld %s\n", static_cast<long>(now / 1000 % 1000),
+                 static_cast<long>(now % 1000), line);
 }
 
 void Scheduler::SubmitExecution(SubmitInfo& info) {
@@ -168,6 +605,8 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
 #endif
 
     EndRendering();
+    draws_since_flush = 0;
+    flush_due = false;
     Check(current_cmdbuf.end());
 
     const vk::Semaphore timeline = master_semaphore.Handle();
@@ -197,8 +636,37 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
     };
 
     ImGui::Core::TextureManager::Submit();
+    if (IsSyncTraceEnabled()) {
+        char waits[160] = "";
+        int length = 0;
+        // The last signal is this scheduler's own timeline.
+        for (u32 i = 0; i < info.num_wait_semas && length < 120; ++i) {
+            length += std::snprintf(waits + length, sizeof(waits) - length, " wait %llx@%llu",
+                                    static_cast<unsigned long long>(
+                                        reinterpret_cast<uintptr_t>(static_cast<VkSemaphore>(
+                                            info.wait_semas[i]))),
+                                    static_cast<unsigned long long>(info.wait_ticks[i]));
+        }
+        TraceSync("submit timeline %llx tick %llu%s fence %llx",
+                  static_cast<unsigned long long>(
+                      reinterpret_cast<uintptr_t>(static_cast<VkSemaphore>(timeline))),
+                  static_cast<unsigned long long>(signal_value), waits,
+                  static_cast<unsigned long long>(
+                      reinterpret_cast<uintptr_t>(static_cast<VkFence>(info.fence))));
+    }
+    FrameStats::Submit();
     auto submit_result = instance.GetGraphicsQueue().submit(submit_info, info.fence);
+    if (IsSyncTraceEnabled()) {
+        TraceSync("submit tick %llu returned %d", static_cast<unsigned long long>(signal_value),
+                  static_cast<int>(submit_result));
+    }
     ASSERT_MSG(submit_result != vk::Result::eErrorDeviceLost, "Device lost during submit");
+    if (submit_result != vk::Result::eSuccess) {
+        // Whatever was to be signalled by this submission never will be: say so, or the
+        // resulting wait looks like a hang out of nowhere.
+        LOG_CRITICAL(Render_Vulkan, "Queue submission {} failed: {}", signal_value,
+                     vk::to_string(submit_result));
+    }
 
     AllocateWorkerCommandBuffers();
 

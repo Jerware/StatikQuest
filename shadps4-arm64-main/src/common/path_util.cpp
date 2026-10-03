@@ -121,7 +121,8 @@ static auto UserPaths = [] {
         // Android app process without HOME), static init must still succeed so the library
         // loads; callers that need a real directory check existence themselves.
         std::error_code ec;
-        std::filesystem::create_directory(new_path, ec);
+        // All of the way down: the data folder itself may be new (a first start on a device).
+        std::filesystem::create_directories(new_path, ec);
         paths.insert_or_assign(shad_path, new_path);
     };
 

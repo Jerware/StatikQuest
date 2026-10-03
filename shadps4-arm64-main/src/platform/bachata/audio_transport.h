@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -36,6 +37,12 @@ public:
     bool Prepare(std::uint8_t channels, AudioSampleType type, std::uint32_t sample_rate,
                  std::uint32_t buffer_size);
     bool Write(std::span<const std::uint8_t> pcm);
+    /// Turns the connection around: instead of taking sound, the other end sends what its
+    /// microphone hears, as a plain stream of 16-bit stereo frames at `sample_rate`.
+    bool Capture(std::uint32_t sample_rate);
+    /// Takes what has arrived, without waiting for more. The number of bytes put into `pcm`,
+    /// or -1 once the other end is gone.
+    std::ptrdiff_t Read(std::span<std::uint8_t> pcm);
     [[nodiscard]] bool IsConnected() const;
 
 private:
@@ -43,6 +50,8 @@ private:
     void Close();
 
     int fd_ = -1;
+    /// The request being sent, kept between calls for its memory.
+    std::vector<std::uint8_t> message_;
 };
 
 } // namespace Platform::Bachata

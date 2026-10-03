@@ -7,6 +7,7 @@
 #include <fmt/std.h>
 #include <spdlog/sinks/async_sink.h>
 #include <spdlog/sinks/dup_filter_sink.h>
+#include <spdlog/sinks/null_sink.h>
 #ifdef _WIN32
 #include <Windows.h>
 #endif
@@ -39,6 +40,7 @@ std::unordered_map<std::string_view, std::shared_ptr<spdlog::logger>> ALL_LOGGER
     {Class::Core, nullptr},
     {Class::Core_Devices, nullptr},
     {Class::Core_Linker, nullptr},
+    {Class::Core_Vr, nullptr},
     {Class::Debug, nullptr},
     {Class::Frontend, nullptr},
     {Class::IPC, nullptr},
@@ -114,6 +116,7 @@ std::unordered_map<std::string_view, std::shared_ptr<spdlog::logger>> ALL_LOGGER
     {Class::Lib_Screenshot, nullptr},
     {Class::Lib_SharePlay, nullptr},
     {Class::Lib_SigninDialog, nullptr},
+    {Class::Lib_SocialScreen, nullptr},
     {Class::Lib_Ssl, nullptr},
     {Class::Lib_Ssl2, nullptr},
     {Class::Lib_SysModule, nullptr},
@@ -213,6 +216,19 @@ void Setup(std::string_view shadps4_filename) {
 }
 
 void Switch(std::string_view game_filename) {
+#ifdef _WIN32
+    // The settings had not been read yet when the console was set up. "file" is no console at
+    // all: what is logged goes to the log file only, which is what is wanted while playing (a
+    // console costs time, or disk space when its output is kept somewhere).
+    if (const std::string type = EmulatorSettings.GetLogType(); type != "wincolor") {
+        if (type == "file") {
+            g_console_sink = std::make_shared<spdlog::sinks::null_sink_mt>();
+        } else {
+            g_console_sink = std::make_shared<spdlog::sinks::msvc_sink_mt>();
+        }
+        g_console_sink->set_pattern("%^%v%$");
+    }
+#endif
     UpdateSinks();
     UpdateLogLevels(EmulatorSettings.GetLogFilter());
 

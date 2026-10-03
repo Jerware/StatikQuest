@@ -26,6 +26,7 @@
 #include "video_core/amdgpu/stall_log.h"
 #include "video_core/renderdoc.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
+#include "video_core/renderer_vulkan/vk_scheduler.h"
 
 namespace AmdGpu {
 
@@ -1497,6 +1498,7 @@ Liverpool::CmdBuffer Liverpool::CopyCmdBuffers(std::span<const u32> dcb, std::sp
 }
 
 void Liverpool::SubmitGfx(std::span<const u32> dcb, std::span<const u32> ccb) {
+    Vulkan::FrameStats::GuestSubmit();
     auto& queue = mapped_queues[GfxQueueId];
 
     if (EmulatorSettings.IsCopyGpuBuffers()) {

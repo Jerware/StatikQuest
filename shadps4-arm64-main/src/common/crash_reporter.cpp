@@ -3,6 +3,15 @@
 
 #include "common/arch.h"
 #include "common/crash_reporter.h"
+
+#ifdef _WIN32
+// The crash reporter is built on POSIX signal contexts; Windows builds use the SEH path instead.
+namespace Common {
+void InitCrashReporter() {}
+void ReportCrash(void*, int, void*) {}
+} // namespace Common
+#else
+
 #ifndef _WIN32
 #include <fcntl.h>
 #include <signal.h>
@@ -299,3 +308,5 @@ void ReportCrash(void* raw_context, int signum, void* siginfo_ptr) {
 }
 
 } // namespace Common
+
+#endif // _WIN32

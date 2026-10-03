@@ -1,6 +1,10 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstring>
+#include <unordered_map>
+#include <vector>
+
 #include "common/assert.h"
 #include "shader_recompiler/frontend/decode.h"
 #include "shader_recompiler/frontend/fetch_shader.h"
@@ -45,12 +49,36 @@ const u32* GetFetchShaderCode(const Info& info, u32 sgpr_base) {
     return code;
 }
 
+namespace {
+
+/// A fetch shader that has been read before. Titles generate one per vertex layout and then
+/// run it for every draw of every mesh with that layout, so the same few dozen are asked for
+/// thousands of times a frame; decoding them again each time was a noticeable part of what a
+/// draw costs the GPU thread.
+struct ParsedFetchShader {
+    std::vector<u32> code;
+    FetchShaderData data;
+};
+
+constexpr size_t MaxParsedFetchShaders = 2048;
+
+} // namespace
+
 std::optional<FetchShaderData> ParseFetchShader(const Shader::Info& info) {
     if (!info.has_fetch_shader) {
         return std::nullopt;
     }
 
     const auto* code = GetFetchShaderCode(info, info.fetch_shader_sgpr_base);
+
+    // Keyed by where the code is and checked against what it was: memory gets reused.
+    static thread_local std::unordered_map<const u32*, ParsedFetchShader> parsed;
+    if (const auto it = parsed.find(code);
+        it != parsed.end() && std::memcmp(code, it->second.code.data(),
+                                          it->second.code.size() * sizeof(u32)) == 0) {
+        return it->second.data;
+    }
+
     FetchShaderData data{};
     GcnCodeSlice code_slice(code, code + std::numeric_limits<u32>::max());
     GcnDecodeContext decoder;
@@ -108,6 +136,12 @@ std::optional<FetchShaderData> ParseFetchShader(const Shader::Info& info) {
         }
     }
 
+    if (parsed.size() >= MaxParsedFetchShaders) {
+        parsed.clear();
+    }
+    auto& entry = parsed[code];
+    entry.code.assign(code, code + data.size / sizeof(u32));
+    entry.data = data;
     return data;
 }
 

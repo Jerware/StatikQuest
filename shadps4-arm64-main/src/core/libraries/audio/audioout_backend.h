@@ -16,6 +16,12 @@ public:
     virtual void Output(void* ptr) = 0;
 
     virtual void SetVolume(const std::array<int, 8>& ch_volumes) = 0;
+
+    /// True when Output blocks for as long as the device needs to make room, that is when the
+    /// device's own clock decides how fast buffers go out.
+    virtual bool IsDevicePaced() const {
+        return false;
+    }
 };
 
 class AudioOutBackend {

@@ -8,6 +8,7 @@
 #include "core/libraries/libs.h"
 #include "core/libraries/pad/pad_errors.h"
 #include "core/user_settings.h"
+#include "core/vr/vr_runtime.h"
 #include "imgui/renderer/imgui_core.h"
 #include "input/controller.h"
 #include "pad.h"
@@ -638,6 +639,10 @@ int PS4_SYSV_ABI scePadResetOrientation(s32 handle) {
     auto& controller = *it->second;
     Libraries::Pad::OrbisFQuaternion defaultOrientation = {0.0f, 0.0f, 0.0f, 1.0f};
     controller.SetLastOrientation(defaultOrientation);
+    // A VR title tracks the first controller; "straight ahead" is reset for that view of it too.
+    if (&controller == (*Common::Singleton<Input::GameControllers>::Instance())[0]) {
+        Core::Vr::Runtime::Instance().ResetPadYaw();
+    }
     controller.SetLastUpdate(std::chrono::steady_clock::now());
 
     return ORBIS_OK;

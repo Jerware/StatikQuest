@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <atomic>
+
 #include "common/div_ceil.h"
 #include "common/logging/log.h"
 #include "core/emulator_settings.h"
@@ -93,6 +95,9 @@ public:
         } else {
             bits.UnsetRange(start_page, end_page);
         }
+        if constexpr (type == Type::GPU) {
+            any_gpu.store(enable || gpu.Any(), std::memory_order_relaxed);
+        }
         if constexpr (type == Type::CPU) {
             UpdateProtection<!enable, false>();
         } else if (EmulatorSettings.GetReadbacksMode() == GpuReadbacksMode::Precise) {
@@ -124,6 +129,9 @@ public:
 
         if constexpr (clear) {
             bits.UnsetRange(start_page, end_page);
+            if constexpr (type == Type::GPU) {
+                any_gpu.store(gpu.Any(), std::memory_order_relaxed);
+            }
             if constexpr (type == Type::CPU) {
                 UpdateProtection<true, false>();
             } else if (EmulatorSettings.GetReadbacksMode() != GpuReadbacksMode::Disabled) {
@@ -155,6 +163,13 @@ public:
         const RegionBits& bits = GetRegionBits<type>();
         RegionBits test(bits, start_page, end_page);
         return test.Any();
+    }
+
+    /// Whether any page of the region is marked as modified by the GPU. Most regions never
+    /// have one, and every buffer a draw binds asks: this answers without taking the lock and
+    /// going through the pages. (Only the GPU thread marks pages, and it is the one that asks.)
+    bool HasGpuModifiedPages() const noexcept {
+        return any_gpu.load(std::memory_order_relaxed);
     }
 
     LockType lock;
@@ -190,6 +205,7 @@ private:
     RegionBits gpu;
     RegionBits writeable;
     RegionBits readable;
+    std::atomic<bool> any_gpu{false};
 };
 
 } // namespace VideoCore

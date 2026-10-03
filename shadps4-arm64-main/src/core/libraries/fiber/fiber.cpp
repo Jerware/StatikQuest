@@ -3,26 +3,60 @@
 
 #include "fiber.h"
 
+#include <memory>
+#include <mutex>
+#include <unordered_map>
+
 #include "common/elf_info.h"
 #include "common/logging/log.h"
 #include "core/libraries/fiber/fiber_error.h"
+#include "core/libraries/fiber/fiber_internal.h"
 #include "core/libraries/libs.h"
 #include "core/tls.h"
 
 namespace Libraries::Fiber {
 
-static constexpr u32 kFiberSignature0 = 0xdef1649c;
-static constexpr u32 kFiberSignature1 = 0xb37592a0;
 static constexpr u32 kFiberOptSignature = 0xbb40e64d;
-static constexpr u64 kFiberStackSignature = 0x7149f2ca7149f2ca;
 static constexpr u64 kFiberStackSizeCheck = 0xdeadbeefdeadbeef;
 
 static std::atomic<u32> context_size_check = false;
+
+#ifdef ARCH_X86_64
+// A title's context area can be as small as a few kilobytes. That is plenty for the code the
+// title runs on the fiber, but not for the emulator functions that code calls into: they run on
+// the same stack and overflow into whatever the title keeps next to it. Fibers with a small
+// context therefore get a stack owned by the emulator; the title's area is left untouched.
+static constexpr u64 HostedStackSize = 0x40000;
+static std::mutex g_hosted_stacks_mutex;
+static std::unordered_map<const OrbisFiber*, std::unique_ptr<u8[]>> g_hosted_stacks;
+
+static void* FiberStackTop(const OrbisFiber* fiber) {
+    if (fiber->size_context >= HostedStackSize) {
+        return reinterpret_cast<u8*>(fiber->addr_context) + fiber->size_context;
+    }
+    std::scoped_lock lock{g_hosted_stacks_mutex};
+    auto& stack = g_hosted_stacks[fiber];
+    if (!stack) {
+        stack = std::make_unique_for_overwrite<u8[]>(HostedStackSize);
+    }
+    return reinterpret_cast<void*>(reinterpret_cast<u64>(stack.get() + HostedStackSize) & ~15ULL);
+}
+
+static void ReleaseFiberResources(const OrbisFiber* fiber) {
+    std::scoped_lock lock{g_hosted_stacks_mutex};
+    g_hosted_stacks.erase(fiber);
+}
+#else
+static void ReleaseFiberResources(const OrbisFiber* fiber) {
+    Fex::Discard(fiber);
+}
+#endif
 
 OrbisFiberContext* GetFiberContext() {
     return Core::GetTcbBase()->tcb_fiber;
 }
 
+#ifdef ARCH_X86_64
 extern "C" s32 PS4_SYSV_ABI _sceFiberSetJmp(OrbisFiberContext* ctx) asm("_sceFiberSetJmp");
 extern "C" s32 PS4_SYSV_ABI _sceFiberLongJmp(OrbisFiberContext* ctx) asm("_sceFiberLongJmp");
 extern "C" void PS4_SYSV_ABI _sceFiberSwitchEntry(OrbisFiberData* data,
@@ -34,6 +68,7 @@ extern "C" void PS4_SYSV_ABI _sceFiberForceQuit(u64 ret) {
     g_ctx->return_val = ret;
     _sceFiberLongJmp(g_ctx);
 }
+#endif
 
 void PS4_SYSV_ABI _sceFiberCheckStackOverflow(OrbisFiberContext* ctx) {
     u64* stack_base = reinterpret_cast<u64*>(ctx->current_fiber->addr_context);
@@ -78,6 +113,7 @@ s32 PS4_SYSV_ABI _sceFiberAttachContext(OrbisFiber* fiber, void* addr_context, u
     return ORBIS_OK;
 }
 
+#ifdef ARCH_X86_64
 void PS4_SYSV_ABI _sceFiberSwitchToFiber(OrbisFiber* fiber, u64 arg_on_run_to,
                                          OrbisFiberContext* ctx) {
     OrbisFiberContext* fiber_ctx = fiber->context;
@@ -99,7 +135,7 @@ void PS4_SYSV_ABI _sceFiberSwitchToFiber(OrbisFiber* fiber, u64 arg_on_run_to,
     data.entry = fiber->entry;
     data.arg_on_initialize = fiber->arg_on_initialize;
     data.arg_on_run_to = arg_on_run_to;
-    data.stack_addr = reinterpret_cast<u8*>(fiber->addr_context) + fiber->size_context;
+    data.stack_addr = FiberStackTop(fiber);
     if (fiber->flags & FiberFlags::SetFpuRegs) {
         data.fpucw = 0x037f;
         data.mxcsr = 0x9fc0;
@@ -146,6 +182,7 @@ void PS4_SYSV_ABI _sceFiberTerminate(OrbisFiber* fiber, u64 arg_on_return, Orbis
     _sceFiberLongJmp(ctx);
     __builtin_trap();
 }
+#endif
 
 s32 PS4_SYSV_ABI sceFiberInitializeImpl(OrbisFiber* fiber, const char* name, OrbisFiberEntry entry,
                                         u64 arg_on_initialize, void* addr_context, u64 size_context,
@@ -193,13 +230,8 @@ s32 PS4_SYSV_ABI sceFiberInitializeImpl(OrbisFiber* fiber, const char* name, Orb
     fiber->context = nullptr;
     fiber->flags = user_flags;
 
-    /*
-        A low stack area is problematic, as we can easily
-        cause a stack overflow with our HLE.
-    */
-    if (size_context && size_context <= 4096) {
-        LOG_WARNING(Lib_Fiber, "Fiber initialized with small stack area.");
-    }
+    // The fiber may be reusing the memory of one that was never finalized.
+    ReleaseFiberResources(fiber);
 
     fiber->magic_start = kFiberSignature0;
     fiber->magic_end = kFiberSignature1;
@@ -254,9 +286,11 @@ s32 PS4_SYSV_ABI sceFiberFinalize(OrbisFiber* fiber) {
         return ORBIS_FIBER_ERROR_STATE;
     }
 
+    ReleaseFiberResources(fiber);
     return ORBIS_OK;
 }
 
+#ifdef ARCH_X86_64
 s32 PS4_SYSV_ABI sceFiberRunImpl(OrbisFiber* fiber, void* addr_context, u64 size_context,
                                  u64 arg_on_run_to, u64* arg_on_return) {
     if (!fiber) {
@@ -390,6 +424,7 @@ s32 PS4_SYSV_ABI sceFiberSwitchImpl(OrbisFiber* fiber, void* addr_context, u64 s
 
     return ORBIS_OK;
 }
+#endif
 
 s32 PS4_SYSV_ABI sceFiberGetSelf(OrbisFiber** fiber) {
     if (!fiber) {
@@ -405,6 +440,7 @@ s32 PS4_SYSV_ABI sceFiberGetSelf(OrbisFiber** fiber) {
     return ORBIS_OK;
 }
 
+#ifdef ARCH_X86_64
 s32 PS4_SYSV_ABI sceFiberReturnToThread(u64 arg_on_return, u64* arg_on_run) {
     OrbisFiberContext* g_ctx = GetFiberContext();
     if (!g_ctx) {
@@ -434,6 +470,7 @@ s32 PS4_SYSV_ABI sceFiberReturnToThread(u64 arg_on_return, u64* arg_on_run) {
     _sceFiberTerminate(cur_fiber, arg_on_return, g_ctx);
     __builtin_trap();
 }
+#endif
 
 s32 PS4_SYSV_ABI sceFiberGetInfo(OrbisFiber* fiber, OrbisFiberInfo* fiber_info) {
     if (!fiber || !fiber_info) {
@@ -537,6 +574,7 @@ s32 PS4_SYSV_ABI sceFiberInitialize(OrbisFiber* fiber, const char* name, OrbisFi
                                   opt_param, 0, build_ver);
 }
 
+#ifdef ARCH_X86_64
 s32 PS4_SYSV_ABI sceFiberRun(OrbisFiber* fiber, u64 arg_on_run_to, u64* arg_on_return) {
     return sceFiberRunImpl(fiber, nullptr, 0, arg_on_run_to, arg_on_return);
 }
@@ -544,6 +582,7 @@ s32 PS4_SYSV_ABI sceFiberRun(OrbisFiber* fiber, u64 arg_on_run_to, u64* arg_on_r
 s32 PS4_SYSV_ABI sceFiberSwitch(OrbisFiber* fiber, u64 arg_on_run_to, u64* arg_on_run) {
     return sceFiberSwitchImpl(fiber, nullptr, 0, arg_on_run_to, arg_on_run);
 }
+#endif
 
 void RegisterLib(Core::Loader::SymbolsResolver* sym) {
     LIB_FUNCTION("hVYD7Ou2pCQ", "libSceFiber", 1, "libSceFiber", sceFiberInitialize);
@@ -552,15 +591,27 @@ void RegisterLib(Core::Loader::SymbolsResolver* sym) {
     LIB_FUNCTION("asjUJJ+aa8s", "libSceFiber", 1, "libSceFiber", sceFiberOptParamInitialize);
     LIB_FUNCTION("JeNX5F-NzQU", "libSceFiber", 1, "libSceFiber", sceFiberFinalize);
 
+    LIB_FUNCTION("p+zLIOg27zU", "libSceFiber", 1, "libSceFiber", sceFiberGetSelf);
+#ifdef ARCH_X86_64
     LIB_FUNCTION("a0LLrZWac0M", "libSceFiber", 1, "libSceFiber", sceFiberRun);
     LIB_FUNCTION("PFT2S-tJ7Uk", "libSceFiber", 1, "libSceFiber", sceFiberSwitch);
-    LIB_FUNCTION("p+zLIOg27zU", "libSceFiber", 1, "libSceFiber", sceFiberGetSelf);
     LIB_FUNCTION("B0ZX2hx9DMw", "libSceFiber", 1, "libSceFiber", sceFiberReturnToThread);
 
     LIB_FUNCTION("avfGJ94g36Q", "libSceFiber", 1, "libSceFiber",
                  sceFiberRunImpl); // _sceFiberAttachContextAndRun
     LIB_FUNCTION("ZqhZFuzKT6U", "libSceFiber", 1, "libSceFiber",
                  sceFiberSwitchImpl); // _sceFiberAttachContextAndSwitch
+#else
+    // The functions that change which code the thread runs work on the guest's registers.
+    LIB_FUNCTION_RAW("a0LLrZWac0M", "libSceFiber", 1, "libSceFiber", Fex::Run);
+    LIB_FUNCTION_RAW("PFT2S-tJ7Uk", "libSceFiber", 1, "libSceFiber", Fex::Switch);
+    LIB_FUNCTION_RAW("B0ZX2hx9DMw", "libSceFiber", 1, "libSceFiber", Fex::ReturnToThread);
+
+    LIB_FUNCTION_RAW("avfGJ94g36Q", "libSceFiber", 1, "libSceFiber",
+                     Fex::AttachContextAndRun); // _sceFiberAttachContextAndRun
+    LIB_FUNCTION_RAW("ZqhZFuzKT6U", "libSceFiber", 1, "libSceFiber",
+                     Fex::AttachContextAndSwitch); // _sceFiberAttachContextAndSwitch
+#endif
 
     LIB_FUNCTION("uq2Y5BFz0PE", "libSceFiber", 1, "libSceFiber", sceFiberGetInfo);
     LIB_FUNCTION("Lcqty+QNWFc", "libSceFiber", 1, "libSceFiber", sceFiberStartContextSizeCheck);
