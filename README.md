@@ -4,7 +4,10 @@
 from your own copy of the game through a PS4 emulator. Two ways to play:
 
 - **On the headset alone**: an app for the Quest 3 runs the emulator on the headset itself. No
-  PC is needed once it is installed.
+  PC is needed once it is installed. Please note: while the standalone Meta Quest 3 build is
+  fully functional and playable, the headset’s mobile GPU is pushed to its limits. As a result,
+  native standalone visuals run at lower resolutions and visual fidelity compared to the original
+  PS4 hardware or the PC VR mode.
 - **On a Windows PC, shown in the Quest through Virtual Desktop**: the PC runs the game at the
   console's 60 frames a second and at up to six times its resolution.
 
