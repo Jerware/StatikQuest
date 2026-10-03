@@ -122,7 +122,8 @@ Download `AstroQuest-<version>-PC-VR-Windows.zip` from the
    with the headset: paired with the headset, it reaches the PC without motion sensors or
    touchpad. With no gamepad on the PC, the Touch controllers play instead.
 5. **Connect to the PC with Virtual Desktop**, then start **`Play Astro Bot VR.bat`** on the
-   desktop you see in the headset. A small window lets you choose each eye's resolution, the
+   desktop you see in the headset. The first time, it offers to unpack the game if it is a
+   package (or asks where the game is). Then a small window lets you choose each eye's resolution, the
    frame rate and the field of view; Play starts the game, and the headset switches to it
    after a few seconds.
 
@@ -179,7 +180,7 @@ AstroQuest is free software, licensed under the
 (GPL-2.0-or-later), the license of shadPS4 it is built on.
 
 The third-party components it uses or ships keep their own licenses: among them FEX (MIT),
-Mesa's Turnip Vulkan driver (MIT), the GNU C Library (LGPL-2.1-or-later), the Khronos OpenXR
+Mesa's Turnip Vulkan driver (MIT), the GNU C Library (LGPL-2.1-or-later), PkgTool (LGPL-3.0), the Khronos OpenXR
 SDK (Apache-2.0) and the libraries under `shadps4-arm64-main/externals`. See
 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for what the release files contain and where
 the source of each part is.
@@ -201,6 +202,8 @@ use it only with software you own and have dumped yourself.
   headset's ARM processor.
 - [Mesa](https://www.mesa3d.org/) and its Turnip driver for Adreno GPUs (the build used here
   comes from [Vauzi-17/mesa-tu8](https://github.com/Vauzi-17/mesa-tu8)).
+- [LibOrbisPkg](https://github.com/maxton/LibOrbisPkg), whose PkgTool unpacks game packages
+  for the PC launcher.
 - [The Khronos Group](https://www.khronos.org/) for OpenXR and Vulkan,
   [vgmstream](https://github.com/vgmstream/vgmstream) for documenting Sony's audio formats,
   and [Virtual Desktop](https://www.vrdesktop.net/) for the PC streaming path.
