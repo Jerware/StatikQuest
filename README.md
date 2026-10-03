@@ -74,10 +74,26 @@ Download `AstroQuest-<version>-Quest3.apk` from the
    ```
 
    The app also finds it in `/sdcard/Android/data/com.astrobotquest.vrhost/files/games/CUSA12392`,
-   but that folder is deleted with the app if it is ever uninstalled. The headset needs the
-   game's folder, not a `.pkg`: if a package is what you have, unpack it on a PC first. The PC
-   download below does that: put the package in its `games` folder, start it once, and
-   `games\CUSA12392` is the folder to copy.
+   but that folder is deleted with the app if it is ever uninstalled.
+
+   **If your game is a `.pkg` file**, unpack it on a PC first: the headset needs the game's
+   folder. Two ways:
+
+   - **The easy one, on Windows**: download `AstroQuest-<version>-PC-VR-Windows.zip` from the
+     same release, unzip it, put your `.pkg` in its `games` folder and start
+     `Play Astro Bot VR.bat`. It offers to unpack the package (about a minute, 13 GB); you can
+     close it after that. `games\CUSA12392` is then the folder to copy to the headset. You do
+     not need Virtual Desktop or a VR-ready PC for this.
+   - **By hand, with the tool it uses**: [PkgTool](https://github.com/maxton/LibOrbisPkg/releases/tag/v0.2)
+     (`PkgTool-0.2.231.zip`, free and open source; Windows, or the `PkgTool.Core` builds for
+     Linux and macOS). `PkgTool pkg_extract --passcode 00000000000000000000000000000000 game.pkg out`
+     puts the game in `out/uroot`: rename that folder `CUSA12392`. Then add the game's
+     description, which the package keeps apart: `PkgTool pkg_listentries game.pkg` shows the
+     number of `PARAM_SFO`, and `PkgTool pkg_extractentry game.pkg <number> CUSA12392/sce_sys/param.sfo`
+     writes it. Without `param.sfo` the emulator does not recognise the game.
+
+   Either way, only a package made from a dump of the game can be unpacked; one downloaded
+   from the PlayStation Store is encrypted.
 3. **Pair the DualSense with the headset**: Settings > Bluetooth > Pair, and on the
    controller hold Create and the PS button until the light bar flashes.
 4. **Start "Astro VR Host"** from the App Library, under *Unknown Sources*. The first start
