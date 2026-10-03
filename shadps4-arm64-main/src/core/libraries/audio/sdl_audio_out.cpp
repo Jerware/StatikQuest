@@ -6,9 +6,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <thread>
 #include <SDL3/SDL_audio.h>
+#include <SDL3/SDL_events.h>
 #include <SDL3/SDL_hints.h>
 
 #include "common/logging/log.h"
@@ -40,6 +42,13 @@ constexpr float VOLUME_EPSILON = 0.001f;
 constexpr u64 VOLUME_CHECK_INTERVAL_US = 50000; // Check every 50ms
 constexpr u64 MIN_SLEEP_THRESHOLD_US = 10;
 constexpr u64 TIMING_RESYNC_THRESHOLD_US = 100000; // Resync if >100ms behind
+constexpr u64 DEVICE_CHECK_INTERVAL_US = 1000000;  // Look for the device once a second
+constexpr u64 DEVICE_RETRY_INTERVAL_US = 5000000;  // Try one that would not open again after 5
+// How long a change of device must have stood before the port follows it. While the system
+// changes its default device (which it does when a device comes or goes), SDL moves the
+// streams on the default by itself, and opening or closing a device in the middle of that
+// can hang both for good.
+constexpr u64 DEVICE_SETTLE_US = 3000000;
 
 // Queue management
 constexpr u32 QUEUE_MULTIPLIER = 4;
@@ -62,13 +71,28 @@ enum ChannelPos : u8 {
     STD_BR = 5
 };
 
+/// Says in the log which sound devices come and go while the title runs.
+static bool SDLCALL LogDeviceEvent(void*, SDL_Event* event) {
+    if (event->type == SDL_EVENT_AUDIO_DEVICE_ADDED ||
+        event->type == SDL_EVENT_AUDIO_DEVICE_REMOVED) {
+        const SDL_AudioDeviceID id = event->adevice.which;
+        const char* name = SDL_GetAudioDeviceName(id);
+        LOG_INFO(Lib_AudioOut, "Audio {} {}: {} ({})",
+                 event->adevice.recording ? "input" : "output",
+                 event->type == SDL_EVENT_AUDIO_DEVICE_ADDED ? "added" : "removed",
+                 name ? name : "?", id);
+    }
+    return true;
+}
+
 class SDLPortBackend : public PortBackend {
 public:
     explicit SDLPortBackend(const PortOut& port)
         : frame_size(port.format_info.FrameSize()), guest_buffer_size(port.BufferSize()),
           buffer_frames(port.buffer_frames), sample_rate(port.sample_rate),
           num_channels(port.format_info.num_channels), is_float(port.format_info.is_float),
-          is_std(port.format_info.is_std), channel_layout(port.format_info.channel_layout) {
+          is_std(port.format_info.is_std), channel_layout(port.format_info.channel_layout),
+          port_type(port.type) {
         // With a headset on, what plays the sound is a pair of speakers at the ears: surround
         // sound is rendered for that (a title mixes it for where the head points) instead of
         // being folded down to left and right. SHADPS4_VIRTUAL_SURROUND=0 turns it off.
@@ -79,7 +103,10 @@ public:
             output_channels = 2;
         }
 
-        if (!Initialize(port.type)) {
+        static std::once_flag watching;
+        std::call_once(watching, [] { SDL_AddEventWatch(LogDeviceEvent, nullptr); });
+
+        if (!Initialize()) {
             LOG_ERROR(Lib_AudioOut, "Failed to initialize SDL audio backend");
         }
     }
@@ -89,16 +116,17 @@ public:
     }
 
     void Output(void* ptr) override {
-        if (!stream || !internal_buffer || !convert) [[unlikely]] {
+        if (!internal_buffer || !convert) [[unlikely]] {
             return;
         }
 
-        if (ptr == nullptr) [[unlikely]] {
+        const u64 current_time = Kernel::sceKernelGetProcessTime();
+        FollowDevice(current_time);
+        if (!stream || ptr == nullptr) [[unlikely]] {
             return;
         }
 
         UpdateVolumeIfChanged();
-        const u64 current_time = Kernel::sceKernelGetProcessTime();
         if (virtualizer) {
             auto* const stereo = static_cast<float*>(internal_buffer);
             if (is_float) {
@@ -123,6 +151,7 @@ public:
     }
 
     void SetVolume(const std::array<int, 8>& ch_volumes) override {
+        std::scoped_lock lock{stream_mutex};
         if (!stream) [[unlikely]] {
             return;
         }
@@ -159,7 +188,7 @@ public:
     }
 
 private:
-    bool Initialize(OrbisAudioOutPort type) {
+    bool Initialize() {
         // Calculate timing parameters
         period_us = (1000000ULL * buffer_frames + sample_rate / 2) / sample_rate;
 
@@ -189,13 +218,67 @@ private:
         }
 
         // Open SDL device
-        if (!OpenDevice(type)) {
+        if (!OpenDevice()) {
             FreeAlignedBuffer();
             return false;
         }
 
         CalculateQueueThreshold();
         return true;
+    }
+
+    /// Keeps the port on the device it is meant for. One that goes away (a headset's is taken
+    /// out of the system whenever the headset stops being streamed to, a USB one is unplugged)
+    /// leaves its stream playing into nothing for good, and comes back as another device: the
+    /// port moves to the system's default meanwhile, and back once the device is there again.
+    void FollowDevice(u64 current_time) {
+        const u64 interval = stream ? DEVICE_CHECK_INTERVAL_US : DEVICE_RETRY_INTERVAL_US;
+        if (current_time - last_device_check_time < interval) {
+            return;
+        }
+        last_device_check_time = current_time;
+
+        const std::string device_name = GetDeviceName();
+        if (device_name == "None") {
+            return;
+        }
+        const SDL_AudioDeviceID dev_id = SelectAudioDevice(device_name, true);
+        if (stream && dev_id == opened_device) {
+            pending_device = SDL_INVALID_AUDIODEVICEID;
+            return;
+        }
+        if (dev_id != pending_device) {
+            pending_device = dev_id;
+            pending_since = current_time;
+            return;
+        }
+        if (current_time - pending_since < DEVICE_SETTLE_US) {
+            return;
+        }
+        pending_device = SDL_INVALID_AUDIODEVICEID;
+
+        // One port at a time: they all see the change in the same second.
+        static std::mutex moving;
+        std::scoped_lock one{moving};
+        if (stream) {
+            if (dev_id == SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK) {
+                LOG_WARNING(Lib_AudioOut,
+                            "Audio device '{}' went away: the sound moves to the system's default",
+                            device_name);
+            } else {
+                LOG_INFO(Lib_AudioOut, "Audio device '{}' is there: the sound moves to it",
+                         device_name);
+            }
+        }
+        std::scoped_lock lock{stream_mutex};
+        if (stream) {
+            SDL_DestroyAudioStream(stream);
+            stream = nullptr;
+        }
+        if (OpenDevice()) {
+            CalculateQueueThreshold();
+            next_output_time = 0;
+        }
     }
 
     void Cleanup() {
@@ -279,7 +362,7 @@ private:
         }
     }
 
-    bool OpenDevice(OrbisAudioOutPort type) {
+    bool OpenDevice() {
         const SDL_AudioSpec fmt = {
             .format = SDL_AUDIO_F32LE,
             .channels = static_cast<u8>(output_channels),
@@ -287,12 +370,13 @@ private:
         };
 
         // Determine device
-        const std::string device_name = GetDeviceName(type);
-        const SDL_AudioDeviceID dev_id = SelectAudioDevice(device_name, type);
+        const std::string device_name = GetDeviceName();
+        const SDL_AudioDeviceID dev_id = SelectAudioDevice(device_name, false);
 
         if (dev_id == SDL_INVALID_AUDIODEVICEID) {
             return false;
         }
+        opened_device = dev_id;
 
         // Create audio stream
         stream = SDL_OpenAudioDeviceStream(dev_id, &fmt, nullptr, nullptr);
@@ -322,17 +406,23 @@ private:
             return false;
         }
 
+        const char* default_name = SDL_GetAudioDeviceName(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK);
+        const bool stands_in = dev_id == SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK &&
+                               !device_name.empty() && device_name != "Default Device" &&
+                               (default_name == nullptr || device_name != default_name);
         LOG_INFO(Lib_AudioOut,
-                 "Opened audio device: {} ({} Hz, {} ch{}, gain: {:.3f})", device_name,
-                 sample_rate, num_channels,
+                 "Opened audio device: {} ({} Hz, {} ch{}, gain: {:.3f})",
+                 stands_in ? "the system's default" : device_name, sample_rate, num_channels,
                  virtualizer ? " rendered for two speakers at the ears" : "", initial_gain);
         return true;
     }
 
-    SDL_AudioDeviceID SelectAudioDevice(const std::string& device_name, OrbisAudioOutPort type) {
+    /// The device of that name, or the system's default when there is none (said in the log
+    /// unless `quiet`).
+    SDL_AudioDeviceID SelectAudioDevice(const std::string& device_name, bool quiet) {
         if (device_name == "None") {
             LOG_INFO(Lib_AudioOut, "Audio device disabled for port type {}",
-                     static_cast<int>(type));
+                     static_cast<int>(port_type));
             return SDL_INVALID_AUDIODEVICEID;
         }
 
@@ -345,7 +435,9 @@ private:
         SDL_AudioDeviceID* dev_array = SDL_GetAudioPlaybackDevices(&num_devices);
 
         if (!dev_array) {
-            LOG_WARNING(Lib_AudioOut, "No audio devices found, using default");
+            if (!quiet) {
+                LOG_WARNING(Lib_AudioOut, "No audio devices found, using default");
+            }
             return SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK;
         }
 
@@ -362,10 +454,20 @@ private:
         SDL_free(dev_array);
 
         if (selected_device == SDL_INVALID_AUDIODEVICEID) {
-            LOG_WARNING(Lib_AudioOut, "Audio device '{}' not found, using default", device_name);
+            if (!quiet) {
+                LOG_WARNING(Lib_AudioOut, "Audio device '{}' not found, using default",
+                            device_name);
+            }
             return SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK;
         }
 
+        // Where it is the system's default, the port plays on that: SDL moves such a stream
+        // by itself when the default changes, which is what happens when the device goes
+        // away and when it comes back. (Opening the device anew in those moments is not safe.)
+        const char* default_name = SDL_GetAudioDeviceName(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK);
+        if (default_name != nullptr && device_name == default_name) {
+            return SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK;
+        }
         return selected_device;
     }
 
@@ -392,9 +494,9 @@ private:
         return true;
     }
 
-    std::string GetDeviceName(OrbisAudioOutPort type) const {
+    std::string GetDeviceName() const {
         std::string name;
-        switch (type) {
+        switch (port_type) {
         case OrbisAudioOutPort::Main:
         case OrbisAudioOutPort::Bgm:
             name = EmulatorSettings.GetSDLMainOutputDevice();
@@ -618,6 +720,7 @@ private:
     const bool is_float;
     const bool is_std;
     const std::array<int, 8> channel_layout;
+    const OrbisAudioOutPort port_type;
     /// Channels handed to the device: the port's own, or two where surround sound is
     /// rendered for a pair of speakers at the ears.
     u32 output_channels{num_channels};
@@ -639,8 +742,16 @@ private:
     // Volume management
     alignas(64) std::atomic<float> current_gain{1.0f};
 
-    // SDL audio stream
+    // SDL audio stream. Made, and remade when its device changes, by the thread that plays;
+    // the mutex is for the others (the volume).
+    std::mutex stream_mutex;
     SDL_AudioStream* stream{nullptr};
+    /// What the stream was opened on: a device of the system, or its default.
+    SDL_AudioDeviceID opened_device{SDL_INVALID_AUDIODEVICEID};
+    u64 last_device_check_time{0};
+    /// The device the port is to move to, once it has been the one for long enough.
+    SDL_AudioDeviceID pending_device{SDL_INVALID_AUDIODEVICEID};
+    u64 pending_since{0};
     u32 queue_threshold{0};
 };
 

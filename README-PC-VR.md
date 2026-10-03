@@ -268,6 +268,25 @@ Things that had to be right, for whoever works on this again:
 - **Sound** goes to the device the runtime names for the headset (Virtual Desktop has its
   own), and the game's 7.1 mix is rendered for two speakers at the ears as on the Quest; the
   microphone is the one the runtime names. Both fall back to Windows' default devices.
+  The sound follows its device: when that goes away the sound moves to Windows' default
+  device, and back when it is there again (see "Fixed in 0.13").
+
+## Fixed in 0.13 (2026-10-03)
+
+- **No sound until the emulator was started again.** Virtual Desktop takes its playback
+  device ("Virtual Desktop Audio") out of Windows whenever the headset is not being streamed
+  to, and puts it back afterwards. A stream opened on a device that goes away plays into
+  nothing from then on, without an error, and the device that comes back is a new one to the
+  sound library. The emulator now looks once a second for the device its sound is meant for:
+  three seconds after that went away the sound moves to Windows' default device, and three
+  seconds after it is back, to it again. Where the device is Windows' default itself, the
+  sound is opened on "the default", which the sound library moves by itself. (The waiting is
+  there because opening a device while Windows changes its default can hang the sound for
+  good.) The log says which devices come and go ("Audio output added", "removed", "went
+  away", "is there"). Tested by taking a playback device out of Windows and putting it back
+  while the game plays, and measuring what each device plays: `tools/pc-audio-device-test.sh`.
+  Not changed: the microphone.
+- An emulator crash now leaves its call stack in the log (module and place in it).
 
 ## Fixed on 2026-10-03 (afternoon)
 

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstring>
 #include "common/arch.h"
 #include "common/assert.h"
 #include "common/crash_reporter.h"
@@ -73,6 +74,22 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
     // Breakpoints almost certainly come from our asserts/unreachables, no need to log it again.
     if (code != EXCEPTION_BREAKPOINT) {
         LOG_CRITICAL(Debug, "Unhandled Exception code {:#x} at {}", code, address);
+        // Where it came from: each caller as its module and the place in it.
+        void* frames[32];
+        const USHORT count = CaptureStackBackTrace(0, 32, frames, nullptr);
+        for (USHORT i = 0; i < count; ++i) {
+            HMODULE module = nullptr;
+            char name[MAX_PATH] = "?";
+            if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                   static_cast<LPCSTR>(frames[i]), &module)) {
+                GetModuleFileNameA(module, name, sizeof(name));
+            }
+            const char* file = std::strrchr(name, '\\');
+            LOG_CRITICAL(Debug, "  {} + {:#x}", file ? file + 1 : name,
+                         reinterpret_cast<uintptr_t>(frames[i]) -
+                             reinterpret_cast<uintptr_t>(module));
+        }
         Common::Singleton<Core::Emulator>::Instance()->Shutdown();
     }
 

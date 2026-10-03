@@ -34,6 +34,10 @@ before) it only installs after that one is uninstalled, which deletes its saves 
 the game in its `games` folder, unpacks a `.pkg` by itself and asks where the game is when it
 finds none (`README-PC-VR.md`). The folder it unpacks is also what the headset needs.
 
+**App 0.13 (2026-10-03)**: the same app once more. What changed is on the PC: the sound no
+longer stays silent after Virtual Desktop took its sound device away and brought it back
+(`README-PC-VR.md`).
+
 **App 0.8 (2026-10-03)**, after the fourth session (levels 1-1 to 1-3 played, the game stopped
 on entering 1-4 twice):
 
