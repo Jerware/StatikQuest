@@ -29,8 +29,8 @@ resolution under emulation.
 
 ## Status
 
-Work in progress, built and tested by one person on one Quest 3 and one PC. World 1 (levels
-1-1 to 1-4) has been played through on the Quest 3 on its own; the PC path has been played
+Work in progress, built and tested by one person on one Quest 3 and one PC. World 1 & 2has been 
+played through on the Quest 3 on its own; the PC path has been played
 over Virtual Desktop and fixed since. Expect rough edges, and please report what you find.
 
 ## What you need
