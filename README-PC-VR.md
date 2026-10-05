@@ -37,6 +37,9 @@ layout below. The connected DualSense takes priority over VR controllers.
 
 The renderer covers the Index's canted eye views with parallel projections, as required by
 the emulated PSVR game. SteamVR handles the final reprojection into the headset's eye views.
+The saved headset FOV is reused only when the OpenXR runtime (including its version), headset
+name and vendor match. With no confirmed headset identity or matching cache, the title uses
+the PSVR default until the next game start; legacy caches without an identity are ignored.
 
 ## Quest through Virtual Desktop
 
@@ -379,12 +382,15 @@ calls the runtime refused are counted and logged).
 ## Testing without the headset
 
 The launcher checks run with `powershell -NoProfile -ExecutionPolicy Bypass -File tools/tests/launcher-test.ps1`.
-To check parallel and canted view bounds, run these commands from the repository root in a
-developer shell with `clang-cl` and the Windows SDK available:
+To check the OpenXR quaternion conversion, parallel and opposite-canted stereo bounds, and
+headset FOV cache validation, run these commands from the repository root in a developer shell
+with `clang-cl` and the Windows SDK available (the `build` directory must exist):
 
 ```powershell
-clang-cl /std:c++latest /EHsc /Ishadps4-arm64-main/src tools/tests/openxr_view_test.cpp /Febuild/openxr_view_test.exe
+clang-cl /std:c++latest /EHsc /Ishadps4-arm64-main/src /Ishadps4-arm64-main/externals/openxr-sdk/include tools/tests/openxr_view_test.cpp /Fobuild/openxr_view_test.obj /Febuild/openxr_view_test.exe
 ./build/openxr_view_test.exe
+clang-cl /std:c++latest /EHsc /Ishadps4-arm64-main/src /Ishadps4-arm64-main/externals/json/include tools/tests/headset_fov_cache_test.cpp /Fobuild/headset_fov_cache_test.obj /Febuild/headset_fov_cache_test.exe
+./build/headset_fov_cache_test.exe
 ```
 
 Virtual Desktop's runtime has no headset to offer unless one is connected, so the OpenXR path

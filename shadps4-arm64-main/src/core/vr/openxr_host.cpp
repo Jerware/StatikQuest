@@ -472,7 +472,11 @@ struct OpenXrHost::Impl {
             return false;
         }
         XrInstanceProperties properties{XR_TYPE_INSTANCE_PROPERTIES};
-        xrGetInstanceProperties(instance, &properties);
+        if (XR_FAILED(xrGetInstanceProperties(instance, &properties))) {
+            LOG_WARNING(Core_Vr, "The OpenXR runtime did not report its identity");
+            DestroyInstance();
+            return false;
+        }
         runtime_name = fmt::format("{} {}.{}.{}", properties.runtimeName,
                                    XR_VERSION_MAJOR(properties.runtimeVersion),
                                    XR_VERSION_MINOR(properties.runtimeVersion),
@@ -482,6 +486,7 @@ struct OpenXrHost::Impl {
 
     /// Asks the runtime for its headset. False while there is none.
     bool FindSystem() {
+        Runtime::Instance().SetHeadsetIdentity({});
         // SHADPS4_XR_HIDE_FOR=<seconds>, for tests: the runtime's headset is not there for
         // that long after the start, as Virtual Desktop's is not until the headset connects.
         if (hide_for > 0.0f &&
@@ -515,7 +520,14 @@ struct OpenXrHost::Impl {
         if (hand_extension) {
             properties.next = &hand_properties;
         }
-        xrGetSystemProperties(instance, system, &properties);
+        if (XR_FAILED(xrGetSystemProperties(instance, system, &properties))) {
+            LOG_WARNING(Core_Vr, "The OpenXR runtime did not report its headset's identity");
+            system = XR_NULL_SYSTEM_ID;
+            return false;
+        }
+        Runtime::Instance().SetHeadsetIdentity(
+            {runtime_name, properties.systemName, properties.vendorId});
+        fov_samples = 0;
         max_swapchain_width = properties.graphicsProperties.maxSwapchainImageWidth;
         max_swapchain_height = properties.graphicsProperties.maxSwapchainImageHeight;
         // (Asked every time: a headset that comes back may track hands where it did not.)
@@ -612,6 +624,7 @@ struct OpenXrHost::Impl {
                 // and a session made with what answers.
                 session_lost = false;
                 system = XR_NULL_SYSTEM_ID;
+                Runtime::Instance().SetHeadsetIdentity({});
                 if (instance_lost) {
                     DestroyInstance();
                 }
@@ -627,6 +640,7 @@ struct OpenXrHost::Impl {
     }
 
     void DestroyInstance() {
+        Runtime::Instance().SetHeadsetIdentity({});
         instance_lost = false;
         system_failures = 0;
         if (instance != XR_NULL_HANDLE) {
@@ -1650,33 +1664,9 @@ struct OpenXrHost::Impl {
         if ((view_state.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) == 0) {
             return;
         }
-        const auto parallel_view = [](const XrView& view) {
-            const auto& q = view.pose.orientation;
-            const Quat orientation = Normalize({q.x, q.y, q.z, q.w});
-            const float left = std::tan(view.fov.angleLeft);
-            const float right = std::tan(view.fov.angleRight);
-            const float up = std::tan(view.fov.angleUp);
-            const float down = std::tan(view.fov.angleDown);
-            return ParallelViewTangents({Rotate(orientation, Vec3{left, up, -1.0f}),
-                                         Rotate(orientation, Vec3{right, up, -1.0f}),
-                                         Rotate(orientation, Vec3{left, down, -1.0f}),
-                                         Rotate(orientation, Vec3{right, down, -1.0f})});
-        };
-        const auto left_view = parallel_view(eye_views[0]);
-        const auto right_view = parallel_view(eye_views[1]);
-        if (!left_view || !right_view) {
-            return;
-        }
-        const Fov seen{
-            std::max(left_view->left, right_view->right),
-            std::max(left_view->right, right_view->left),
-            std::max(left_view->up, right_view->up),
-            std::max(left_view->down, right_view->down),
-        };
-        if (seen.tan_out > 0.1f && seen.tan_out < 10.0f && seen.tan_in > 0.1f &&
-            seen.tan_in < 10.0f && seen.tan_top > 0.1f && seen.tan_top < 10.0f &&
-            seen.tan_bottom > 0.1f && seen.tan_bottom < 10.0f && ++fov_samples % 600 == 1) {
-            runtime.NoteHeadsetFov(seen);
+        const auto seen = ParallelStereoFov(eye_views[0], eye_views[1]);
+        if (seen && ++fov_samples % 600 == 1) {
+            runtime.NoteHeadsetFov(*seen);
         }
         if ((view_state.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT) != 0) {
             const float dx = eye_views[1].pose.position.x - eye_views[0].pose.position.x;

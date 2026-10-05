@@ -783,7 +783,7 @@ if ($runtime -eq "") {
             $exe = Join-Path (Split-Path -Parent (Split-Path -Parent $runtime)) "VirtualDesktop.Streamer.exe"
             if (Test-Path $exe) {
                 Say "Starting Virtual Desktop Streamer..."
-                Start-Process $exe -WindowStyle Hidden
+                Start-Process $exe
             } else {
                 Say "Virtual Desktop Streamer is not running: start it, then connect from the headset." "Yellow"
             }
