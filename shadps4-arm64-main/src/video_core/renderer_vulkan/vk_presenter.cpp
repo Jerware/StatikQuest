@@ -10,6 +10,7 @@
 #include "core/devtools/layer.h"
 #include "core/emulator_settings.h"
 #include "core/libraries/system/systemservice.h"
+#include "core/vr/spectator_view.h"
 #ifdef ENABLE_OPENXR_HOST
 #include "core/vr/openxr_host.h"
 #endif
@@ -845,8 +846,9 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     return frame;
 }
 
-HmdFrames Presenter::PrepareHmdFrame(std::span<const AmdGpu::Image, 2> eye_textures, u32 frame_id,
-                                     u32& eye_width, u32& eye_height) {
+HmdFrames Presenter::PrepareHmdFrame(std::span<const AmdGpu::Image, 2> eye_textures,
+                                    const Core::Vr::Fov& fov, u32 frame_id,
+                                    u32& eye_width, u32& eye_height) {
     // The guest hands the eyes over as plain textures; they were rendered as color targets, so
     // the cache already holds their contents.
     std::array<VideoCore::TextureCache::ImageDesc, 2> descs;
@@ -898,9 +900,16 @@ HmdFrames Presenter::PrepareHmdFrame(std::span<const AmdGpu::Image, 2> eye_textu
     // pictures at their full size, where the window only has a look at them.
     Frame* frame = vr_exporter->Acquire(swapchain.GetSurfaceFormat().format);
     const bool exported = frame != nullptr;
+    static const auto desktop_view = [] {
+        const char* value = std::getenv("SHADPS4_VR_DESKTOP_VIEW");
+        return Core::Vr::ParseDesktopView(value != nullptr ? value : "");
+    }();
+    const bool spectator = desktop_view != Core::Vr::DesktopView::Stereo && !exported;
+    const float desktop_aspect = Core::Vr::DesktopViewAspect(
+        desktop_view, fov, static_cast<float>(eye_width) / eye_height);
     Frame* const local = exported ? nullptr : vr_exporter->AcquireLocal(eye_width * 2, eye_height);
     if (!exported) {
-        expected_ratio = static_cast<float>(eye_width * 2) / static_cast<float>(eye_height);
+        expected_ratio = desktop_aspect;
         frame = GetRenderFrame();
         if (!frame && !local) {
             return {};
@@ -973,9 +982,39 @@ HmdFrames Presenter::PrepareHmdFrame(std::span<const AmdGpu::Image, 2> eye_textu
     auto hmd_settings = pp_settings;
     hmd_settings.sharpen = sharpen;
     if (frame != nullptr) {
-        // The marker is for hosts that only see the picture; a VR host is told the frame's id.
-        pp_pass.Render(cmdbuf, regions_for(*frame), *frame, hmd_settings,
-                       exported ? std::nullopt : std::optional<u32>{frame_id});
+        const auto content = FitImage(
+            std::max(1, static_cast<s32>(desktop_aspect * frame->height)), frame->height,
+            frame->width, frame->height);
+        if (spectator && desktop_view == Core::Vr::DesktopView::Combined) {
+            const auto layout = Core::Vr::CombinedEyeRegions(content.extent.width, fov);
+            const auto region_for = [&](u32 eye) {
+                const auto& region = layout[eye];
+                return HostPasses::PostProcessingPass::Region{
+                    .input = eye_views[eye],
+                    .area{
+                        .offset{.x = content.offset.x + static_cast<s32>(region.x),
+                                .y = content.offset.y},
+                        .extent{.width = region.width, .height = content.extent.height},
+                    },
+                    .clip = vk::Rect2D{
+                        .offset{.x = content.offset.x + static_cast<s32>(region.clip_x),
+                                .y = content.offset.y},
+                        .extent{.width = region.clip_width, .height = content.extent.height},
+                    },
+                };
+            };
+            const std::array regions{region_for(0), region_for(1)};
+            const auto count = layout[1].clip_width == 0 ? 1u : 2u;
+            pp_pass.Render(cmdbuf, std::span{regions}.first(count), *frame, hmd_settings);
+        } else if (spectator) {
+            const std::array regions{
+                HostPasses::PostProcessingPass::Region{.input = eye_views[0], .area = content},
+            };
+            pp_pass.Render(cmdbuf, regions, *frame, hmd_settings);
+        } else {
+            pp_pass.Render(cmdbuf, regions_for(*frame), *frame, hmd_settings,
+                           exported ? std::nullopt : std::optional<u32>{frame_id});
+        }
         if (exported) {
             vr_exporter->Finalize(frame, cmdbuf);
         }

@@ -18,7 +18,7 @@ $base = Join-Path $top "build\launcher-test"
 if ([System.IO.Directory]::Exists($base)) { [System.IO.Directory]::Delete($base, $true) }
 $failed = 0
 function Check([string]$what, $got, $want) {
-    if ("$got" -eq "$want") { "ok    $what" } else { $script:failed++; "FAIL  $what`n      got:  $got`n      want: $want" }
+    if ("$got" -eq "$want") { Write-Host "ok    $what" } else { $script:failed++; Write-Host "FAIL  $what`n      got:  $got`n      want: $want" }
 }
 function Make-Game([string]$folder, [bool]$withSfo) {
     [void][System.IO.Directory]::CreateDirectory($folder)
@@ -82,6 +82,79 @@ $g = "$base\a\games"
 Check "g  a folder" (Use-Path "$base\a") "$g\CUSA12392\eboot.bin"
 Check "g  an eboot.bin" (Use-Path "$g\CUSA12392\eboot.bin") "$g\CUSA12392\eboot.bin"
 Check "g  nothing there" (Use-Path "$base\a\nothing.bin") ""
+
+$script:settings = [ordered]@{}
+$testGame = 'C:\Games\Astro Bot\eboot.bin'
+Check "Desktop defaults to stereo" (Get-DesktopView) "stereo"
+Check "Unspecified fullscreen preserves emulator settings" ((Get-LaunchArguments $testGame) -join '|') '-g|"C:\Games\Astro Bot\eboot.bin"'
+$script:settings = [ordered]@{ desktop_view = "spectator"; desktop_fullscreen = "1" }
+Check "Spectator setting selects one eye" (Get-DesktopView) "spectator"
+Check "Fullscreen argument is enabled" ((Get-LaunchArguments $testGame) -join '|') '-g|"C:\Games\Astro Bot\eboot.bin"|-f|true'
+$script:settings = [ordered]@{ desktop_view = "unknown"; desktop_fullscreen = "0" }
+Check "Unknown desktop view falls back to stereo" (Get-DesktopView) "stereo"
+Check "Windowed argument is explicit" ((Get-LaunchArguments $testGame) -join '|') '-g|"C:\Games\Astro Bot\eboot.bin"|-f|false'
+$script:settings = [ordered]@{ desktop_view = "combined" }
+Check "Combined setting selects both eyes" (Get-DesktopView) "combined"
+foreach ($assignment in $ast.EndBlock.Statements) {
+    if ($assignment -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+        $assignment.Left.Extent.Text -eq '$env:SHADPS4_VR_DESKTOP_VIEW') {
+        . ([scriptblock]::Create($assignment.Extent.Text))
+    }
+}
+Check "Launcher exports combined view" $env:SHADPS4_VR_DESKTOP_VIEW "combined"
+
+foreach ($assignment in $ast.EndBlock.Statements) {
+    if ($assignment -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+        $assignment.Left.Extent.Text -in @('$widths', '$caps')) {
+        . ([scriptblock]::Create($assignment.Extent.Text))
+    }
+}
+$SettingsFile = Join-Path $base 'menu-settings.txt'
+$script:menuAction = "choose"
+function Show-Form($form) {
+    $script:menuForm = $form
+    $view = $form.Controls["desktopView"]
+    $fullscreen = $form.Controls["desktopFullscreen"]
+    foreach ($control in $form.Controls) {
+        Check "Menu bounds contain $($control.Text) $($control.Name)" $form.ClientRectangle.Contains($control.Bounds) $true
+    }
+    $desktopControls = @($view, $fullscreen)
+    for ($i = 0; $i -lt $desktopControls.Count; $i++) {
+        for ($j = $i + 1; $j -lt $desktopControls.Count; $j++) {
+            Check "Desktop controls $i and $j do not overlap" $desktopControls[$i].Bounds.IntersectsWith($desktopControls[$j].Bounds) $false
+        }
+    }
+    Check "Menu offers three desktop modes" $view.Items.Count 3
+    if ($script:menuAction -eq "choose") {
+        Check "Menu defaults to stereo" $view.SelectedIndex 0
+        Check "Menu defaults to windowed" $fullscreen.Checked $false
+        $view.SelectedIndex = 2
+        $fullscreen.Checked = $true
+        return [System.Windows.Forms.DialogResult]::OK
+    }
+    Check "Menu restores combined eyes" $view.SelectedIndex 2
+    Check "Menu restores fullscreen" $fullscreen.Checked $true
+    $view.SelectedIndex = 0
+    $fullscreen.Checked = $false
+    if ($script:menuAction -eq "cancel") { return [System.Windows.Forms.DialogResult]::Cancel }
+    return [System.Windows.Forms.DialogResult]::OK
+}
+Read-Settings
+Check "Menu accepts combined eyes" (Show-Menu) $true
+$script:menuForm.Dispose()
+Check "Menu saves combined eyes" (Setting "desktop_view") "combined"
+Check "Menu saves fullscreen" (Setting "desktop_fullscreen") "1"
+$script:menuAction = "cancel"
+Check "Menu cancellation does not start game" (Show-Menu) $false
+$script:menuForm.Dispose()
+Read-Settings
+Check "Cancel preserves combined eyes" (Get-DesktopView) "combined"
+Check "Cancel preserves fullscreen" (Setting "desktop_fullscreen") "1"
+$script:menuAction = "restore"
+Check "Menu accepts stereo again" (Show-Menu) $true
+$script:menuForm.Dispose()
+Check "Menu saves stereo again" (Get-DesktopView) "stereo"
+Check "Menu saves windowed again" (Setting "desktop_fullscreen") "0"
 
 [System.IO.Directory]::Delete($base, $true)
 "failed: $failed"
