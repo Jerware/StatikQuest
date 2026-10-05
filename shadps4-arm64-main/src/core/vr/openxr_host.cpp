@@ -34,6 +34,8 @@
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
 
+#include "core/vr/openxr_view.h"
+
 namespace Core::Vr {
 
 namespace {
@@ -819,43 +821,49 @@ struct OpenXrHost::Impl {
             return;
         }
 
-        std::vector<XrActionSuggestedBinding> bindings;
-        const auto bind = [&](XrAction action, const char* path) {
-            XrPath binding = XR_NULL_PATH;
-            if (XR_SUCCEEDED(xrStringToPath(instance, path, &binding))) {
-                bindings.push_back({action, binding});
+        for (const bool index : {false, true}) {
+            std::vector<XrActionSuggestedBinding> bindings;
+            const auto bind = [&](XrAction action, const char* path) {
+                XrPath binding = XR_NULL_PATH;
+                if (XR_SUCCEEDED(xrStringToPath(instance, path, &binding))) {
+                    bindings.push_back({action, binding});
+                }
+            };
+            bind(act_move, "/user/hand/left/input/thumbstick");
+            bind(act_finger, "/user/hand/right/input/thumbstick");
+            bind(act_finger_press, "/user/hand/right/input/thumbstick/click");
+            bind(act_cross, "/user/hand/right/input/a/click");
+            bind(act_square, "/user/hand/right/input/b/click");
+            bind(act_circle,
+                 index ? "/user/hand/left/input/a/click" : "/user/hand/left/input/x/click");
+            bind(act_triangle,
+                 index ? "/user/hand/left/input/b/click" : "/user/hand/left/input/y/click");
+            bind(act_l1, "/user/hand/left/input/squeeze/value");
+            bind(act_r1, "/user/hand/right/input/squeeze/value");
+            bind(act_l2, "/user/hand/left/input/trigger/value");
+            bind(act_r2, "/user/hand/right/input/trigger/value");
+            bind(act_options, index ? "/user/hand/left/input/trackpad/force"
+                                    : "/user/hand/left/input/menu/click");
+            bind(act_l3, "/user/hand/left/input/thumbstick/click");
+            bind(act_pose, pad_hand == 0 ? "/user/hand/left/input/aim/pose"
+                                         : "/user/hand/right/input/aim/pose");
+            bind(act_grip, "/user/hand/left/input/grip/pose");
+            bind(act_grip, "/user/hand/right/input/grip/pose");
+            bind(act_rumble, "/user/hand/left/output/haptic");
+            bind(act_rumble, "/user/hand/right/output/haptic");
+            XrInteractionProfileSuggestedBinding suggested{
+                XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+            xrStringToPath(instance,
+                           index ? "/interaction_profiles/valve/index_controller"
+                                 : "/interaction_profiles/oculus/touch_controller",
+                           &suggested.interactionProfile);
+            suggested.countSuggestedBindings = static_cast<uint32_t>(bindings.size());
+            suggested.suggestedBindings = bindings.data();
+            if (const XrResult result = xrSuggestInteractionProfileBindings(instance, &suggested);
+                XR_FAILED(result)) {
+                LOG_WARNING(Core_Vr, "The headset's runtime takes no {} controller bindings: {}",
+                            index ? "Index" : "Touch", ResultText(instance, result));
             }
-        };
-        bind(act_move, "/user/hand/left/input/thumbstick");
-        bind(act_finger, "/user/hand/right/input/thumbstick");
-        bind(act_finger_press, "/user/hand/right/input/thumbstick/click");
-        bind(act_cross, "/user/hand/right/input/a/click");
-        bind(act_square, "/user/hand/right/input/b/click");
-        bind(act_circle, "/user/hand/left/input/x/click");
-        bind(act_triangle, "/user/hand/left/input/y/click");
-        bind(act_l1, "/user/hand/left/input/squeeze/value");
-        bind(act_r1, "/user/hand/right/input/squeeze/value");
-        bind(act_l2, "/user/hand/left/input/trigger/value");
-        bind(act_r2, "/user/hand/right/input/trigger/value");
-        bind(act_options, "/user/hand/left/input/menu/click");
-        bind(act_l3, "/user/hand/left/input/thumbstick/click");
-        bind(act_pose, pad_hand == 0 ? "/user/hand/left/input/aim/pose"
-                                     : "/user/hand/right/input/aim/pose");
-        bind(act_grip, "/user/hand/left/input/grip/pose");
-        bind(act_grip, "/user/hand/right/input/grip/pose");
-        bind(act_rumble, "/user/hand/left/output/haptic");
-        bind(act_rumble, "/user/hand/right/output/haptic");
-        XrInteractionProfileSuggestedBinding suggested{
-            XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
-        xrStringToPath(instance, "/interaction_profiles/oculus/touch_controller",
-                       &suggested.interactionProfile);
-        suggested.countSuggestedBindings = static_cast<uint32_t>(bindings.size());
-        suggested.suggestedBindings = bindings.data();
-        if (const XrResult result = xrSuggestInteractionProfileBindings(instance, &suggested);
-            XR_FAILED(result)) {
-            LOG_WARNING(Core_Vr, "The headset's runtime takes no bindings for its controllers: {}",
-                        ResultText(instance, result));
-            return;
         }
 
         XrSessionActionSetsAttachInfo attach{XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
@@ -994,9 +1002,10 @@ struct OpenXrHost::Impl {
             controllers_used = true;
             LOG_INFO(Core_Vr,
                      "No gamepad is connected to the PC: the headset's controllers stand in for "
-                     "it (left stick to move, A = cross, B = square, X = circle, Y = triangle, "
-                     "right stick = finger on the touchpad, pressed in = touchpad pressed, left "
-                     "menu button = OPTIONS, both sticks pressed in = reset the view; the {} "
+                     "it (left stick to move, right A = cross, right B = square, left X/A = "
+                     "circle, left Y/B = triangle, right stick = finger on the touchpad, "
+                     "pressed in = touchpad pressed, left menu/trackpad = OPTIONS, "
+                     "both sticks pressed in = reset the view; the {} "
                      "one is the controller in the game)",
                      pad_hand == 0 ? "left" : "right");
         }
@@ -1633,18 +1642,36 @@ struct OpenXrHost::Impl {
         XrViewState view_state{XR_TYPE_VIEW_STATE};
         XrView eye_views[2]{{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
         uint32_t view_count = 0;
-        if (!XR_SUCCEEDED(xrLocateViews(session, &locate, &view_state, 2, &view_count, eye_views)) ||
+        if (!XR_SUCCEEDED(
+                xrLocateViews(session, &locate, &view_state, 2, &view_count, eye_views)) ||
             view_count != 2) {
             return;
         }
-        // What the headset shows, both eyes together: the left eye's left and the right eye's
-        // right are the outer sides. (Tracked or not: a headset lying on the desk shows as much.)
-        const auto tangent = [](float angle) { return std::tan(std::abs(angle)); };
+        if ((view_state.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) == 0) {
+            return;
+        }
+        const auto parallel_view = [](const XrView& view) {
+            const auto& q = view.pose.orientation;
+            const Quat orientation = Normalize({q.x, q.y, q.z, q.w});
+            const float left = std::tan(view.fov.angleLeft);
+            const float right = std::tan(view.fov.angleRight);
+            const float up = std::tan(view.fov.angleUp);
+            const float down = std::tan(view.fov.angleDown);
+            return ParallelViewTangents({Rotate(orientation, Vec3{left, up, -1.0f}),
+                                         Rotate(orientation, Vec3{right, up, -1.0f}),
+                                         Rotate(orientation, Vec3{left, down, -1.0f}),
+                                         Rotate(orientation, Vec3{right, down, -1.0f})});
+        };
+        const auto left_view = parallel_view(eye_views[0]);
+        const auto right_view = parallel_view(eye_views[1]);
+        if (!left_view || !right_view) {
+            return;
+        }
         const Fov seen{
-            std::max(tangent(eye_views[0].fov.angleLeft), tangent(eye_views[1].fov.angleRight)),
-            std::max(tangent(eye_views[0].fov.angleRight), tangent(eye_views[1].fov.angleLeft)),
-            std::max(tangent(eye_views[0].fov.angleUp), tangent(eye_views[1].fov.angleUp)),
-            std::max(tangent(eye_views[0].fov.angleDown), tangent(eye_views[1].fov.angleDown)),
+            std::max(left_view->left, right_view->right),
+            std::max(left_view->right, right_view->left),
+            std::max(left_view->up, right_view->up),
+            std::max(left_view->down, right_view->down),
         };
         if (seen.tan_out > 0.1f && seen.tan_out < 10.0f && seen.tan_in > 0.1f &&
             seen.tan_in < 10.0f && seen.tan_top > 0.1f && seen.tan_top < 10.0f &&

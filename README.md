@@ -1,7 +1,7 @@
 # AstroQuest
 
 **ASTRO BOT Rescue Mission (PS4 / PlayStation VR) in virtual reality on Meta Quest 3**, played
-from your own copy of the game through a PS4 emulator. Two ways to play:
+from your own copy of the game through a PS4 emulator. Ways to play:
 
 - **On the headset alone**: an app for the Quest 3 runs the emulator on the headset itself. No
   PC is needed once it is installed. Please note: while the standalone Meta Quest 3 build is
@@ -10,6 +10,10 @@ from your own copy of the game through a PS4 emulator. Two ways to play:
   PS4 hardware or the PC VR mode.
 - **On a Windows PC, shown in the Quest through Virtual Desktop**: the PC runs the game at the
   console's 60 frames a second and at up to six times its resolution.
+- **On a Windows PC with a Valve Index through SteamVR**: the same PC build uses SteamVR's
+  OpenXR runtime and a DualSense connected to the PC. Headset playback has been reported working; see
+  [the Index setup](README-PC-VR.md#valve-index-through-steamvr), including controller
+  positional-tracking limits.
 
 The emulator is [shadPS4](https://github.com/shadps4-emu/shadPS4) (its ARM64 build,
 [zenithblue-oss/shadps4-arm64](https://github.com/zenithblue-oss/shadps4-arm64), on the
@@ -35,7 +39,8 @@ over Virtual Desktop and fixed since. Expect rough edges, and please report what
 
 ## What you need
 
-- **A Meta Quest 3.** (The Quest 3S has the same chip and should work, but nobody has tried.)
+- **A Meta Quest 3, or a Valve Index connected to a Windows PC running SteamVR.**
+  (The Quest 3S has the same chip and should work, but nobody has tried.)
 - **A PS5 DualSense controller.** It stands in for the PS4 controller the game expects:
   buttons, sticks, touchpad, motion sensors, rumble and light bar. (A DualShock 4 may work
   too; untested.) On the PC the Quest's own Touch controllers can stand in for it.
