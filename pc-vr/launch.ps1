@@ -60,14 +60,6 @@ function Get-DesktopView {
     return "stereo"
 }
 
-function Get-LaunchArguments([string]$game) {
-    $fullscreen = Setting "desktop_fullscreen"
-    if ($fullscreen -ne "") {
-        return @("-g", "`"$game`"", "-f", $(if ($fullscreen -eq "1") { "true" } else { "false" }))
-    }
-    return @("-g", "`"$game`"")
-}
-
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
@@ -651,14 +643,8 @@ function Show-Menu {
     $desktopModes = @("stereo", "spectator", "combined")
     $desktopView.Items.AddRange(@("Stereo (both eyes)", "Single eye (spectator)", "Combined eyes (spectator)"))
     $desktopView.SelectedIndex = [array]::IndexOf($desktopModes, (Get-DesktopView))
-    $desktopView.SetBounds(16, $y, 248, 26)
+    $desktopView.SetBounds(16, $y, 520, 26)
     $form.Controls.Add($desktopView)
-    $desktopFullscreen = New-Object System.Windows.Forms.CheckBox
-    $desktopFullscreen.Name = "desktopFullscreen"
-    $desktopFullscreen.Text = "Fullscreen on monitor"
-    $desktopFullscreen.Checked = (Setting "desktop_fullscreen" "0") -eq "1"
-    $desktopFullscreen.SetBounds(284, $y, 250, 26)
-    $form.Controls.Add($desktopFullscreen)
     $y += 40
 
     $again = New-Object System.Windows.Forms.CheckBox
@@ -687,7 +673,6 @@ function Show-Menu {
     Save-Setting "fov" ($fov.Value * 5)
     Save-Setting "menu" ($(if ($again.Checked) { "1" } else { "0" }))
     Save-Setting "desktop_view" ($desktopModes[$desktopView.SelectedIndex])
-    Save-Setting "desktop_fullscreen" ($(if ($desktopFullscreen.Checked) { "1" } else { "0" }))
     Read-Settings
     return $true
 }
@@ -834,7 +819,7 @@ if (Test-Path $log) { Copy-Item $log (Join-Path $logDir "shad_log.prev.txt") -Fo
 # (In this console, with what it prints kept out of the way: a window style given here would
 # also be the game window's.)
 $startedAt = Get-Date
-$process = Start-Process -FilePath $emulator -ArgumentList (Get-LaunchArguments $game) -WorkingDirectory $here `
+$process = Start-Process -FilePath $emulator -ArgumentList @("-g", "`"$game`"") -WorkingDirectory $here `
     -PassThru -NoNewWindow -RedirectStandardOutput (Join-Path $logDir "console.txt") `
     -RedirectStandardError (Join-Path $logDir "console-errors.txt")
 # (Without this the exit code is not to be had later.)

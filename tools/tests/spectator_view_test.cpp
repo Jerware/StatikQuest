@@ -59,8 +59,12 @@ int main() {
                 "stereo keeps pixel aspect");
     ok &= Check(Near(DesktopViewAspect(DesktopView::Spectator, simple, 0.9375f), 0.9375f),
                 "default single eye stays unchanged");
-    ok &= Check(Near(DesktopViewAspect(DesktopView::Combined, simple, 0.9375f), 1.6f),
-                "combined aspect covers both peripheral edges");
+    ok &= Check(Near(DesktopViewAspect(DesktopView::Combined, simple, 0.9375f), 1.25f) &&
+                    Near(DesktopViewAspect(DesktopView::Combined, reversed, 0.9375f), 1.25f),
+                "combined aspect preserves eye proportions with extra peripheral coverage");
+    ok &= Check(Near(DesktopViewAspect(DesktopView::Combined, symmetric, 0.9375f),
+                     DesktopViewAspect(DesktopView::Spectator, symmetric, 0.9375f)),
+                "symmetric combined aspect equals single eye");
     ok &= Check(Near(DesktopViewAspect(DesktopView::Combined, invalid, 0.9375f), 0.9375f),
                 "invalid FOV falls back to one eye");
     for (const auto& fov : {simple, reversed, symmetric, invalid}) {

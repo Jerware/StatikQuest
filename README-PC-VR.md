@@ -53,8 +53,8 @@ game waits up to a minute for the headset (`wait` in the settings) and starts in
 that it starts on the monitor and moves to the headset whenever Virtual Desktop connects.
 
 For people watching on the monitor, choose **Desktop view > Single eye (spectator)** in the
-launcher, and optionally **Fullscreen on monitor**. It shows the complete left-eye picture
-with its proportions kept, leaving black bars where needed. The headset still gets both eyes
+launcher. It shows the complete left-eye picture with its proportions kept, leaving black
+bars where needed. The headset still gets both eyes
 at full resolution; the desktop reuses an existing eye image rather than rendering another
 camera. It follows the player's head, not a separate spectator camera. **Stereo (both eyes)**
 restores the original desktop view and remains the default. This setting is for the PC build;
@@ -113,12 +113,15 @@ The launcher offers **Stereo**, **Single eye** and **Combined eyes**. Single eye
 complete left-eye picture. Combined eyes keep that eye as the main picture and add the
 other eye's non-overlapping peripheral strip. This is an experimental composite, not a
 separate spectator camera: nearby objects can disagree at the join because the eyes are
-in different places. With symmetric eye projections, neither eye adds more peripheral view.
+in different places. Combined eyes preserve the source eye's proportions and widen the
+desktop canvas by the extra peripheral coverage. With symmetric horizontal projections,
+Combined eyes have the same aspect ratio as Single eye and add no peripheral view.
 These desktop choices leave the headset's stereo picture unchanged.
 
 The desktop preserves the complete image with black bars as needed, without stretching or
 cropping, including fullscreen on a 16:9 monitor. A 16:9 output resolution alone does not
-add scene coverage. **Fullscreen on monitor** is independent of the headset.
+add scene coverage. Fullscreen follows shadPS4's native `GPU.full_screen` setting in
+`pc-vr\user\config.json`; the launcher does not override it or save a separate preference.
 
 Sony describes the original PSVR's standard TV social screen as an undistorted, cropped
 right-eye image ([official FAQ](https://blog.playstation.com/archive/2016/10/03/playstation-vr-the-ultimate-faq/)).
@@ -138,7 +141,6 @@ been confirmed here. Our complete-image spectator option deliberately does not c
 | `fov_of=psvr` | `fov` is a percent of a PlayStation VR's field of view (100 by 103 degrees an eye, what the game was made for) instead of the headset's own (`fov_of=headset`, the default) |
 | `menu=0` | no window with the main settings at the start |
 | `desktop_view=spectator` | one complete eye on the monitor; `combined` adds the other eye's peripheral strip; default `stereo` keeps both eyes side by side. Does not change the headset view |
-| `desktop_fullscreen=1` | start the desktop window fullscreen; `0` starts windowed. Left out, the emulator's existing fullscreen setting applies |
 | `sharpen=0.3` | sharpening of the picture on its way out, 0 to 1. Virtual Desktop has its own on top |
 | `msaa=4` | the most samples a pixel gets; default as the console draws it. With `1` the emulator smooths edges itself (unless `antialias=0`) |
 | `hands=0` | do not use hand tracking to place the controller |

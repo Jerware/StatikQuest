@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 #pragma once
 
 #include <algorithm>
@@ -34,7 +37,7 @@ inline float DesktopViewAspect(DesktopView view, const Fov& fov, float eye_aspec
     if (view == DesktopView::Spectator || !ValidSpectatorFov(fov)) {
         return eye_aspect;
     }
-    return 2.0f * std::max(fov.tan_out, fov.tan_in) / (fov.tan_top + fov.tan_bottom);
+    return eye_aspect * 2.0f * std::max(fov.tan_out, fov.tan_in) / (fov.tan_out + fov.tan_in);
 }
 
 struct HorizontalEyeRegion {
