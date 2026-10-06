@@ -89,8 +89,10 @@ $g = "$base\e2\games"
 Make-Package "$g\game.pkg" "EP9000-CUSA12392_00-PLATFORMERVR00EU" 2048
 Make-Package "$g\A-Update-v1.04.pkg" "EP9000-CUSA12392_00-PLATFORMERVR00EU" 8192 0x62300000
 Make-Package "$g\first-patch.pkg" "EP9000-CUSA12392_00-PLATFORMERVR00EU" 4096 0x00100000
+Make-Package "$g\patchgo.pkg" "EP9000-CUSA12392_00-PLATFORMERVR00EU" 16384 0x00200000
 Check "e2 an update says so" (Test-UpdatePackage "$g\A-Update-v1.04.pkg") $true
 Check "e2 a first patch says so" (Test-UpdatePackage "$g\first-patch.pkg") $true
+Check "e2 a PATCHGO package is an update" (Test-UpdatePackage "$g\patchgo.pkg") $true
 Check "e2 the game's package before a larger update" (Find-Package $g).FullName "$g\game.pkg"
 # e3: nothing but updates: the largest of them, which is then turned down for what it is
 $g = "$base\e3\games"

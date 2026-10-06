@@ -213,7 +213,7 @@ function Test-UpdatePackage([string]$path) {
             return $false
         }
         # (First patch, later patch, cumulative patch: 0x00100000, 0x40000000, 0x20000000.)
-        return (($head[0x78] -band 0x60) -ne 0) -or (($head[0x79] -band 0x10) -ne 0)
+        return (($head[0x78] -band 0x60) -ne 0) -or (($head[0x79] -band 0x30) -ne 0)
     } catch { return $false }
 }
 
