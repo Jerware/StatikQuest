@@ -413,6 +413,22 @@ then follows the same course to the second as at 60, and a scripted walk through
 has the hero in the same places at the same moments. Below 20 frames a second the game slows
 down rather than take steps its physics were never tried with. `real_time=0` turns this off.
 
+**A time step that changes, and the collisions the game moves.** One thing in the game did
+depend on every frame's step being the same. The collisions of whatever moves (a platform, a
+door, a part of a level that rises) are bodies the game sends to a place: the physics library
+gives the body the speed that takes it there in one step, worked out with the time step of
+the step it last took, and the next step moves it by that speed times the new time step.
+With two different time steps the body lands off by its way times their difference. For what
+moves all the time that is put right a frame later. For what is sent once it stays, and
+levels do that: they sleep by sections, and a section that wakes sends all its bodies in one
+frame from where they slept to where the level has moved since. The last two sections of
+level 2-1 wake at the top of a tree that carried them 17 units up while they slept: their
+collisions ended most of a block above what was drawn, an invisible wall before the last
+enemy (issue #16). The function that takes the step is changed in the game's image, in both
+versions of the game, to step with the time step the bodies were sent with
+(`src/core/known_title_builds.h`, `PhysicsStepChanges`); bodies then land where they are sent
+to the last digit, across hitches too.
+
 **Two refreshes for a frame, or three.** The game draws a frame for every two refreshes of its
 headset (60 frames for the 120 Hz of a PlayStation VR) when it manages. When a frame takes
 longer it goes straight on to the next one, at whatever rate that makes, and that rate has
@@ -711,6 +727,7 @@ game does with time and with the head, on a machine that is fast enough for anyt
 | `SHADPS4_VR_REFRESH_RATE=<Hz>` | how often the emulated headset refreshes (60 to 120); the game draws half as many frames |
 | `SHADPS4_VR_PACE=<2..6>` | how many of those refreshes every frame is given: 3 at 90 Hz makes 30 frames a second on the dot (without it the emulator chooses, which on a PC is always 2) |
 | `SHADPS4_TITLE_TIMESTEP=0`, `SHADPS4_TITLE_RESOLUTION=<3..6 or title>` | the game's time step left alone; its scene held to one size (3 = 816x870 ... 6 = 1440x1536) or left to the game |
+| `SHADPS4_TITLE_PHYSICS_STEP=0`, `SHADPS4_TITLE_PHYSICS_WATCH=1` | the game's physics step left as the console has it (collisions that are moved then land off, see "Speed"); a line in the log every ten seconds on how far the bodies the game sent somewhere ended from there |
 | `SHADPS4_MAX_MSAA=<1, 2, 4>` | the most samples a pixel gets; 1 is what the headset runs with, and has the emulator smooth edges itself unless `SHADPS4_RESOLVE_AA=0` |
 | `SHADPS4_VR_SHARPEN=<0..1>` | how much the eyes' pictures are sharpened on their way out (the app sets 0.6) |
 

@@ -12,6 +12,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 #include <fmt/format.h>
 
 #include "common/elf_info.h"
@@ -19,6 +20,7 @@
 #include "core/emulator_settings.h"
 #include "core/known_title.h"
 #include "core/known_title_builds.h"
+#include "core/memory.h"
 #include "core/vr/vr_runtime.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 
@@ -156,6 +158,12 @@ struct Settings {
     /// The most frames a second wanted, 0 for no such limit: frames are given at least as many
     /// refreshes as keep them to that.
     double fps_cap{};
+
+    /// The title's physics take each step with the time step its bodies were sent with
+    /// (Builds::PhysicsStepChanges): what a time step that changes needs.
+    bool physics_step{true};
+    /// Where the bodies the title moves by hand end up goes to the log (PhysicsWatch).
+    bool physics_watch{false};
 };
 
 const Settings& GetSettings() {
@@ -194,6 +202,14 @@ const Settings& GetSettings() {
             if (cap >= 10.0) {
                 parsed.fps_cap = std::min(cap, 240.0);
             }
+        }
+        // SHADPS4_TITLE_PHYSICS_STEP=0 leaves the title's physics as the console has them;
+        // SHADPS4_TITLE_PHYSICS_WATCH=1 tells in the log where its bodies end up.
+        if (const char* value = std::getenv("SHADPS4_TITLE_PHYSICS_STEP"); value != nullptr) {
+            parsed.physics_step = std::atoi(value) != 0;
+        }
+        if (const char* value = std::getenv("SHADPS4_TITLE_PHYSICS_WATCH"); value != nullptr) {
+            parsed.physics_watch = std::atoi(value) != 0;
         }
         return parsed;
     }();
@@ -601,7 +617,157 @@ private:
     double stepped{};
 };
 
+/// Whether the bodies the title moves by hand arrive where it sends them, for the log
+/// (SHADPS4_TITLE_PHYSICS_WATCH=1). A body that is sent somewhere is given the speed that
+/// takes it there in one step, worked out with the time step the library has written down
+/// (Builds::PhysicsStepChanges), and keeps that speed: how far a step moved it, against its
+/// speed times the time step that was written down when it was sent, tells whether it got
+/// there. Looked at when the title reads its controller, once a frame on the thread it runs
+/// on and before anything of the frame has moved: the title sends its bodies and then takes
+/// the step, both after that.
+class PhysicsWatch {
+public:
+    void Look(VAddr base, const Build& build) {
+        namespace Physics = Builds::Physics;
+        std::scoped_lock lock{mutex};
+        auto* const memory = Core::Memory::Instance();
+        const auto there = [&](u64 address, u64 size) {
+            return address != 0 && (address & 3) == 0 && memory->IsValidMapping(address, size);
+        };
+        const u64 game = Read<u64>(base + build.game_pointer);
+        if (!there(game, Physics::GameWorld + 8)) {
+            return;
+        }
+        const u64 world = Read<u64>(game + Physics::GameWorld);
+        if (!there(world, Physics::WorldInner + 8)) {
+            return;
+        }
+        const u64 inner = Read<u64>(world + Physics::WorldInner);
+        if (!there(inner, Physics::InnerScale + 4)) {
+            return;
+        }
+        const u64 library = Read<u64>(inner + Physics::InnerLibrary);
+        if (!there(library, Physics::LibraryTimeStep + 4)) {
+            return;
+        }
+        const u32 count = Read<u32>(library + Physics::LibraryBodyCount);
+        const u64 bodies = Read<u64>(library + Physics::LibraryBodies);
+        const double scale = Read<float>(inner + Physics::InnerScale);
+        const double time_step = Read<float>(library + Physics::LibraryTimeStep);
+        if (count == 0 || count > MostBodies || !there(bodies, count * Physics::BodySize) ||
+            !(scale > 0.0) || !(time_step > 0.0)) {
+            return;
+        }
+        if (bodies != seen_bodies) {
+            // Another world, or another level's.
+            seen_bodies = bodies;
+            seen.clear();
+        }
+        seen.resize(count);
+        bool stepped = false;
+        for (u32 i = 0; i < count; ++i) {
+            const VAddr body = bodies + u64{i} * Physics::BodySize;
+            Seen& was = seen[i];
+            const bool by_hand = Read<u8>(body + Physics::BodyMotion) == Physics::MotionKeyframe;
+            const auto segment = Read<std::array<s32, 3>>(body + Physics::BodySegment);
+            const auto position = Read<std::array<float, 3>>(body + Physics::BodyPosition);
+            if (was.by_hand && by_hand && segment == was.segment && position != was.position) {
+                // It moved: a step was taken since it was last looked at, with the speed it
+                // still has.
+                const auto velocity = Read<std::array<float, 3>>(body + Physics::BodyVelocity);
+                double way = 0.0;
+                double off = 0.0;
+                for (u32 axis = 0; axis < 3; ++axis) {
+                    const double moved = position[axis] - was.position[axis];
+                    const double sent = velocity[axis] * written_down;
+                    way += sent * sent;
+                    off += (moved - sent) * (moved - sent);
+                }
+                way = std::sqrt(way) / scale;
+                off = std::sqrt(off) / scale;
+                // (A body further from where it was sent than it had to go twice over is
+                // another body in the place of the one that was looked at.)
+                if (way > 0.0 && off <= 2.0 * way + 0.01) {
+                    stepped = true;
+                    ++moves;
+                    missed += off > Off ? 1 : 0;
+                    farthest = std::max(farthest, way);
+                    if (off > worst_off) {
+                        worst_off = off;
+                        worst_way = way;
+                    }
+                }
+            }
+            was.by_hand = by_hand;
+            was.segment = segment;
+            was.position = position;
+        }
+        if (stepped && written_down > 0.0) {
+            // How unlike two time steps in a row are, which is what the bodies are off by.
+            most_unlike = std::max(most_unlike, std::abs(time_step / written_down - 1.0));
+        }
+        written_down = time_step;
+    }
+
+    /// What was seen since this was last asked, "" for nothing.
+    std::string TakeSummary() {
+        std::scoped_lock lock{mutex};
+        if (moves == 0) {
+            return {};
+        }
+        std::string summary = fmt::format(
+            "The title's bodies: {} times one was sent somewhere and moved, {:.2f} at the "
+            "farthest; where they ended was {:.4f} from where they were sent at worst (by one "
+            "sent {:.2f}), {} times more than {} away; two time steps in a row were {:.1f}% "
+            "apart at most",
+            moves, farthest, worst_off, worst_way, missed, Off, most_unlike * 100.0);
+        moves = 0;
+        missed = 0;
+        farthest = 0.0;
+        worst_off = 0.0;
+        worst_way = 0.0;
+        most_unlike = 0.0;
+        return summary;
+    }
+
+private:
+    struct Seen {
+        bool by_hand{};
+        std::array<s32, 3> segment{};
+        std::array<float, 3> position{};
+    };
+
+    // More than any level has: a count that is not one.
+    static constexpr u32 MostBodies = 1u << 17;
+    // What counts as not having arrived, in the game's units (a block of a level is about
+    // half of one).
+    static constexpr double Off = 0.01;
+
+    std::mutex mutex;
+    u64 seen_bodies{};
+    std::vector<Seen> seen;
+    /// The library's time step when the bodies were last looked at: what they are sent with
+    /// until the step that follows.
+    double written_down{};
+    u64 moves{};
+    u64 missed{};
+    double farthest{};
+    double worst_off{};
+    double worst_way{};
+    double most_unlike{};
+};
+
+PhysicsWatch physics_watch;
+
 } // namespace
+
+void OnControllerRead() {
+    const Build* const build = known_build.load(std::memory_order_acquire);
+    if (build == nullptr || !GetSettings().physics_watch) {
+        return;
+    }
+    physics_watch.Look(known_base, *build);
+}
 
 void OnFrameSubmitted() {
     const Build* const build = known_build.load(std::memory_order_acquire);
@@ -682,6 +848,9 @@ void OnFrameSubmitted() {
                  report_real, 100.0 * Nominal * report_frames / report_real,
                  SizeName(resolution),
                  summary.pace, summary.slot * 1e3, summary.load * 100.0);
+        if (const std::string seen = physics_watch.TakeSummary(); !seen.empty()) {
+            LOG_INFO(Core, "{}", seen);
+        }
         report_time = now;
         report_real = 0.0;
         report_frames = 0;
@@ -743,6 +912,20 @@ void OnGameLoaded(VAddr base, u64 size) {
                      "{} MB",
                      SizeName(LastHeadsetLevel), larger.factor, SizeName(FirstHeadsetLevel),
                      larger.target_pool >> 20, larger.graphics_heap >> 20);
+        }
+    }
+    if (const Settings& settings = GetSettings(); settings.time_step && settings.physics_step) {
+        const auto changes = Builds::PhysicsStepChanges(*build);
+        if (const Builds::Change* unexpected = Builds::Apply(image, changes);
+            unexpected != nullptr) {
+            LOG_WARNING(Core,
+                        "The title does not have {:#x} at {:#x} as expected: its physics are "
+                        "left as they are, and collisions that it moves may end up beside what "
+                        "is drawn",
+                        unexpected->was, unexpected->at);
+        } else {
+            LOG_INFO(Core, "The title's physics take every step with the time step its bodies "
+                           "were sent with");
         }
     }
     known_base = base;

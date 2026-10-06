@@ -8,9 +8,12 @@
 // Without arguments it works on images made up here, which hold what a build has at the places
 // the emulator looks at and nothing else. Given executables (made plain with
 // `node tools/ps4elf.mjs unwrap <eboot.bin> <out.elf>`), it also says which build each is.
+#include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -44,7 +47,66 @@ static std::vector<u8> MadeUp(const Build& build) {
     for (const Change& change : SizeChanges(build, Sizes{})) {
         std::memcpy(image.data() + change.at, &change.was, change.bytes);
     }
+    for (const Change& change : PhysicsStepChanges(build)) {
+        std::memcpy(image.data() + change.at, &change.was, change.bytes);
+    }
     return image;
+}
+
+/// Where the call in a run of code leads: the first E8 of `code`, which starts at `at`.
+static u64 CallTarget(std::span<const u8> code, u64 at) {
+    for (size_t i = 0; i + 5 <= code.size(); ++i) {
+        if (code[i] == 0xe8) {
+            s32 distance = 0;
+            std::memcpy(&distance, code.data() + i + 1, sizeof(distance));
+            return at + i + 5 + distance;
+        }
+    }
+    return 0;
+}
+
+/// The physics step of a build, changed: written once and whole, into one run of bytes that
+/// still calls (or jumped to) the library's step it called before.
+static void CheckPhysicsStep(const Build& build, std::vector<u8> image, const std::string& name) {
+    const auto changes = PhysicsStepChanges(build);
+    Check(changes.size() >= 3, name + ": the physics step is changed in " +
+                                   std::to_string(changes.size()) + " places");
+    bool in_a_row = true;
+    u64 bytes = 0;
+    for (const Change& change : changes) {
+        in_a_row &= change.at == changes[0].at + bytes;
+        bytes += change.bytes;
+    }
+    Check(in_a_row, name + ": they follow one another");
+    const u64 from = changes[0].at;
+    const std::vector<u8> before{image.begin() + from, image.begin() + from + bytes};
+    // The step the library takes was called at the end, or jumped to (E9) where the function
+    // had nothing left to do after it.
+    u64 led_to = CallTarget(before, from);
+    for (size_t i = 0; led_to == 0 && i + 5 <= before.size(); ++i) {
+        if (before[i] == 0xe9) {
+            s32 distance = 0;
+            std::memcpy(&distance, before.data() + i + 1, sizeof(distance));
+            led_to = from + i + 5 + distance;
+        }
+    }
+    Check(Apply(image, changes) == nullptr, name + ": the physics step is written");
+    const std::span<const u8> after{image.data() + from, bytes};
+    Check(led_to != 0 && CallTarget(after, from) == led_to,
+          name + ": it calls the library's step it went to before");
+    // The time step is written down after the call, no longer before it.
+    static constexpr std::array<u8, 6> Store{0x89, 0x87, 0x60, 0x27, 0x00, 0x00};
+    const auto call = std::find(after.begin(), after.end(), u8{0xe8});
+    const auto store = std::search(after.begin(), after.end(), Store.begin(), Store.end());
+    Check(store != after.end() && call < store, name + ": the time step is kept after the step");
+    Check(Apply(image, changes) != nullptr, name + ": not written a second time");
+
+    std::vector<u8> odd{image};
+    std::memcpy(odd.data() + from, before.data(), bytes);
+    odd[changes.back().at] ^= 1;
+    const std::vector<u8> untouched = odd;
+    Check(Apply(odd, changes) == &changes.back() && odd == untouched,
+          name + ": nothing of it written when the last place is not as expected");
 }
 
 /// Twice the console's sizes, as the emulator works them out for a width of 2880.
@@ -155,6 +217,13 @@ int main(int argc, char** argv) {
         // A place beyond the image.
         const std::vector<Change> beyond{{image.size() - 2, 0, 1, 4}};
         Check(Apply(image, beyond) == &beyond[0], name + ": nothing written beyond the image");
+
+        CheckPhysicsStep(build, image, name);
+        // What the game is told apart by does not depend on it.
+        std::vector<u8> stepped = image;
+        Check(Apply(stepped, PhysicsStepChanges(build)) == nullptr &&
+                  Recognise(stepped) == &build,
+              name + ": still recognised with its physics step changed");
     }
 
     // An image that would be both builds at once is neither.
@@ -176,6 +245,7 @@ int main(int argc, char** argv) {
             std::vector<u8> larger = image;
             Check(Apply(larger, SizeChanges(*build, Doubled())) == nullptr,
                   std::string{"larger sizes written into "} + argv[i]);
+            CheckPhysicsStep(*build, image, argv[i]);
         }
     }
 

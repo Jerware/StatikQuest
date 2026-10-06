@@ -5,6 +5,7 @@
 #include "common/logging/log.h"
 #include "common/singleton.h"
 #include "core/emulator_settings.h"
+#include "core/known_title.h"
 #include "core/libraries/libs.h"
 #include "core/libraries/pad/pad_errors.h"
 #include "core/user_settings.h"
@@ -564,6 +565,7 @@ int ProcessStates(s32 handle, OrbisPadData* pData, Input::GameController& contro
 
 int PS4_SYSV_ABI scePadRead(s32 handle, OrbisPadData* pData, s32 num) {
     LOG_TRACE(Lib_Pad, "called");
+    Core::KnownTitle::OnControllerRead();
     handle = EnsurePadHandle(handle);
     int connected_count = 0;
     bool connected = false;
@@ -604,6 +606,7 @@ int PS4_SYSV_ABI scePadReadState(s32 handle, OrbisPadData* pData) {
         LOG_INFO(Lib_Pad, "handle: {}", handle);
         logged_once = true;
     }
+    Core::KnownTitle::OnControllerRead();
     handle = EnsurePadHandle(handle);
     auto it = handle_to_controller_map.find(handle);
     if (it == handle_to_controller_map.end()) {

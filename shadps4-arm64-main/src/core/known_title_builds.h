@@ -41,6 +41,36 @@ constexpr u64 ConsoleFrameMicroseconds = 16666;
 // anew: it reads the same in every build, and is somewhere else in each.
 constexpr std::array<u8, 9> SetRecentreCode{0x40, 0x0f, 0xb6, 0xc6, 0xff, 0xc0, 0x89, 0x07, 0xc3};
 
+/// One place of the title's image that is to hold something else: what the console's build has
+/// there and what it is to have, in so many bytes.
+struct Change {
+    u64 at;
+    u64 was;
+    u64 now;
+    u32 bytes;
+};
+
+/// The title's world of rigid bodies (Sony's PhysicsEffects under a class of its own), as far
+/// as the emulator looks into it. The same in every build known.
+namespace Physics {
+// From the game's main object to the bodies: the world, what it wraps, the library's world.
+constexpr u64 GameWorld = 0x10;
+constexpr u64 WorldInner = 0x8;
+constexpr u64 InnerScale = 0x58; // float: the library's lengths for one of the game's
+constexpr u64 InnerLibrary = 0x20;
+constexpr u64 LibraryBodyCount = 0x1a0; // u32
+constexpr u64 LibraryBodies = 0x1a8;    // pointer
+constexpr u64 LibraryTimeStep = 0x2760; // float
+// One body's state.
+constexpr u64 BodySize = 0xa0;
+constexpr u64 BodyMotion = 0x1;    // u8
+constexpr u64 BodySegment = 0x30;  // s32 [3]
+constexpr u64 BodyPosition = 0x40; // float [3]
+constexpr u64 BodyVelocity = 0x60; // float [3]
+// A body that is moved by hand: sent to a place, which it reaches with the next step.
+constexpr u8 MotionKeyframe = 2;
+} // namespace Physics
+
 struct Build {
     /// What the log calls it.
     const char* name;
@@ -69,6 +99,12 @@ struct Build {
     std::array<u64, 2> target_pool;
     std::array<u64, 3> small_pool;
     u64 graphics_heap; // u64
+    /// The game's main object, a singleton: where the pointer to it is kept. It knows the
+    /// world of rigid bodies (namespace Physics).
+    u64 game_pointer;
+    /// The end of the function that has that world take a step (PhysicsStepChanges); places
+    /// of no bytes fill the list up.
+    std::array<Change, 4> physics_step;
 };
 
 inline constexpr std::array<Build, 2> Known{{
@@ -91,6 +127,15 @@ inline constexpr std::array<Build, 2> Known{{
         .target_pool = {0xef8bf7, 0xef8c4d},
         .small_pool = {0xf22194, 0xf221be, 0xf221dd},
         .graphics_heap = 0x1269708,
+        .game_pointer = 0x2dff9b8,
+        // mov rdi, [rdi+0x20]; vmovss [rdi+0x2760], xmm0; jmp <the library's step>; (padding)
+        // becomes
+        // mov rdi, [rdi+0x20]; vmovd eax, xmm0; push rax; push rdi; push rdi; call <step>;
+        // pop rdi; pop rdi; pop rax; mov [rdi+0x2760], eax; ret
+        .physics_step = {{{0xc2dea0, 0x8711fac5207f8b48, 0xc07ef9c5207f8b48, 8},
+                          {0xc2dea8, 0x0449bfe900002760, 0x000449c0e8575750, 8},
+                          {0xc2deb0, 0x9090909090909000, 0x0027608789585f5f, 8},
+                          {0xc2deb8, 0x9090909090909090, 0x909090909090c300, 8}}},
     },
     {
         .name = "1.04, the last update",
@@ -111,17 +156,18 @@ inline constexpr std::array<Build, 2> Known{{
         .target_pool = {0xf7c117, 0xf7c16d},
         .small_pool = {0xfa5784, 0xfa57ae, 0xfa57cd},
         .graphics_heap = 0x12ffb78,
+        .game_pointer = 0x2ecfe38,
+        // (mov rdi, [r15+0x20];) vmovss xmm0, [rbp-0x74]; vmovss [rdi+0x2760], xmm0;
+        // call <the library's step>
+        // becomes
+        // (mov rdi, [r15+0x20];) call <step>; mov eax, [rbp-0x74]; mov rdi, [r15+0x20];
+        // mov [rdi+0x2760], eax
+        .physics_step = {{{0xcb09cf, 0x11fac58c4510fac5, 0x8c458b00045cfce8, 8},
+                          {0xcb09d7, 0x5cefe80000276087, 0x27608789207f8b49, 8},
+                          {0xcb09df, 0x0004, 0x0000, 2},
+                          {0, 0, 0, 0}}},
     },
 }};
-
-/// One place of the title's image that is to hold something else: what the console's build has
-/// there and what it is to have, in so many bytes.
-struct Change {
-    u64 at;
-    u64 was;
-    u64 now;
-    u32 bytes;
-};
 
 /// The sizes of a title that draws larger than on the console, and the memory that takes.
 struct Sizes {
@@ -157,6 +203,36 @@ inline std::vector<Change> SizeChanges(const Build& build, const Sizes& sizes) {
         changes.push_back({at, ConsoleSmallPool, sizes.small_pool, 4});
     }
     changes.push_back({build.graphics_heap, ConsoleGraphicsHeap, sizes.graphics_heap, 8});
+    return changes;
+}
+
+/// What makes the title's collisions land where they are sent when its time step is not the
+/// same from one frame to the next.
+///
+/// The title moves the collision bodies of what moves by hand (platforms, doors, a part of a
+/// level that rises) by sending them to a place: the library gives the body the speed that
+/// takes it there in one step, speed = distance / time step, and the step that follows moves
+/// it by speed x time step. The time step it divides by is the one of the step last taken; the
+/// one the body is then moved by is the next frame's. On the console both are a sixtieth of a
+/// second and the body arrives. With a time step that follows what frames take
+/// (KnownTitle::OnFrameSubmitted) the body stops short or goes too far, by as much of its way
+/// as the two steps differ. For what moves all the time that is put right a frame later, and
+/// never seen. For what is sent once it stays: the parts of a level the title leaves alone
+/// until the player gets near (its sections) are sent, all at once and in the one frame that
+/// wakes them, from where they were to where the level has moved since. At the end of level
+/// 2-1 that is 17 units up a tree that grew while they slept, and the frame that wakes them
+/// is a long one: the mound's collisions ended most of a block above the mound (issue #16).
+///
+/// The change: the function that has the library take a step wrote down the new time step
+/// and then took the step. It now takes the step with the time step that is written down, the
+/// one every body was sent with, and writes the new one down after.
+inline std::vector<Change> PhysicsStepChanges(const Build& build) {
+    std::vector<Change> changes;
+    for (const Change& change : build.physics_step) {
+        if (change.bytes != 0) {
+            changes.push_back(change);
+        }
+    }
     return changes;
 }
 
