@@ -449,6 +449,14 @@ void GameControllers::TryOpenSDLControllers() {
 
         SDL_Gamepad* pad = SDL_OpenGamepad(id);
         if (!pad) {
+            static std::unordered_set<SDL_JoystickID> refused;
+            if (refused.insert(id).second) {
+                const char* name = SDL_GetGamepadNameForID(id);
+                LOG_WARNING(Input,
+                            "Controller {} ({:04x}:{:04x}) cannot be opened and is not used: {}",
+                            name != nullptr ? name : "unnamed", SDL_GetGamepadVendorForID(id),
+                            SDL_GetGamepadProductForID(id), SDL_GetError());
+            }
             continue;
         }
 
@@ -507,11 +515,16 @@ void GameControllers::TryOpenSDLControllers() {
     }
     if (is_first_check) [[unlikely]] {
         is_first_check = false;
-        if (controller_count - move_count == 0) {
-            auto u = UserManagement.GetUserByPlayerIndex(1);
-            controllers[0]->user_id = u->user_id;
-            controllers[0]->ConnectController(nullptr);
-            UserManagement.LoginUser(u, 1);
+        // The first player is logged in from the start, gamepad or not. (Counting the gamepads
+        // there are is not enough: one that is listed and cannot be opened, as a virtual one
+        // that is just going away, left nobody logged in, and a title that takes its first
+        // player for granted stopped right at its start.)
+        if (controllers[0]->user_id == Libraries::UserService::ORBIS_USER_SERVICE_USER_ID_INVALID) {
+            if (auto u = UserManagement.GetUserByPlayerIndex(1); u != nullptr) {
+                controllers[0]->user_id = u->user_id;
+                controllers[0]->ConnectController(nullptr);
+                UserManagement.LoginUser(u, 1);
+            }
         }
     }
     SDL_free(new_joysticks);
