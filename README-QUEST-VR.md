@@ -153,6 +153,18 @@ comments under the videos about it).
 What else is new is for the PC: a launcher that no longer asks for a runtime that is
 installed, and a gamepad and the headset's controllers that take turns there too.
 
+**App 0.20 (2026-10-06): two things in world 2**, both in the emulator and so the same on the
+PC.
+
+- **An invisible wall at the end of level 2-1** (issue #16): the collisions of the last two
+  islands were most of a block above what was drawn. See "A time step that changes, and the
+  collisions the game moves" under "Speed".
+- **Squares in the lava's glow around the octopus** at the end of world 2. See "One surface
+  as two targets of a draw" under "The picture".
+
+Both were found and tried on the PC, in the headset through Virtual Desktop. The Quest app
+has the same emulator code; it had not been run on a headset when this went out.
+
 **App 0.8 (2026-10-03)**, after the fourth session (levels 1-1 to 1-3 played, the game stopped
 on entering 1-4 twice):
 

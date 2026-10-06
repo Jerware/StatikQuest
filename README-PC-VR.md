@@ -470,6 +470,20 @@ Things that had to be right, for whoever works on this again:
   Every port plays on a device of its own, never on "the default device" as such (see
   "Fixed and added in 0.19").
 
+## Fixed in 0.20 (2026-10-06): two things in world 2
+
+- **An invisible wall at the end of level 2-1** (issue #16): the hero stood in the air above
+  the last mound and could not get to the last enemy; the island below had the same. The
+  collisions of those two islands were most of a block above what was drawn. The game moves a
+  collision by a speed worked out with one frame's time step and applied for the next
+  frame's, which is the same thing only where every frame's step is the same, as on the
+  console. Its physics now take each step with the time step the collisions were moved for
+  (`README-QUEST-VR.md`, "Speed"). Played to the end of 2-1 on the PC.
+- **Squares in the lava's glow around the octopus** at the end of world 2, lit and dark,
+  for as long as he moved. The game has one buffer bound as two colour targets of the draws
+  that glow, which Vulkan leaves undefined; such a draw is now made once for each of the two
+  (`README-QUEST-VR.md`, "The picture"). Played on the PC in the headset.
+
 ## Fixed and added in 0.19 (2026-10-06), from what players wrote elsewhere
 
 Reports from the project's thread on Reddit and from the comments under the videos about it.

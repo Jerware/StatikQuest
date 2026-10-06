@@ -78,7 +78,7 @@ Download `AstroQuest-<version>-Quest3.apk` from the
    debugging in the headset, and run
 
    ```sh
-   adb install -r AstroQuest-0.19-Quest3.apk
+   adb install -r AstroQuest-0.20-Quest3.apk
    ```
 
    (or drag the APK onto SideQuest).
@@ -189,13 +189,8 @@ what to do when something does not work are in [README-PC-VR.md](README-PC-VR.md
 
 ## Common questions
 
-**How do I get the game onto my computer?** AstroQuest needs the game's files as they are on
-a PlayStation 4. Copying them off ("dumping") takes a PS4 that can run homebrew and a dumper
-application on it, with your own disc or your own purchase; what comes out is the game's
-folder, or an unencrypted `.pkg` made from it, and both work here. How to prepare a console
-for that is outside this project. A package downloaded from the PlayStation Store, even your
-own, is encrypted, and nothing here can open it: the launcher says so when it is given one.
-No game files come with AstroQuest and none are handed out.
+**How do I get the game onto my computer?** This project gives no information on how to get
+games, and this repository does not include any game data.
 
 **Which headsets?** On the headset alone: Quest 3 (the Quest 3S has the same chip and should
 work; nobody has reported it yet). A Quest 2 or Pro has not been tried and is slower. On a
