@@ -20,10 +20,17 @@ endpoint() {
 cd "$root/build/win-x64" || exit 1
 first=$(endpoint default)
 [ -n "$first" ] || { echo "Windows has no default playback device" >&2; exit 1; }
+# The device Windows would play on if all were there: one that is not there now (a headset's,
+# while nothing streams to it) has to be the preferred one again afterwards, or Windows no
+# longer changes over to it when it comes back. (It did not, after this test's first runs.)
+preferred=$(endpoint preferred)
 config=user/config.json
 cp "$config" "$config.audio-test"
 restore() {
     endpoint default "$first" > /dev/null
+    if [ -n "$preferred" ] && [ "$preferred" != "$first" ]; then
+        endpoint default "$preferred" > /dev/null
+    fi
     mv "$root/build/win-x64/$config.audio-test" "$root/build/win-x64/$config"
 }
 trap restore EXIT

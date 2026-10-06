@@ -229,6 +229,54 @@ std::string AudioDeviceName(const wchar_t* identifier, EDataFlow flow) {
     return name;
 }
 
+/// The name of the sound device in use whose name ends that way, empty if there is none.
+std::string ActiveAudioDeviceEnding(std::string_view ending, EDataFlow flow) {
+    static constexpr PROPERTYKEY FriendlyName{
+        {0xa45c254e, 0xdf1c, 0x4efd, {0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0}}, 14};
+
+    if (ending.empty()) {
+        return {};
+    }
+    const HRESULT initialized = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    std::string found;
+    IMMDeviceEnumerator* enumerator = nullptr;
+    if (SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+                                   __uuidof(IMMDeviceEnumerator),
+                                   reinterpret_cast<void**>(&enumerator)))) {
+        IMMDeviceCollection* devices = nullptr;
+        if (SUCCEEDED(enumerator->EnumAudioEndpoints(flow, DEVICE_STATE_ACTIVE, &devices))) {
+            UINT count = 0;
+            devices->GetCount(&count);
+            for (UINT i = 0; i < count && found.empty(); ++i) {
+                IMMDevice* device = nullptr;
+                if (FAILED(devices->Item(i, &device)) || device == nullptr) {
+                    continue;
+                }
+                IPropertyStore* properties = nullptr;
+                if (SUCCEEDED(device->OpenPropertyStore(STGM_READ, &properties))) {
+                    PROPVARIANT value;
+                    PropVariantInit(&value);
+                    if (SUCCEEDED(properties->GetValue(FriendlyName, &value)) &&
+                        value.vt == VT_LPWSTR && value.pwszVal != nullptr) {
+                        if (std::string name = Narrow(value.pwszVal); name.ends_with(ending)) {
+                            found = std::move(name);
+                        }
+                    }
+                    PropVariantClear(&value);
+                    properties->Release();
+                }
+                device->Release();
+            }
+            devices->Release();
+        }
+        enumerator->Release();
+    }
+    if (SUCCEEDED(initialized)) {
+        CoUninitialize();
+    }
+    return found;
+}
+
 } // namespace
 
 struct OpenXrHost::Impl {
@@ -606,22 +654,40 @@ struct OpenXrHost::Impl {
     /// Where the headset's sound goes and comes from, by the names Windows lists the devices
     /// under: a runtime that streams to a headset has devices of its own for that.
     void FindAudioDevices() {
-        if (!has_audio_guid) {
-            return;
-        }
-        using Function = XrResult(XRAPI_PTR*)(XrInstance, wchar_t*);
-        const auto output =
-            GetFunction<Function>(instance, "xrGetAudioOutputDeviceGuidOculus");
-        const auto input = GetFunction<Function>(instance, "xrGetAudioInputDeviceGuidOculus");
-        wchar_t buffer[XR_MAX_AUDIO_DEVICE_STR_SIZE_OCULUS]{};
         std::string output_name;
         std::string input_name;
-        if (output != nullptr && XR_SUCCEEDED(output(instance, buffer))) {
-            output_name = AudioDeviceName(buffer, eRender);
+        if (has_audio_guid) {
+            using Function = XrResult(XRAPI_PTR*)(XrInstance, wchar_t*);
+            const auto output =
+                GetFunction<Function>(instance, "xrGetAudioOutputDeviceGuidOculus");
+            const auto input =
+                GetFunction<Function>(instance, "xrGetAudioInputDeviceGuidOculus");
+            wchar_t buffer[XR_MAX_AUDIO_DEVICE_STR_SIZE_OCULUS]{};
+            if (output != nullptr && XR_SUCCEEDED(output(instance, buffer))) {
+                output_name = AudioDeviceName(buffer, eRender);
+            }
+            std::memset(buffer, 0, sizeof(buffer));
+            if (input != nullptr && XR_SUCCEEDED(input(instance, buffer))) {
+                input_name = AudioDeviceName(buffer, eCapture);
+            }
         }
-        std::memset(buffer, 0, sizeof(buffer));
-        if (input != nullptr && XR_SUCCEEDED(input(instance, buffer))) {
-            input_name = AudioDeviceName(buffer, eCapture);
+        // Virtual Desktop plays in the headset what is played on a sound device of its own,
+        // which is in the system only while it streams to a headset. While it is there, it is
+        // the headset's, whatever the runtime in use says: Virtual Desktop's own names the
+        // device the system prefers, which need not be that one (a player whose system
+        // preferred the PC's speakers heard the game from those), and SteamVR names none.
+        // Its microphone is always in the system, and only the headset's while it streams.
+        // (SHADPS4_XR_STREAM_AUDIO=<how the names end>, for tests and for other such programs.)
+        static const std::string streamed = [] {
+            const char* ending = std::getenv("SHADPS4_XR_STREAM_AUDIO");
+            return std::string{ending != nullptr ? ending : "(Virtual Desktop Audio)"};
+        }();
+        if (std::string own = ActiveAudioDeviceEnding(streamed, eRender); !own.empty()) {
+            output_name = std::move(own);
+            if (std::string microphone = ActiveAudioDeviceEnding(streamed, eCapture);
+                !microphone.empty()) {
+                input_name = std::move(microphone);
+            }
         }
         std::scoped_lock lock{names_mutex};
         if (audio_names_known && output_name == audio_output && input_name == audio_input) {

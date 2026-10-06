@@ -458,9 +458,11 @@ Things that had to be right, for whoever works on this again:
   with each session, and handed on as the first player's gamepad the way a scripted or
   remote gamepad is (`GameController::ApplyRemoteState`); the aim pose of one of them is the
   tracked controller (`Runtime::UpdatePad`).
-- **Sound** goes to the device the runtime names for the headset (Virtual Desktop has its
-  own), and the game's 7.1 mix is rendered for two speakers at the ears as on the Quest; the
-  microphone is the one the runtime names. Both fall back to Windows' default devices.
+- **Sound** goes to Virtual Desktop's own sound device ("... (Virtual Desktop Audio)")
+  whenever that is in the system, which it is while Virtual Desktop streams to a headset,
+  whichever device Windows prefers; else to the device the runtime names for the headset;
+  else to the one Windows plays on. The game's 7.1 mix is rendered for two speakers at the
+  ears as on the Quest. The microphone goes the same way.
   The sound follows its device: when that goes away the sound moves to Windows' default
   device, and back when it is there again (see "Fixed in 0.13"). Which device is the
   headset's is asked of the runtime again whenever a sound device comes or goes: Virtual
@@ -498,7 +500,11 @@ Reports from the project's thread on Reddit and from the comments under the vide
     and the emulator asked once, at the start. It then held on to the speakers by name, and
     took the sound back to them a few seconds after Windows had moved it to the headset. The
     runtime is asked again now whenever a sound device comes or goes, and the sound goes
-    where it then says.
+    where it then says. And since what that runtime names is the device Windows prefers,
+    which need not be Virtual Desktop's even while that one is there (Windows keeps to the
+    device that was chosen last by hand): Virtual Desktop's own device is taken for the
+    headset's whenever it is in the system, whatever Windows prefers and whatever the
+    runtime in use (SteamVR names none).
   - That taking back is what stopped the game. Ports opened on "the default device" are
     moved by SDL, the sound library, when Windows changes its default; SDL 3.5.0 puts each
     moved port at the front of the new device's list without telling the port behind it
