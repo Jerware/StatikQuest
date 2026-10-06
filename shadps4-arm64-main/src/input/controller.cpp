@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <sstream>
@@ -189,8 +190,8 @@ void GameController::Gyro(int id) {
 
 void GameController::UpdateStickTouch() {
     // A controller without a touchpad of its own (or whose touchpad nobody touches): the right
-    // stick moves a finger that touches down at the pad's centre. Titles made for a headset
-    // have their players swipe, and have no use for a second stick.
+    // stick moves a finger over it (see StickFinger for how). Titles made for a headset have
+    // their players swipe and drag, and have no use for a second stick.
     // SHADPS4_STICK_TOUCHPAD=0 leaves the stick a stick.
     static const bool enabled = [] {
         const char* value = std::getenv("SHADPS4_STICK_TOUCHPAD");
@@ -200,24 +201,31 @@ void GameController::UpdateStickTouch() {
         !Core::Vr::Runtime::Instance().IsHeadsetConnected()) {
         return;
     }
+    std::scoped_lock lock{m_finger_mutex};
+    if (m_finger_down) {
+        // A real finger is on the pad: the stick's has nothing to say, and is not back on
+        // the pad the moment the real one lifts either.
+        m_stick_finger.Reset();
+        return;
+    }
     const float x =
         static_cast<float>(SDL_GetGamepadAxis(m_sdl_gamepad, SDL_GAMEPAD_AXIS_RIGHTX)) / 32767.0f;
     const float y =
         static_cast<float>(SDL_GetGamepadAxis(m_sdl_gamepad, SDL_GAMEPAD_AXIS_RIGHTY)) / 32767.0f;
-    const bool wanted = !m_finger_down && std::hypot(x, y) > 0.25f;
-    if (wanted) {
-        const float touch_x = std::clamp(0.5f + x * 0.45f, 0.0f, 1.0f);
-        const float touch_y = std::clamp(0.5f + y * 0.45f, 0.0f, 1.0f);
-        if (!m_stick_touch || std::abs(touch_x - m_stick_touch_x) > 0.002f ||
-            std::abs(touch_y - m_stick_touch_y) > 0.002f) {
-            m_stick_touch_x = touch_x;
-            m_stick_touch_y = touch_y;
-            ApplyTouch(0, true, touch_x, touch_y);
+    const double now =
+        std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    const StickFinger::Touch touch = m_stick_finger.Update(now, x, y);
+    if (touch.down) {
+        if (!m_stick_touch || std::abs(touch.x - m_stick_touch_x) > 0.002f ||
+            std::abs(touch.y - m_stick_touch_y) > 0.002f) {
+            m_stick_touch_x = touch.x;
+            m_stick_touch_y = touch.y;
+            ApplyTouch(0, true, touch.x, touch.y);
         }
-    } else if (m_stick_touch && !m_finger_down) {
+    } else if (m_stick_touch) {
         ApplyTouch(0, false, m_stick_touch_x, m_stick_touch_y);
     }
-    m_stick_touch = wanted;
+    m_stick_touch = touch.down;
 }
 
 void GameController::Acceleration(int id) {
@@ -294,10 +302,20 @@ bool GameController::SetVibration(u8 smallMotor, u8 largeMotor) {
 }
 
 void GameController::SetTouchpadState(int touchIndex, bool touchDown, float x, float y) {
-    // A finger on the real touchpad: the right stick stops standing in for one.
+    // A finger on the real touchpad: the right stick stops standing in for one. (Its finger
+    // lifts first: the real one coming down is a touch of its own, not that one moving.)
+    std::scoped_lock lock{m_finger_mutex};
     if (touchIndex == 0) {
+        if (m_stick_touch) {
+            ApplyTouch(0, false, m_stick_touch_x, m_stick_touch_y);
+            m_stick_touch = false;
+        }
+        if (touchDown && !m_finger_down && !m_touchpad_noted) {
+            m_touchpad_noted = true;
+            LOG_INFO(Input, "The controller's touchpad feels a finger");
+        }
         m_finger_down = touchDown;
-        m_stick_touch = false;
+        m_stick_finger.Reset();
     }
     ApplyTouch(touchIndex, touchDown, x, y);
 }

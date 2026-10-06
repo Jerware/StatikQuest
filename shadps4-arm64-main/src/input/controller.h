@@ -13,6 +13,7 @@
 #include "common/ring_buffer_queue.h"
 #include "core/libraries/pad/pad.h"
 #include "core/libraries/system/userservice.h"
+#include "input/stick_finger.h"
 
 struct SDL_Gamepad;
 
@@ -139,7 +140,12 @@ private:
     /// Lets the right stick stand in for a finger on the touchpad (see controller.cpp).
     void UpdateStickTouch();
 
+    // The touchpad's first finger is the real one's (the window's events) or the right
+    // stick's (a timer): what says which is kept together.
+    std::mutex m_finger_mutex;
     bool m_finger_down = false;
+    bool m_touchpad_noted = false;
+    StickFinger m_stick_finger;
     bool m_stick_touch = false;
     float m_stick_touch_x = 0.5f;
     float m_stick_touch_y = 0.5f;

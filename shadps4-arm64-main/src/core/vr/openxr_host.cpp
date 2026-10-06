@@ -27,6 +27,7 @@
 #include "common/thread.h"
 #include "core/vr/openxr_host.h"
 #include "input/controller.h"
+#include "input/stick_finger.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 
 #define XR_USE_PLATFORM_WIN32
@@ -391,6 +392,7 @@ struct OpenXrHost::Impl {
     bool sent_touch{};
     float sent_touch_x{0.5f};
     float sent_touch_y{0.5f};
+    Input::StickFinger stick_finger;
     std::atomic<u32> rumble_wanted{};
     u32 rumble_applied{};
     Clock::time_point rumble_time;
@@ -925,6 +927,7 @@ struct OpenXrHost::Impl {
         sent_buttons = {};
         sent_axes = {128, 128, 128, 128, 0, 0};
         sent_touch = false;
+        stick_finger.Reset();
         (*Common::Singleton<Input::GameControllers>::Instance())[0]->ApplyRemoteState(
             sent_buttons, sent_axes, false, sent_touch_x, sent_touch_y);
         Runtime::Instance().ReleasePad();
@@ -1062,12 +1065,18 @@ struct OpenXrHost::Impl {
         if (axes[5] > 0) {
             buttons |= Buttons::R2;
         }
-        // The finger touches down where the stick points, and in the middle of the touchpad
-        // when the stick is only pressed in: a touchpad cannot be pressed without touching it.
-        const bool swiping = std::hypot(finger.x, finger.y) > 0.25f;
+        // The right stick moves a finger over the touchpad (see Input::StickFinger: a stick
+        // let go lifts the finger where it was, which is what lets a pull on the stick shoot
+        // the game's catapults). A stick pushed away from the player is the pad's far edge.
+        // The finger also touches, in the middle of the pad, when the stick is only pressed
+        // in: a touchpad cannot be pressed without touching it.
+        const Input::StickFinger::Touch dragged = stick_finger.Update(
+            std::chrono::duration<double>(Clock::now().time_since_epoch()).count(), finger.x,
+            -finger.y);
+        const bool swiping = dragged.down;
         const bool touch = swiping || (right_stick_in && !view_reset);
-        const float touch_x = swiping ? std::clamp(0.5f + finger.x * 0.45f, 0.0f, 1.0f) : 0.5f;
-        const float touch_y = swiping ? std::clamp(0.5f - finger.y * 0.45f, 0.0f, 1.0f) : 0.5f;
+        const float touch_x = swiping ? dragged.x : 0.5f;
+        const float touch_y = swiping ? dragged.y : 0.5f;
         if (buttons != sent_buttons || axes != sent_axes || touch != sent_touch ||
             (touch && (std::abs(touch_x - sent_touch_x) > 0.002f ||
                        std::abs(touch_y - sent_touch_y) > 0.002f))) {
