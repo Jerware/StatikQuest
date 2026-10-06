@@ -1,7 +1,8 @@
 // Checks what the Quest app makes of the controllers a player has (quest-host/cpp/pad_router.h):
 // which of a gamepad and the headset's own controllers the game is played with, what the
 // headset's controllers' buttons and sticks become, the right stick as a finger on the
-// touchpad, and what buttons mean about the view besides.
+// touchpad, the buttons that do the touchpad's gestures, and what buttons mean about the view
+// besides.
 //
 //   clang-cl /std:c++latest /EHsc -fuse-ld=lld /I quest-host/cpp /I shadps4-arm64-main/src/input
 //       tools/tests/pad_router_test.cpp /Fe:build/tests/pad_router_test.exe
@@ -87,7 +88,7 @@ int main() {
     // --- a gamepad on its own ---------------------------------------------------------------
     {
         Bench bench;
-        bench.router.SetGamepadConnected(true, 0.0);
+        bench.router.SetGamepadConnected(true, true, 0.0);
         bench.router.SetPlaying(true, 0.0);
         Check(bench.Source() == Source::Gamepad, "a gamepad alone is what the game is played with");
 
@@ -146,7 +147,7 @@ int main() {
         pad = {};
         pad.buttons = Button::Triangle;
         bench.router.SetGamepad(pad, bench.time);
-        bench.router.SetGamepadConnected(false, bench.time);
+        bench.router.SetGamepadConnected(false, false, bench.time);
         Check(bench.out.pad.buttons == 0 && !bench.out.pad.has_motion && bench.Source() == Source::None,
               "nothing is held down on a gamepad that is gone");
     }
@@ -154,7 +155,7 @@ int main() {
     // --- a gamepad's touchpad, or what stands in for it ---------------------------------------
     {
         Bench bench;
-        bench.router.SetGamepadConnected(true, 0.0);
+        bench.router.SetGamepadConnected(true, true, 0.0);
         bench.router.SetPlaying(true, 0.0);
         GamepadState pad;
         pad.touch_down = true;
@@ -311,7 +312,7 @@ int main() {
     // --- both at hand ---------------------------------------------------------------------------
     {
         Bench bench;
-        bench.router.SetGamepadConnected(true, 0.0);
+        bench.router.SetGamepadConnected(true, true, 0.0);
         bench.router.SetPlaying(true, 0.0);
         const float gyro[3]{};
         const float accel[3]{0.0f, 9.81f, 0.0f};
@@ -370,12 +371,12 @@ int main() {
         Check(bench.Source() == Source::Gamepad, "so does a trigger of the gamepad");
 
         // The gamepad's battery gives out.
-        bench.router.SetGamepadConnected(false, bench.time);
+        bench.router.SetGamepadConnected(false, false, bench.time);
         touch = Held();
         bench.Pass(0.05, &touch);
         Check(bench.Source() == Source::Touch, "the gamepad gone, the headset's controllers play on");
         // It comes back, and the headset's controllers are put down.
-        bench.router.SetGamepadConnected(true, bench.time);
+        bench.router.SetGamepadConnected(true, true, bench.time);
         Check(bench.Source() == Source::Touch, "a gamepad that comes back does not take over by being there");
         TouchState away;
         bench.Pass(0.2, &away);
@@ -426,8 +427,9 @@ int main() {
         touch.a = true;
         touch.right_trigger = 1.0f;
         bench.Pass(0.05, &touch);
-        Check(bench.out.pad.buttons == (Button::Cross | Button::R2) && bench.out.pad.right_trigger == 255,
-              "let go and pressed again, both are the game's");
+        Check(bench.out.pad.buttons == (Button::Cross | Button::R2 | Button::TouchPad) &&
+                  bench.out.pad.right_trigger == 255 && bench.out.pad.touch_down,
+              "let go and pressed again, both are the game's (and the trigger presses the touchpad)");
         Check(bench.router.TakeRecenter() == PadRouter::RecenterSeat, "and that press of A takes the seat");
 
         TouchState away;
@@ -437,7 +439,7 @@ int main() {
     {
         // The player chooses in the menu with the headset's controllers while a gamepad is on.
         Bench bench;
-        bench.router.SetGamepadConnected(true, 0.0);
+        bench.router.SetGamepadConnected(true, true, 0.0);
         TouchState touch = Held();
         bench.Pass(0.1, &touch);
         Check(bench.Source() == Source::Gamepad, "a gamepad that is on is the controller before the menu");
@@ -449,6 +451,150 @@ int main() {
         bench.Pass(0.1, &away);
         bench.router.Use(Source::Touch, bench.time);
         Check(bench.Source() == Source::Gamepad, "controllers nobody holds are not chosen with");
+    }
+
+    // --- the touchpad's gestures, on buttons -----------------------------------------------------
+    {
+        Bench bench;
+        bench.router.SetPlaying(true, 0.0);
+        TouchState touch = Held();
+        bench.Pass(0.2, &touch);
+        Check(bench.router.Look().gesture_buttons, "the headset's controllers have no touchpad: buttons do its gestures");
+
+        // The trigger of the hand that holds the controller in the game presses the pad.
+        touch.right_trigger = 1.0f;
+        bench.Pass(0.05, &touch);
+        Check(bench.out.pad.buttons == (Button::R2 | Button::TouchPad) && bench.out.pad.touch_down &&
+                  bench.out.pad.touch_x == 960 && bench.out.pad.touch_y == 540,
+              "the right trigger presses the touchpad, in its middle (and is still R2)");
+        bench.Pass(2.0, &touch);
+        Check((bench.out.pad.buttons & Button::TouchPad) != 0 && bench.out.pad.touch_down,
+              "for as long as it is pulled");
+        touch = Held();
+        bench.Pass(0.1, &touch);
+        Check(bench.out.pad.buttons == 0 && !bench.out.pad.touch_down, "and lets go of it");
+
+        // Its grip swipes forward, once.
+        touch.right_grip = 1.0f;
+        bench.Pass(0.03, &touch);
+        Check(bench.out.pad.buttons == Button::R1 && bench.out.pad.touch_down && bench.out.pad.touch_y == 863,
+              "the right grip puts a finger near the player's edge of the pad (and is still R1)");
+        int least = 1079;
+        for (int i = 0; i < 60; ++i) {
+            bench.Pass(0.011, &touch);
+            if (bench.out.pad.touch_down) {
+                least = std::min<int>(least, bench.out.pad.touch_y);
+            }
+        }
+        Check(least == 129 && !bench.out.pad.touch_down && bench.out.pad.buttons == Button::R1,
+              "takes it to the far edge and off, once, however long the grip is held");
+        touch = Held();
+        bench.Pass(0.1, &touch);
+
+        // The other hand's trigger pulls back, and lets go when it is let go.
+        touch.left_trigger = 1.0f;
+        bench.Pass(0.03, &touch);
+        Check(bench.out.pad.buttons == Button::L2 && bench.out.pad.touch_down && bench.out.pad.touch_y == 216,
+              "the left trigger puts a finger near the far edge (and is still L2)");
+        bench.Pass(1.0, &touch);
+        Check(bench.out.pad.touch_down && bench.out.pad.touch_y == 1047, "pulls it back to the near edge and holds it there");
+        touch = Held();
+        bench.Pass(0.1, &touch);
+        Check(!bench.out.pad.touch_down && bench.out.pad.touch_y == 1047, "and lets go there: the catapult shoots");
+
+        // A gesture comes before the stick's finger.
+        touch.right_y = -1.0f;
+        bench.Pass(0.5, &touch);
+        Check(bench.out.pad.touch_down && bench.out.pad.touch_y == 1079, "(the stick has pulled a finger back)");
+        touch.right_trigger = 1.0f;
+        bench.Pass(0.05, &touch);
+        Check(bench.out.pad.touch_down && bench.out.pad.touch_y == 540 && (bench.out.pad.buttons & Button::TouchPad) != 0,
+              "a button's gesture takes the pad from the stick's finger");
+        touch = Held();
+        bench.Pass(0.3, &touch);
+
+        // The other way round for a player whose left controller is the one in the game.
+        bench.router.SetPadHand(0);
+        touch.left_trigger = 1.0f;
+        bench.Pass(0.05, &touch);
+        Check(bench.out.pad.buttons == (Button::L2 | Button::TouchPad), "with the left controller as the one in the game, its trigger presses");
+        touch = Held();
+        bench.Pass(0.3, &touch);
+        touch.right_trigger = 1.0f;
+        bench.Pass(0.5, &touch);
+        Check(bench.out.pad.buttons == Button::R2 && bench.out.pad.touch_down && bench.out.pad.touch_y == 1047,
+              "and the right trigger pulls");
+        touch = Held();
+        touch.left_grip = 1.0f;
+        bench.Pass(0.5, &touch);
+        touch = Held();
+        bench.Pass(0.1, &touch);
+        touch.left_grip = 1.0f;
+        bench.Pass(0.03, &touch);
+        Check(bench.out.pad.touch_down && bench.out.pad.touch_y == 863, "and its grip swipes");
+    }
+    {
+        // A gamepad without a touchpad.
+        Bench bench;
+        bench.router.SetGamepadConnected(true, false, 0.0);
+        bench.router.SetPlaying(true, 0.0);
+        bench.Pass(0.2);
+        Check(bench.router.Look().gesture_buttons, "a gamepad without a touchpad: buttons do its gestures");
+        GamepadState pad;
+        pad.buttons = Button::R2;
+        pad.right_trigger = 1.0f;
+        bench.router.SetGamepad(pad, bench.time);
+        bench.Pass(0.3);
+        Check(bench.out.pad.buttons == (Button::R2 | Button::TouchPad) && bench.out.pad.touch_down &&
+                  bench.out.pad.right_trigger == 255,
+              "R2 presses the touchpad");
+        bench.router.SetGamepad({}, bench.time);
+        bench.Pass(0.2);
+        Check(bench.out.pad.buttons == 0 && !bench.out.pad.touch_down, "and lets go of it");
+        pad = {};
+        pad.buttons = Button::R1;
+        bench.router.SetGamepad(pad, bench.time);
+        bench.Pass(0.03);
+        Check(bench.out.pad.buttons == Button::R1 && bench.out.pad.touch_down && bench.out.pad.touch_y == 863,
+              "R1 swipes forward");
+        bench.router.SetGamepad({}, bench.time);
+        bench.Pass(0.6);
+        Check(!bench.out.pad.touch_down && bench.out.pad.touch_y == 129, "to the far edge and off, though R1 was only tapped");
+        pad = {};
+        pad.buttons = Button::L2;
+        pad.left_trigger = 1.0f;
+        bench.router.SetGamepad(pad, bench.time);
+        bench.Pass(0.02);
+        bench.router.SetGamepad({}, bench.time);
+        bench.Pass(0.2);
+        Check(bench.out.pad.touch_down, "L2 tapped pulls a finger back, all of the way");
+        bench.Pass(0.4);
+        Check(!bench.out.pad.touch_down && bench.out.pad.touch_y == 1047, "and lets go at the near edge");
+
+        // OPTIONS is counted, for a host that shows the controls with the game's pause.
+        const uint32_t before = bench.router.Look().options_presses;
+        pad = {};
+        pad.buttons = Button::Options;
+        bench.router.SetGamepad(pad, bench.time);
+        bench.Pass(0.2);
+        bench.router.SetGamepad({}, bench.time);
+        bench.Pass(0.1);
+        Check(bench.router.Look().options_presses == before + 1, "a press of OPTIONS is counted once");
+    }
+    {
+        // A gamepad with a touchpad of its own keeps its buttons to itself.
+        Bench bench;
+        bench.router.SetGamepadConnected(true, true, 0.0);
+        bench.router.SetPlaying(true, 0.0);
+        Check(!bench.router.Look().gesture_buttons, "a gamepad with a touchpad needs no buttons for it");
+        GamepadState pad;
+        pad.buttons = Button::R2 | Button::R1 | Button::L2;
+        pad.right_trigger = 1.0f;
+        pad.left_trigger = 1.0f;
+        bench.router.SetGamepad(pad, bench.time);
+        bench.Pass(0.5);
+        Check(bench.out.pad.buttons == (Button::R2 | Button::R1 | Button::L2) && !bench.out.pad.touch_down,
+              "its triggers and shoulder buttons are only that");
     }
 
     std::printf("%d failed\n", failures);

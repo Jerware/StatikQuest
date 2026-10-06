@@ -93,6 +93,8 @@ struct XrHostStatus {
     std::atomic<bool> hands_tracked{};
     /// The one of the headset's own controllers that is the controller in the game is seen.
     std::atomic<bool> controller_tracked{};
+    /// The panel is to be shown over the game: it has something to say to who is playing.
+    std::atomic<bool> show_panel{};
     std::atomic<float> refresh_rate{};
     /// Set when the startup choice is confirmed, before the game can deliver any frames.
     std::atomic<bool> reduced_fov{};

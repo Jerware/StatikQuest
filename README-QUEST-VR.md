@@ -103,9 +103,18 @@ it has the field-of-view menu and the fixes of 0.14 to 0.17 above, and
   - **a gamepad without motion sensors is turned and tilted in the game by the hands that
     hold it.** Before, it followed the hands to where they were and kept pointing straight
     ahead, which left the game's gadgets nothing to aim with.
-  - **the right stick as the touchpad's finger lifts where the stick is let go**, as on the
-    PC, which is what the catapult at the end of a level needs: pull the stick towards you
-    and let go. A button that presses the touchpad touches it as well.
+  - **what the game wants done on the touchpad is on buttons**, on the headset's
+    controllers and on every gamepad that has no touchpad: the right trigger (R2) presses
+    it, the right grip (R1) swipes forward, the left trigger (L2) pulls back and lets go,
+    which is the catapult at the end of every level. A card in the headset says so when the
+    game starts and whenever OPTIONS is pressed. (The first worn try of this version ended
+    at that catapult: the stick alone did not shoot it. The game looks at the pad once for
+    every frame it draws, thirty times a second here, and a stick is at its end before it
+    has looked twice: the pull began, for the game, where it ended.)
+  - **the right stick as the touchpad's finger** is one the game can follow now: it stays
+    where it comes down until the game has seen it there, moves no faster than a finger
+    does, and lifts where the stick was let go. A button that presses the touchpad touches
+    it as well.
   - smaller things for gamepads that are not PlayStation's: a right stick that reports on
     other axes, triggers that are only buttons, a Back button the system would take for its
     own "back" and close the app with.
@@ -269,11 +278,29 @@ light bar. Where it is in the game is where the headset sees the hands that hold
 8BitDo, Logitech, Razer, PDP, Hori and others; nothing but a DualSense has been tried) lack
 two things the game is built around, which are made up for:
 
-- *the touchpad.* The right stick, for which this game has no use, moves a finger over it: the
-  finger comes down in the middle of the pad, goes where the stick goes, and lifts where the
-  stick is let go (not back in the middle, where a stick flies to). That is what the catapult
-  at the end of a level needs: pull the stick towards you and let go. The Create / Back / View
-  button presses the pad. (`stick_touchpad=0` leaves the stick a stick.)
+- *the touchpad.* The game asks three things of it, and each is on a button the game has no
+  use for while it is played (it is still told of them: a few of its menus have):
+  - **R2, the right trigger: the pad pressed**, for as long as the trigger is pulled. The
+    water cannon and the machine gun fire that way.
+  - **R1: a swipe forward**, once for each press. That shoots the hook, throws the stars,
+    opens the chests.
+  - **L2, the left trigger: a pull back**, held while the trigger is and let go when it is.
+    That is the catapult at the end of every level (point the controller at the goal: the
+    game only shoots within 25 degrees of it), and it pulls on the hook's rope.
+
+  A card in the headset names them when the game starts and again whenever OPTIONS is
+  pressed, which is the game's pause. Besides them the right stick, for which this game has
+  no use either, moves a finger over the pad for anything else: the finger comes down behind
+  the pad's middle, is dragged the way the stick is pushed, and lifts where the stick is let
+  go (not back in the middle, where a stick flies to). The Create / Back / View button
+  presses the pad. (`stick_touchpad=0` leaves the stick a stick.)
+
+  Why buttons, and why the finger is slow: the game looks at the pad once for every frame it
+  draws, thirty times a second in a level here, and makes a pull or a swipe of where it saw
+  the finger first and last. A stick is at its end within a few hundredths of a second, and
+  a finger that follows it there has not moved at all as far as the game can tell. So every
+  finger the app moves stays where it lands until the game has seen it, goes no faster than
+  a real one flicks, and lifts only when the game has seen it at its end.
 - *the motion sensors*, by which the game knows how the controller is turned: its gadgets aim
   with it. The hands holding the gamepad stand in: the line from one palm to the other is the
   gamepad's sideways axis, which gives how it is turned and how far it is rolled, and the way
@@ -296,15 +323,18 @@ system makes of them for other apps says neither, and is ignored):
 | A, B (right) | ✕, □ |
 | X, Y (left) | ○, △ |
 | X and Y together | blowing into the microphone, for as long as they are held |
-| grips | L1, R1 |
-| triggers | L2, R2 |
-| right stick | the finger on the touchpad, as on a gamepad without one |
+| right trigger | the touchpad pressed, while it is pulled (water, guns); also R2 |
+| right grip | a swipe forward on the touchpad (hook, stars, chests); also R1 |
+| left trigger | a pull back on the touchpad, let go when the trigger is (the catapult); also L2 |
+| left grip | L1 |
+| right stick | a finger on the touchpad, as on a gamepad without one |
 | right stick pressed in | the touchpad pressed |
 | menu button (left) | OPTIONS; held for a second, it resets the view |
 | both sticks pressed in | resets the view |
 
-Both controllers shake with the game's rumble, the left one more with the heavy motor and
-the right one more with the light one.
+(With `pad_hand=left` the trigger and the grip that press and swipe are the left ones, and
+the right trigger pulls.) Both controllers shake with the game's rumble, the left one more
+with the heavy motor and the right one more with the light one.
 
 **With a gamepad and the headset's controllers both at hand, the game is played with the one
 that was used last**: a button on the other takes over, and `host.log` says so. From a
@@ -724,9 +754,17 @@ session itself: frames on the display, head and hand tracking, the controller.
 `tools/quest-drystart.sh <seconds> [settings file]` starts the app's own activity without showing
 it: everything the app does when it is launched runs (settings, log files, OpenXR up to the idle
 session, unpacking the runtime, the emulator with the game, sound), a controller that is not
-there presses ✕ now and then (through the same code a real one's events go through), and the
-`host.log` and `core.log` the app writes are pulled to `build/quest/drystart/` together with
-pictures of what its status panel showed and of the start-up menu.
+there presses ✕ now and then (through the same code a real one's events go through), pulls
+its right stick back once and presses R1 once, and the `host.log` and `core.log` the app
+writes are pulled to `build/quest/drystart/` together with pictures of what its status panel
+showed, of the start-up menu and of the controls cards.
+
+`SHADPS4_PAD_TOUCH_TRACE=1` (as `env=` in a settings file for the dry start, or as a setting of
+`quest-sandbox-test.sh`, whose input scripts can press the gesture buttons with
+`gesture=press`, `gesture=swipe` and `gesture=pull` and move the stick's finger with
+`finger=x,y`) has core.log say what the game was given of the touchpad at each of its reads,
+for as long as a finger was on it: where the game saw a touch begin and end, and over how
+many reads, is what it makes its swipes and pulls of.
 
 `quest-host/build.sh --test-package` builds the same app under another name
 (`com.astrobotquest.vrhost.test`, "Astro VR Host (test)", `build/quest/astro-vr-host-test.apk`).

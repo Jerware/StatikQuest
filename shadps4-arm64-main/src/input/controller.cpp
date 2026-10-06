@@ -197,8 +197,7 @@ void GameController::UpdateStickTouch() {
         const char* value = std::getenv("SHADPS4_STICK_TOUCHPAD");
         return value == nullptr || value[0] != '0';
     }();
-    if (!enabled || m_sdl_gamepad == nullptr ||
-        !Core::Vr::Runtime::Instance().IsHeadsetConnected()) {
+    if (m_sdl_gamepad == nullptr || !Core::Vr::Runtime::Instance().IsHeadsetConnected()) {
         return;
     }
     std::scoped_lock lock{m_finger_mutex};
@@ -208,13 +207,42 @@ void GameController::UpdateStickTouch() {
         m_stick_finger.Reset();
         return;
     }
-    const float x =
-        static_cast<float>(SDL_GetGamepadAxis(m_sdl_gamepad, SDL_GAMEPAD_AXIS_RIGHTX)) / 32767.0f;
-    const float y =
-        static_cast<float>(SDL_GetGamepadAxis(m_sdl_gamepad, SDL_GAMEPAD_AXIS_RIGHTY)) / 32767.0f;
     const double now =
         std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-    const StickFinger::Touch touch = m_stick_finger.Update(now, x, y);
+    // A gamepad that has no touchpad at all also has buttons for what such a title wants
+    // done on one (see PadGestures): the right trigger presses the pad for as long as it is
+    // pulled, the right shoulder button swipes forward once, the left trigger pulls back and
+    // lets go when it is let go. The title has no use for those buttons in play, and is
+    // still told of them. (Not while the PS button is held: it gives them other meanings.)
+    PadGestures::Touch made{};
+    if (SDL_GetNumGamepadTouchpads(m_sdl_gamepad) == 0) {
+        PadGestures::Controls controls;
+        if (!SDL_GetGamepadButton(m_sdl_gamepad, SDL_GAMEPAD_BUTTON_GUIDE)) {
+            static constexpr s16 Pulled = 16384;
+            controls.press =
+                SDL_GetGamepadAxis(m_sdl_gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > Pulled;
+            controls.swipe =
+                SDL_GetGamepadButton(m_sdl_gamepad, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER);
+            controls.pull =
+                SDL_GetGamepadAxis(m_sdl_gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > Pulled;
+        }
+        made = m_gestures.Update(now, controls);
+        if (made.pressed != m_gesture_press) {
+            m_gesture_press = made.pressed;
+            Button(OrbisPadButtonDataOffset::TouchPad, made.pressed);
+        }
+    }
+    StickFinger::Touch touch{false, m_stick_touch_x, m_stick_touch_y};
+    if (made.down) {
+        m_stick_finger.Reset();
+        touch = {true, made.x, made.y};
+    } else if (enabled) {
+        const float x = static_cast<float>(SDL_GetGamepadAxis(m_sdl_gamepad, SDL_GAMEPAD_AXIS_RIGHTX)) /
+                        32767.0f;
+        const float y = static_cast<float>(SDL_GetGamepadAxis(m_sdl_gamepad, SDL_GAMEPAD_AXIS_RIGHTY)) /
+                        32767.0f;
+        touch = m_stick_finger.Update(now, x, y);
+    }
     if (touch.down) {
         if (!m_stick_touch || std::abs(touch.x - m_stick_touch_x) > 0.002f ||
             std::abs(touch.y - m_stick_touch_y) > 0.002f) {
@@ -502,8 +530,11 @@ void GameControllers::TryOpenSDLControllers() {
                              i + 1, name != nullptr ? name : "unnamed", SDL_GetGamepadVendor(pad),
                              SDL_GetGamepadProduct(pad), path != nullptr ? path : "?",
                              SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO) ? "yes" : "no",
-                             SDL_GetNumGamepadTouchpads(pad) > 0 ? "yes" : "no, the right stick "
-                                                                           "stands in",
+                             SDL_GetNumGamepadTouchpads(pad) > 0
+                                 ? "yes"
+                                 : "no: the right stick stands in for a finger, the right "
+                                   "trigger presses the pad, the right shoulder button swipes "
+                                   "forward, the left trigger pulls back and lets go",
                              SDL_GetBooleanProperty(SDL_GetGamepadProperties(pad),
                                                     SDL_PROP_GAMEPAD_CAP_RGB_LED_BOOLEAN, false)
                                  ? "yes"

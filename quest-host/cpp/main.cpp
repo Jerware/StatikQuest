@@ -76,6 +76,7 @@ JNIEXPORT void JNICALL Java_com_astrobotquest_vrhost_MainActivity_nativeStartXr(
     env->GetJavaVM(&g_app->vm);
     g_app->activity = env->NewGlobalRef(activity);
     g_app->pads.SetStickTouchpad(stick_touchpad == JNI_TRUE);
+    g_app->pads.SetPadHand(pad_hand);
     g_app->pads.SetNotice([](const char* text) { LOGI("%s", text); });
     g_app->pads.SetSink([app = g_app.get()](const PadRouter::Output& output) {
         app->core.SetPad(output.pad);
@@ -253,10 +254,27 @@ JNIEXPORT void JNICALL Java_com_astrobotquest_vrhost_MainActivity_nativeMotion(
 }
 
 /// A gamepad is there to play with (again, or another one than before), or none is any more.
+/// `touchpad`: it has a touchpad of its own.
 JNIEXPORT void JNICALL Java_com_astrobotquest_vrhost_MainActivity_nativeSetGamepad(
-    JNIEnv*, jobject, jboolean connected) {
+    JNIEnv*, jobject, jboolean connected, jboolean touchpad) {
     if (g_app) {
-        g_app->pads.SetGamepadConnected(connected == JNI_TRUE, PadRouter::Now());
+        g_app->pads.SetGamepadConnected(connected == JNI_TRUE, touchpad == JNI_TRUE,
+                                        PadRouter::Now());
+    }
+}
+
+/// How often OPTIONS was pressed in the game so far.
+JNIEXPORT jint JNICALL Java_com_astrobotquest_vrhost_MainActivity_nativeOptionsPresses(JNIEnv*,
+                                                                                       jobject) {
+    return g_app ? static_cast<jint>(g_app->pads.Look().options_presses) : 0;
+}
+
+/// Shows the panel over the game although the game has a picture (for what the player
+/// should read while they play), or no longer.
+JNIEXPORT void JNICALL Java_com_astrobotquest_vrhost_MainActivity_nativeShowPanel(JNIEnv*, jobject,
+                                                                                  jboolean show) {
+    if (g_app) {
+        g_app->xr_status.show_panel = show == JNI_TRUE;
     }
 }
 
@@ -269,14 +287,16 @@ JNIEXPORT void JNICALL Java_com_astrobotquest_vrhost_MainActivity_nativeSetPlayi
 }
 
 /// What the game is played with: 0 nothing, 1 the gamepad, 2 the headset's own controllers.
-/// 4 is added while those are in the player's hands.
+/// 4 is added while those are in the player's hands, 8 where what the game is played with
+/// has no touchpad and buttons do its gestures.
 JNIEXPORT jint JNICALL Java_com_astrobotquest_vrhost_MainActivity_nativeController(JNIEnv*,
                                                                                    jobject) {
     if (!g_app) {
         return 0;
     }
     const PadRouter::View view = g_app->pads.Look();
-    return static_cast<jint>(view.source) | (view.touch_present ? 4 : 0);
+    return static_cast<jint>(view.source) | (view.touch_present ? 4 : 0) |
+           (view.gesture_buttons ? 8 : 0);
 }
 
 /// The player chose with it in the host's menu: 1 the gamepad, 2 the headset's controllers.

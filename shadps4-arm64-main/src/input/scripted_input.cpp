@@ -19,6 +19,7 @@
 #include "core/vr/vr_runtime.h"
 #include "input/controller.h"
 #include "input/scripted_input.h"
+#include "input/pad_gestures.h"
 #include "input/stick_finger.h"
 
 namespace Input {
@@ -47,6 +48,9 @@ struct Step {
     // The right stick as it stands in for that finger (Input::StickFinger), -1..1 to the right
     // and towards the player.
     std::optional<std::array<float, 2>> finger;
+    // The buttons that do the touchpad's gestures on a controller without one
+    // (Input::PadGestures), held while the line lasts.
+    PadGestures::Controls gestures;
     // The place a controller that nothing locates is held to be at: moved by so many metres
     // (right, up, towards the player), or switched between the standard one and the player's.
     std::optional<Core::Vr::Vec3> place_move;
@@ -167,6 +171,12 @@ std::vector<Step> ParseScript(const std::filesystem::path& script) {
                 }
                 continue;
             }
+            if (token == "gesture=press" || token == "gesture=swipe" || token == "gesture=pull") {
+                step.gestures.press = step.gestures.press || token == "gesture=press";
+                step.gestures.swipe = step.gestures.swipe || token == "gesture=swipe";
+                step.gestures.pull = step.gestures.pull || token == "gesture=pull";
+                continue;
+            }
             if (token == "place=switch") {
                 step.place_switch = true;
                 continue;
@@ -207,6 +217,7 @@ void Replay(std::vector<Step> steps, std::filesystem::path live_script) {
     std::array<int, 6> previous_axes{128, 128, 128, 128, 0, 0};
     std::optional<std::array<float, 2>> previous_touch;
     StickFinger stick_finger;
+    PadGestures gestures;
     std::filesystem::file_time_type live_stamp{};
     while (true) {
         if (!live_script.empty()) {
@@ -229,6 +240,7 @@ void Replay(std::vector<Step> steps, std::filesystem::path live_script) {
         const Step* hands_step = nullptr;
         std::optional<std::array<float, 2>> touch;
         std::array<float, 2> finger{};
+        PadGestures::Controls controls;
         float microphone = 0.0f;
         for (const Step& step : steps) {
             if (now >= step.start) {
@@ -254,6 +266,9 @@ void Replay(std::vector<Step> steps, std::filesystem::path live_script) {
             if (step.finger) {
                 finger = *step.finger;
             }
+            controls.press = controls.press || step.gestures.press;
+            controls.swipe = controls.swipe || step.gestures.swipe;
+            controls.pull = controls.pull || step.gestures.pull;
             microphone = std::max(microphone, step.microphone);
             buttons |= step.buttons;
             for (size_t axis = 0; axis < step.sticks.size(); ++axis) {
@@ -263,9 +278,16 @@ void Replay(std::vector<Step> steps, std::filesystem::path live_script) {
             }
         }
         microphone_level.store(microphone, std::memory_order_relaxed);
-        // (A stick at rest between its lines: that is what lifts its finger.)
-        if (const auto stick = stick_finger.Update(now, finger[0], finger[1]);
-            stick.down && !touch) {
+        // What buttons do on the touchpad comes before what the stick does there.
+        if (const auto made = gestures.Update(now, controls); made.down && !touch) {
+            touch = std::array<float, 2>{made.x, made.y};
+            if (made.pressed) {
+                buttons |= Buttons::TouchPad;
+            }
+            stick_finger.Reset();
+        } else if (const auto stick = stick_finger.Update(now, finger[0], finger[1]);
+                   stick.down && !touch) {
+            // (A stick at rest between its lines: that is what lifts its finger.)
             touch = std::array<float, 2>{stick.x, stick.y};
         }
         auto& vr = Core::Vr::Runtime::Instance();

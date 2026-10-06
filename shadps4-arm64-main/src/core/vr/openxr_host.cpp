@@ -28,6 +28,7 @@
 #include "core/vr/openxr_host.h"
 #include "input/controller.h"
 #include "input/scripted_input.h"
+#include "input/pad_gestures.h"
 #include "input/stick_finger.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 
@@ -394,6 +395,7 @@ struct OpenXrHost::Impl {
     float sent_touch_x{0.5f};
     float sent_touch_y{0.5f};
     Input::StickFinger stick_finger;
+    Input::PadGestures gestures;
     bool blowing{};
     std::atomic<u32> rumble_wanted{};
     u32 rumble_applied{};
@@ -930,6 +932,7 @@ struct OpenXrHost::Impl {
         sent_axes = {128, 128, 128, 128, 0, 0};
         sent_touch = false;
         stick_finger.Reset();
+        gestures.Reset();
         if (blowing) {
             blowing = false;
             Input::SetBlowing(false);
@@ -1026,8 +1029,10 @@ struct OpenXrHost::Impl {
         add(pressed(act_options), Buttons::Options);
         const bool left_stick_in = pressed(act_l3);
         const bool right_stick_in = pressed(act_finger_press);
-        add(pulled(act_l1) > 0.5f, Buttons::L1);
-        add(pulled(act_r1) > 0.5f, Buttons::R1);
+        const float left_grip = pulled(act_l1);
+        const float right_grip = pulled(act_r1);
+        add(left_grip > 0.5f, Buttons::L1);
+        add(right_grip > 0.5f, Buttons::R1);
         const float left_trigger = pulled(act_l2);
         const float right_trigger = pulled(act_r2);
         const XrVector2f move = stick(act_move);
@@ -1046,7 +1051,8 @@ struct OpenXrHost::Impl {
                      "circle, left Y/B = triangle, right stick = finger on the touchpad, "
                      "pressed in = touchpad pressed, left menu/trackpad = OPTIONS, "
                      "both sticks pressed in = reset the view; the {} "
-                     "one is the controller in the game)",
+                     "one is the controller in the game: its trigger presses the touchpad, its "
+                     "grip swipes forward, the other trigger pulls back and lets go)",
                      pad_hand == 0 ? "left" : "right");
         }
 
@@ -1080,18 +1086,36 @@ struct OpenXrHost::Impl {
         if (axes[5] > 0) {
             buttons |= Buttons::R2;
         }
-        // The right stick moves a finger over the touchpad (see Input::StickFinger: a stick
-        // let go lifts the finger where it was, which is what lets a pull on the stick shoot
-        // the game's catapults). A stick pushed away from the player is the pad's far edge.
-        // The finger also touches, in the middle of the pad, when the stick is only pressed
-        // in: a touchpad cannot be pressed without touching it.
-        const Input::StickFinger::Touch dragged = stick_finger.Update(
-            std::chrono::duration<double>(Clock::now().time_since_epoch()).count(), finger.x,
-            -finger.y);
-        const bool swiping = dragged.down;
+        // What the title wants done on the touchpad is on buttons (see Input::PadGestures):
+        // the trigger of the hand that holds the controller in the game presses the pad for
+        // as long as it is pulled, the grip of that hand swipes forward once, the other
+        // hand's trigger pulls back and lets go when it is let go. (They stay L1, R1, L2 and
+        // R2 besides: the title has no use for those in play, but its menus have.)
+        const double seconds =
+            std::chrono::duration<double>(Clock::now().time_since_epoch()).count();
+        Input::PadGestures::Controls controls;
+        controls.press = (pad_hand == 0 ? left_trigger : right_trigger) > 0.5f;
+        controls.swipe = (pad_hand == 0 ? left_grip : right_grip) > 0.5f;
+        controls.pull = (pad_hand == 0 ? right_trigger : left_trigger) > 0.5f;
+        const Input::PadGestures::Touch made = gestures.Update(seconds, controls);
+        // Besides that, the right stick moves a finger over the touchpad (see
+        // Input::StickFinger: a stick let go lifts the finger where it was, which is what
+        // lets a pull on the stick shoot the game's catapults). A stick pushed away from the
+        // player is the pad's far edge. The finger also touches, in the middle of the pad,
+        // when the stick is only pressed in: a touchpad cannot be pressed without touching it.
+        Input::StickFinger::Touch dragged{false, 0.5f, 0.5f};
+        if (made.down) {
+            stick_finger.Reset();
+            if (made.pressed) {
+                buttons |= Buttons::TouchPad;
+            }
+        } else {
+            dragged = stick_finger.Update(seconds, finger.x, -finger.y);
+        }
+        const bool swiping = made.down || dragged.down;
         const bool touch = swiping || (right_stick_in && !view_reset);
-        const float touch_x = swiping ? dragged.x : 0.5f;
-        const float touch_y = swiping ? dragged.y : 0.5f;
+        const float touch_x = made.down ? made.x : dragged.down ? dragged.x : 0.5f;
+        const float touch_y = made.down ? made.y : dragged.down ? dragged.y : 0.5f;
         if (buttons != sent_buttons || axes != sent_axes || touch != sent_touch ||
             (touch && (std::abs(touch_x - sent_touch_x) > 0.002f ||
                        std::abs(touch_y - sent_touch_y) > 0.002f))) {

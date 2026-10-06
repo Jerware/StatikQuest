@@ -10,7 +10,9 @@
 #include <utility>
 
 #include "pad_state.h"
-// From the emulator (src/input): the right stick as a finger on the touchpad.
+// From the emulator (src/input): the right stick as a finger on the touchpad, and buttons
+// that do what a finger does there.
+#include "pad_gestures.h"
 #include "stick_finger.h"
 
 /// PS4 pad button bits (ORBIS_PAD_BUTTON_*).
@@ -55,6 +57,13 @@ struct TouchState {
 /// and R2, the grips L1 and R1, the left controller's menu button is OPTIONS. Both sticks
 /// pressed in reset the view.
 ///
+/// What the game wants done on the touchpad is also on buttons, for the headset's
+/// controllers and for every gamepad that has no touchpad (see Input::PadGestures): the
+/// trigger of the hand that holds the controller in the game (R2 on a gamepad) presses the
+/// pad for as long as it is pulled, the grip of that hand (R1) swipes forward once, and the
+/// other hand's trigger (L2) pulls back, holds, and lets go when it is let go. The game has
+/// no use for those buttons in play; it is still told of them, for the menus that have.
+///
 /// With both a gamepad and the headset's controllers at hand, the game is played with the
 /// one that was used last: a button on the other takes over. A gamepad is taken over from
 /// only by what a hand cannot do without holding a controller (a button under a thumb, a
@@ -91,6 +100,10 @@ public:
         bool gamepad_motion{};
         float gamepad_accel[3]{};
         bool touch_present{};
+        /// What the game is played with has no touchpad: buttons do its gestures.
+        bool gesture_buttons{};
+        /// How often OPTIONS was pressed in the game so far.
+        uint32_t options_presses{};
     };
 
     /// The time everything here is told, in seconds: the same clock for every caller.
@@ -116,24 +129,31 @@ public:
         stick_touchpad = enabled;
     }
 
+    /// Which of the headset's own controllers is the controller in the game: 1 the right
+    /// one, 0 the left. Its trigger and grip are the ones that press and swipe.
+    void SetPadHand(int hand) {
+        std::scoped_lock lock{mutex};
+        pad_hand = hand == 0 ? 0 : 1;
+    }
+
     /// The game runs, and what the player presses is meant for it. Until then the controls
     /// belong to the host's own menu, and nothing of them reaches the game: neither does
     /// what is still held down from there, until it is let go.
     void SetPlaying(bool playing_, double now) {
         std::scoped_lock lock{mutex};
         if (playing_ && !playing) {
-            playing = true;
-            held_back = 0;
-            held_back = Compose(now, false).pad.buttons;
+            held_back = Read().buttons;
         }
         playing = playing_;
         Publish(now);
     }
 
     /// A gamepad is there (again, or another one than before), or the last one is gone.
-    void SetGamepadConnected(bool connected, double now) {
+    /// `touchpad`: it has a touchpad of its own, and needs no buttons to stand in for one.
+    void SetGamepadConnected(bool connected, bool touchpad, double now) {
         std::scoped_lock lock{mutex};
         gamepad_connected = connected;
+        gamepad_touchpad = connected && touchpad;
         // Its motion sensors, if it has any, speak up within milliseconds.
         gamepad_motion = false;
         if (!connected) {
@@ -204,6 +224,9 @@ public:
         view.gamepad_motion = gamepad_motion;
         std::copy(gamepad_accel, gamepad_accel + 3, view.gamepad_accel);
         view.touch_present = touch.present;
+        view.gesture_buttons =
+            source == Source::Touch || (source == Source::Gamepad && !gamepad_touchpad);
+        view.options_presses = options_presses;
         return view;
     }
 
@@ -265,8 +288,9 @@ private:
             return;
         }
         source = wanted;
-        // What the other one's stick was doing on the touchpad is over.
+        // What the other one was doing on the touchpad is over.
         stick_finger.Reset();
+        gestures.Reset();
         options_since = -1.0;
         options_fired = false;
         view_reset_held = false;
@@ -286,93 +310,136 @@ private:
             std::lround(std::clamp(value, 0.0f, 1.0f) * 255.0f));
     }
 
-    /// What the game is given now. With `act`, what the buttons mean besides (resets of the
-    /// view) is acted on as well.
-    Output Compose(double now, bool act) {
-        Output out;
-        if (!playing) {
-            return out;
-        }
-        uint32_t buttons = 0;
-        float left_x = 0.0f, left_y = 0.0f, right_x = 0.0f, right_y = 0.0f;
-        float left_trigger = 0.0f, right_trigger = 0.0f;
-        bool real_finger = false;
-        float touch_x = 0.5f, touch_y = 0.5f;
-        bool view_reset = false;
-        bool blow = false;
+    /// What the controller the game is played with says right now, as a gamepad would say it.
+    struct Reading {
+        uint32_t buttons{};
+        float left_x{}, left_y{}, right_x{}, right_y{};
+        float left_trigger{}, right_trigger{};
+        /// A real finger on a real touchpad.
+        bool finger{};
+        float finger_x{0.5f}, finger_y{0.5f};
+        bool view_reset{};
+        bool blow{};
+        /// The buttons that do the touchpad's gestures, and which button each of them is.
+        Input::PadGestures::Controls gestures;
+        uint32_t press_button{}, swipe_button{}, pull_button{};
+    };
 
+    Reading Read() const {
+        Reading read;
         if (source == Source::Touch) {
             const TouchState& t = touch;
             const auto add = [&](bool down, uint32_t button) {
                 if (down) {
-                    buttons |= button;
+                    read.buttons |= button;
                 }
             };
             add(t.a, PadButton::Cross);
             add(t.b, PadButton::Square);
             // The left controller's two buttons together are not circle and triangle: they
             // blow into the microphone, for as long as they are held.
-            blow = t.x && t.y;
-            add(t.x && !blow, PadButton::Circle);
-            add(t.y && !blow, PadButton::Triangle);
+            read.blow = t.x && t.y;
+            add(t.x && !read.blow, PadButton::Circle);
+            add(t.y && !read.blow, PadButton::Triangle);
             add(t.menu, PadButton::Options);
             add(t.left_grip > 0.5f, PadButton::L1);
             add(t.right_grip > 0.5f, PadButton::R1);
             // Both sticks pressed in is not something a game is played with: it resets the
             // view, for which a gamepad has its PS button.
-            view_reset = t.left_stick_in && t.right_stick_in;
-            add(t.left_stick_in && !view_reset, PadButton::L3);
-            add(t.right_stick_in && !view_reset, PadButton::TouchPad);
+            read.view_reset = t.left_stick_in && t.right_stick_in;
+            add(t.left_stick_in && !read.view_reset, PadButton::L3);
+            add(t.right_stick_in && !read.view_reset, PadButton::TouchPad);
             // (A trigger that is not quite at rest is not pulled: any pull counts as the
             // button.)
-            left_trigger = t.left_trigger < 0.12f ? 0.0f : t.left_trigger;
-            right_trigger = t.right_trigger < 0.12f ? 0.0f : t.right_trigger;
-            add(left_trigger > 0.0f, PadButton::L2);
-            add(right_trigger > 0.0f, PadButton::R2);
-            left_x = t.left_x;
-            left_y = -t.left_y;
-            right_x = t.right_x;
-            right_y = -t.right_y;
+            read.left_trigger = t.left_trigger < 0.12f ? 0.0f : t.left_trigger;
+            read.right_trigger = t.right_trigger < 0.12f ? 0.0f : t.right_trigger;
+            add(read.left_trigger > 0.0f, PadButton::L2);
+            add(read.right_trigger > 0.0f, PadButton::R2);
+            read.left_x = t.left_x;
+            read.left_y = -t.left_y;
+            read.right_x = t.right_x;
+            read.right_y = -t.right_y;
+            // The hand that holds the controller in the game presses and swipes, the other
+            // one pulls.
+            const bool right = pad_hand != 0;
+            read.gestures.press = (right ? t.right_trigger : t.left_trigger) > 0.5f;
+            read.gestures.swipe = (right ? t.right_grip : t.left_grip) > 0.5f;
+            read.gestures.pull = (right ? t.left_trigger : t.right_trigger) > 0.5f;
+            read.press_button = right ? PadButton::R2 : PadButton::L2;
+            read.swipe_button = right ? PadButton::R1 : PadButton::L1;
+            read.pull_button = right ? PadButton::L2 : PadButton::R2;
         } else {
             const GamepadState& g = gamepad;
-            buttons = g.buttons;
-            left_x = g.left_x;
-            left_y = g.left_y;
-            right_x = g.right_x;
-            right_y = g.right_y;
-            left_trigger = g.left_trigger;
-            right_trigger = g.right_trigger;
-            real_finger = g.touch_down;
-            touch_x = g.touch_x;
-            touch_y = g.touch_y;
-            if (gamepad_motion) {
-                out.pad.has_motion = true;
-                std::copy(gamepad_gyro, gamepad_gyro + 3, out.pad.gyro);
-                std::copy(gamepad_accel, gamepad_accel + 3, out.pad.accel);
+            read.buttons = g.buttons;
+            read.left_x = g.left_x;
+            read.left_y = g.left_y;
+            read.right_x = g.right_x;
+            read.right_y = g.right_y;
+            read.left_trigger = g.left_trigger;
+            read.right_trigger = g.right_trigger;
+            read.finger = g.touch_down;
+            read.finger_x = g.touch_x;
+            read.finger_y = g.touch_y;
+            if (!gamepad_touchpad) {
+                read.gestures.press = g.right_trigger > 0.5f;
+                read.gestures.swipe = (g.buttons & PadButton::R1) != 0;
+                read.gestures.pull = g.left_trigger > 0.5f;
+                read.press_button = PadButton::R2;
+                read.swipe_button = PadButton::R1;
+                read.pull_button = PadButton::L2;
             }
+        }
+        return read;
+    }
+
+    /// What the game is given now, and what the buttons mean besides (resets of the view).
+    Output Compose(double now) {
+        Output out;
+        if (!playing) {
+            return out;
+        }
+        Reading read = Read();
+        uint32_t buttons = read.buttons;
+        if (source != Source::Touch && gamepad_motion) {
+            out.pad.has_motion = true;
+            std::copy(gamepad_gyro, gamepad_gyro + 3, out.pad.gyro);
+            std::copy(gamepad_accel, gamepad_accel + 3, out.pad.accel);
         }
 
         // What was held down when the game got the controls is not the game's.
         held_back &= buttons;
         buttons &= ~held_back;
         if ((held_back & PadButton::L2) != 0) {
-            left_trigger = 0.0f;
+            read.left_trigger = 0.0f;
         }
         if ((held_back & PadButton::R2) != 0) {
-            right_trigger = 0.0f;
+            read.right_trigger = 0.0f;
         }
+        read.gestures.press = read.gestures.press && (held_back & read.press_button) == 0;
+        read.gestures.swipe = read.gestures.swipe && (held_back & read.swipe_button) == 0;
+        read.gestures.pull = read.gestures.pull && (held_back & read.pull_button) == 0;
 
-        // This title has no use for the right stick, while several of its gadgets want
-        // swipes: the stick moves a finger over the touchpad (see Input::StickFinger: a
-        // stick let go lifts the finger where it was, which is what lets a pull on the stick
-        // shoot the game's catapults).
-        bool touching = real_finger;
-        if (real_finger) {
-            // A real finger is on the pad: the stick's has nothing to say, and is not back
-            // on the pad the moment the real one lifts either.
+        // The touchpad. A real finger on a real one comes first; then what buttons do on a
+        // controller that has none (the pad pressed, a swipe forward, a pull back that is
+        // let go); then the right stick, for which this title has no use, as a finger.
+        bool touching = read.finger;
+        float touch_x = read.finger_x;
+        float touch_y = read.finger_y;
+        const Input::PadGestures::Touch made = gestures.Update(now, read.gestures);
+        if (read.finger) {
+            // (The stick's finger is not back on the pad the moment the real one lifts.)
+            stick_finger.Reset();
+        } else if (made.down) {
+            touching = true;
+            touch_x = made.x;
+            touch_y = made.y;
+            if (made.pressed) {
+                buttons |= PadButton::TouchPad;
+            }
             stick_finger.Reset();
         } else if (stick_touchpad) {
-            const Input::StickFinger::Touch dragged = stick_finger.Update(now, right_x, right_y);
+            const Input::StickFinger::Touch dragged =
+                stick_finger.Update(now, read.right_x, read.right_y);
             if (dragged.down) {
                 touching = true;
                 touch_x = dragged.x;
@@ -380,8 +447,8 @@ private:
             }
         }
         if (source == Source::Touch && stick_touchpad) {
-            right_x = 0.0f;
-            right_y = 0.0f;
+            read.right_x = 0.0f;
+            read.right_y = 0.0f;
         }
         if (!touching && (buttons & PadButton::TouchPad) != 0) {
             // A touchpad cannot be pressed without touching it: in its middle, where a
@@ -400,21 +467,18 @@ private:
         }
 
         out.pad.buttons = buttons;
-        out.pad.left_x = Stick(left_x);
-        out.pad.left_y = Stick(left_y);
-        out.pad.right_x = Stick(right_x);
-        out.pad.right_y = Stick(right_y);
-        out.pad.left_trigger = Trigger(left_trigger);
-        out.pad.right_trigger = Trigger(right_trigger);
+        out.pad.left_x = Stick(read.left_x);
+        out.pad.left_y = Stick(read.left_y);
+        out.pad.right_x = Stick(read.right_x);
+        out.pad.right_y = Stick(read.right_y);
+        out.pad.left_trigger = Trigger(read.left_trigger);
+        out.pad.right_trigger = Trigger(read.right_trigger);
         out.pad.touch_down = touching;
         // (A finger that lifts does so from where it was.)
         out.pad.touch_x = sent_touch_x;
         out.pad.touch_y = sent_touch_y;
-        out.blowing = blow;
+        out.blowing = read.blow;
 
-        if (!act) {
-            return out;
-        }
         if ((buttons & PadButton::Cross) != 0 && !seat_taken) {
             // The first press of X is the player settled in, controller in hand, looking at
             // the game: that, and not where they were when the app started, is their seat.
@@ -427,6 +491,7 @@ private:
             options_fired = false;
         } else if (options_since < 0.0) {
             options_since = now;
+            ++options_presses;
         } else if (!options_fired && now - options_since >= OptionsHold) {
             // What a PlayStation VR does when OPTIONS is held, and what the game tells its
             // players to do when the view is off. The game still sees the button.
@@ -434,16 +499,16 @@ private:
             recenter |= RecenterPad | RecenterSeat;
             Note("OPTIONS held: view reset");
         }
-        if (view_reset && !view_reset_held) {
+        if (read.view_reset && !view_reset_held) {
             recenter |= RecenterPad | RecenterSeat;
             Note("both sticks pressed in: view reset");
         }
-        view_reset_held = view_reset;
+        view_reset_held = read.view_reset;
         return out;
     }
 
     void Publish(double now) {
-        const Output out = Compose(now, true);
+        const Output out = Compose(now);
         if (published && out == last) {
             return;
         }
@@ -462,10 +527,12 @@ private:
     std::function<void(const Output&)> sink;
     std::function<void(const char*)> notice;
     bool stick_touchpad{true};
+    int pad_hand{1};
 
     bool playing{};
     Source source{Source::None};
     bool gamepad_connected{};
+    bool gamepad_touchpad{};
     GamepadState gamepad;
     bool gamepad_motion{};
     float gamepad_gyro[3]{};
@@ -473,6 +540,8 @@ private:
     TouchState touch;
 
     Input::StickFinger stick_finger;
+    Input::PadGestures gestures;
+    uint32_t options_presses{};
     uint32_t held_back{};
     uint16_t sent_touch_x{TouchWidth / 2};
     uint16_t sent_touch_y{TouchHeight / 2};

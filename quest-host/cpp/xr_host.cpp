@@ -543,7 +543,10 @@ private:
                  "B = square, X = circle, Y = triangle (X and Y together blow), right stick = "
                  "finger on the touchpad, pressed in = touchpad pressed, grips = L1 and R1, "
                  "triggers = L2 and R2, left menu button = OPTIONS (held for a second: view "
-                 "reset), both sticks pressed in = view reset");
+                 "reset), both sticks pressed in = view reset; on the touchpad, the %s trigger "
+                 "presses, the %s grip swipes forward, the %s trigger pulls back and lets go",
+                 options.pad_hand == 0 ? "left" : "right", options.pad_hand == 0 ? "left" : "right",
+                 options.pad_hand == 0 ? "right" : "left");
         }
         controller_located = false;
         if (controllers_used && touch.present) {
@@ -1237,7 +1240,8 @@ private:
                     layers.push_back(
                         reinterpret_cast<const XrCompositionLayerBaseHeader*>(&projection));
                 }
-                if ((stale || options.show_stats) && status_ready) {
+                const bool card = host_status.show_panel;
+                if ((stale || options.show_stats || card) && status_ready) {
                     quad.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
                     quad.space = view_space;
                     quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
@@ -1247,6 +1251,11 @@ private:
                     if (stale) {
                         quad.pose.position = {0.0f, 0.0f, -1.6f};
                         quad.size = {1.4f, 0.7f};
+                    } else if (card) {
+                        // To be read while playing: large enough for that, below the
+                        // middle of the view.
+                        quad.pose.position = {0.0f, -0.40f, -1.3f};
+                        quad.size = {0.9f, 0.45f};
                     } else {
                         // Over the game: out of the way of what is being played.
                         quad.pose.position = {0.0f, -0.55f, -1.6f};

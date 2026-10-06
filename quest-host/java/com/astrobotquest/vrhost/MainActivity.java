@@ -121,8 +121,17 @@ public class MainActivity extends Activity
 
     private native long nativePadFeedback();
 
-    /** A gamepad is there to play with (again, or another one), or none is any more. */
-    private native void nativeSetGamepad(boolean connected);
+    /**
+     * A gamepad is there to play with (again, or another one), or none is any more.
+     * touchpad: it has a touchpad of its own, and needs no buttons to stand in for one.
+     */
+    private native void nativeSetGamepad(boolean connected, boolean touchpad);
+
+    /** How often OPTIONS was pressed in the game so far, on whichever controller. */
+    private native int nativeOptionsPresses();
+
+    /** Shows the panel over the game's picture, for what is to be read while playing. */
+    private native void nativeShowPanel(boolean show);
 
     /** The start-up menu is over: what the player presses is the game's. */
     private native void nativeSetPlaying(boolean playing);
@@ -139,6 +148,8 @@ public class MainActivity extends Activity
     private static final int CONTROLLER_WHICH = 3, CONTROLLER_GAMEPAD = 1, CONTROLLER_OWN = 2;
     /** Added to it while the headset's own controllers are in the player's hands. */
     private static final int CONTROLLER_OWN_HELD = 4;
+    /** Added where what the game is played with has no touchpad: buttons do its gestures. */
+    private static final int CONTROLLER_GESTURE_BUTTONS = 8;
     private static final int MENU_LEFT = 1, MENU_RIGHT = 2, MENU_CONFIRM = 4;
 
     private static final int VENDOR_SONY = 0x054c;
@@ -220,6 +231,13 @@ public class MainActivity extends Activity
     private float[] headsetFov;
     private static final int FOV_MIN = 50, FOV_MAX = 100, FOV_STEP = 5;
     private long nextOwnFovMoveAt;
+    /** The card that says which buttons do the touchpad's gestures: shown until then. */
+    private long cardUntil;
+    private boolean cardShowing;
+    /** Which controller it was last shown for, and the presses of OPTIONS counted then. */
+    private int cardShownFor;
+    private int optionsSeen;
+    private static final long CARD_AT_START_MS = 15000, CARD_ON_PAUSE_MS = 10000;
     /**
      * What confirms the menu on the headset's own controllers has been seen let go while the
      * menu showed: the trigger that started the app from the headset's library is not it.
@@ -288,6 +306,9 @@ public class MainActivity extends Activity
             headsetFov = new float[] {1.376f, 0.839f, 0.966f, 1.428f};
             drawFovMenu();
             headsetFov = null;
+            // Likewise the cards that say which buttons do the touchpad's gestures.
+            drawStatus("The touchpad, on this controller", controlsCard(true));
+            drawStatus("The touchpad, on this controller", controlsCard(false));
             startGame();
         } else {
             handler.post(this::pollOwnControllers);
@@ -796,11 +817,58 @@ public class MainActivity extends Activity
                         + "was).";
             }
         }
+        // On a controller without a touchpad, buttons do what the game wants done on one:
+        // which ones is said over the game once it shows, and again whenever OPTIONS is
+        // pressed (the game's pause), for as long as it takes to read.
+        String title = "Astro VR Host";
+        int controller = nativeController();
+        int presses = nativeOptionsPresses();
+        long clock = SystemClock.elapsedRealtime();
+        boolean playing = !setupFailed && nativeCoreState() == CORE_RUNNING
+                && nativeFrameCount() > 0;
+        if (playing && (controller & CONTROLLER_GESTURE_BUTTONS) != 0) {
+            if (cardShownFor != (controller & CONTROLLER_WHICH)) {
+                cardShownFor = controller & CONTROLLER_WHICH;
+                cardUntil = clock + CARD_AT_START_MS;
+            } else if (presses != optionsSeen) {
+                cardUntil = clock + CARD_ON_PAUSE_MS;
+            }
+        }
+        optionsSeen = presses;
+        boolean card = playing && (controller & CONTROLLER_GESTURE_BUTTONS) != 0
+                && clock < cardUntil;
+        if (card != cardShowing) {
+            cardShowing = card;
+            nativeShowPanel(card);
+        }
+        if (card) {
+            title = "The touchpad, on this controller";
+            status = controlsCard((controller & CONTROLLER_WHICH) == CONTROLLER_OWN);
+        }
         if (!status.equals(shownStatus)) {
             shownStatus = status;
-            drawStatus(status);
+            drawStatus(title, status);
         }
-        handler.postDelayed(this::refreshStatus, 500);
+        handler.postDelayed(this::refreshStatus, card || playing ? 250 : 500);
+    }
+
+    /** Which buttons do what a finger does on a DualShock 4's touchpad. */
+    private String controlsCard(boolean ownControllers) {
+        if (ownControllers) {
+            String pad = padHand == 0 ? "Left" : "Right";
+            String other = padHand == 0 ? "Right" : "Left";
+            return pad + " trigger: press the touchpad (water, guns)\n"
+                    + pad + " grip: swipe forward (hook, stars, chests)\n"
+                    + other + " trigger: pull back, aim at the goal, let go (catapult)\n"
+                    + "Right stick: a finger on the touchpad\n"
+                    + "X and Y together: blow\n"
+                    + "The menu button brings this back.";
+        }
+        return "R2: press the touchpad (water, guns)\n"
+                + "R1: swipe forward (hook, stars, chests)\n"
+                + "L2: pull back, aim at the goal, let go (catapult)\n"
+                + "Right stick: a finger on the touchpad\n"
+                + "OPTIONS brings this back.";
     }
 
     /** What the game and the display are doing, for the panel that stats=1 keeps in view. */
@@ -941,7 +1009,7 @@ public class MainActivity extends Activity
         handler.postDelayed(this::pollOwnControllers, 50);
     }
 
-    private void drawStatus(String status) {
+    private void drawStatus(String title, String status) {
         Bitmap bitmap = Bitmap.createBitmap(STATUS_WIDTH, STATUS_HEIGHT, Bitmap.Config.ARGB_8888);
         Canvas canvas = new Canvas(bitmap);
         Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -951,7 +1019,7 @@ public class MainActivity extends Activity
         paint.setColor(Color.rgb(90, 170, 255));
         paint.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
         paint.setTextSize(52);
-        canvas.drawText("Astro VR Host", 48, 86, paint);
+        canvas.drawText(title, 48, 86, paint);
 
         paint.setColor(Color.WHITE);
         paint.setTypeface(Typeface.DEFAULT);
@@ -979,7 +1047,7 @@ public class MainActivity extends Activity
     }
 
     private void publishStatusBitmap(Bitmap bitmap) {
-        if (dryRun && statusPictures < 8) {
+        if (dryRun && statusPictures < 12) {
             // Nobody sees the panel in a test: its pictures are kept for looking at, in the
             // folder the test has made for them.
             File picture = new File(new File(getFilesDir(), "drystart"),
@@ -1361,7 +1429,7 @@ public class MainActivity extends Activity
                 + Integer.toHexString(device.getSources()) + ")");
 
         learnAxes(device);
-        nativeSetGamepad(true);
+        nativeSetGamepad(true, device.supportsSource(InputDevice.SOURCE_TOUCHPAD));
 
         // Every part is optional: what a controller offers depends on it and on the system.
         try {
@@ -1577,7 +1645,7 @@ public class MainActivity extends Activity
             findGamepad();
             if (gamepad == null) {
                 // The headset's own controllers play on, if the player picks them up.
-                nativeSetGamepad(false);
+                nativeSetGamepad(false, false);
             }
         }
     }

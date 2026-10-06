@@ -2,15 +2,17 @@
 // stick let go lifts the finger where it was, not back at the centre it flies to, that a stick
 // moved through its centre drags without lifting, and that a stick which drifts touches nothing.
 //
-//   clang-cl /std:c++latest /EHsc -fuse-ld=lld /I shadps4-arm64-main/src
+//   clang-cl /std:c++latest /EHsc -fuse-ld=lld /I shadps4-arm64-main/src /I tools/tests
 //       tools/tests/stick_finger_test.cpp /Fe:build/tests/stick_finger_test.exe
 #include <cmath>
 #include <cstdio>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "input/stick_finger.h"
+#include "touch_game_model.h"
 
 using Input::StickFinger;
 
@@ -86,7 +88,8 @@ int main() {
             y = time < 0.5 ? Ramp(time, 0.1, 0.25, 0.0f, 1.0f) : LetGo(time, 0.5, 1.0f);
         });
         Check(run.touches == 1 && !run.down, "pulled and let go: one touch, lifted" + hz);
-        Check(std::abs(run.first_y - 0.5f) < 0.01f, "it comes down in the middle of the pad" + hz);
+        Check(std::abs(run.first_y - 0.25f) < 0.01f && std::abs(run.first_x - 0.5f) < 0.01f,
+              "it comes down behind the middle of the pad, on the side the stick comes from" + hz);
         Check(run.last_y > 0.99f, "it lifts at the pad's near edge, not back at the centre" + hz);
         Check(run.lifted_at > 0.5 && run.lifted_at < 0.62, "it lifts within a moment" + hz);
 
@@ -173,6 +176,72 @@ int main() {
             y = 0.2f + 0.03f * std::sin(static_cast<float>(time) * 80.0f);
         });
         Check(run.touches == 0, "a stick short of touching does not touch" + hz);
+    }
+
+    // What the game makes of it: it looks at the pad once a frame, and at thirty frames a
+    // second (which is what a Quest manages in a level) a stick is at its end before it has
+    // looked twice.
+    const auto stick = [](const std::function<void(double, float&, float&)>& at) {
+        // (The host moves the finger for every picture the headset shows.)
+        struct State {
+            StickFinger finger;
+            double moved{-1.0};
+            GameModel::Finger now;
+        };
+        auto state = std::make_shared<State>();
+        return [state, at](double time) {
+            if (time - state->moved >= 1.0 / 90.0) {
+                state->moved = time;
+                float x = 0.0f, y = 0.0f;
+                at(time, x, y);
+                const StickFinger::Touch touch = state->finger.Update(time, x, y);
+                state->now = {touch.down, touch.x, touch.y, false};
+            }
+            return state->now;
+        };
+    };
+    for (const double rate : {26.0, 30.0, 45.0, 60.0}) {
+        bool pulled = true, flicked = true, half = true, swiped = true, twice = true;
+        for (const double phase : {0.0, 0.2, 0.4, 0.6, 0.8}) {
+            // The catapult: the stick pulled back as fast as a thumb does it, held, let go.
+            GameModel::Seen seen = GameModel::Watch(rate, phase, 1.5, stick([](double time, float& x, float& y) {
+                x = 0.0f;
+                y = time < 0.7 ? Ramp(time, 0.1, 0.14, 0.0f, 1.0f) : LetGo(time, 0.7, 1.0f);
+            }));
+            pulled = pulled && seen.touches == 1 && seen.shots == 1;
+            // Pulled and let go at once.
+            seen = GameModel::Watch(rate, phase, 1.5, stick([](double time, float& x, float& y) {
+                x = 0.0f;
+                y = time < 0.14 ? Ramp(time, 0.1, 0.14, 0.0f, 1.0f) : LetGo(time, 0.14, 1.0f);
+            }));
+            flicked = flicked && seen.touches == 1 && seen.shots == 1;
+            // Pulled six tenths of the way only.
+            seen = GameModel::Watch(rate, phase, 1.5, stick([](double time, float& x, float& y) {
+                x = 0.0f;
+                y = time < 0.7 ? Ramp(time, 0.1, 0.14, 0.0f, 0.6f) : LetGo(time, 0.7, 0.6f);
+            }));
+            half = half && seen.shots == 1;
+            // A flick forward: a swipe the game can follow, from near the player to the far edge.
+            seen = GameModel::Watch(rate, phase, 1.5, stick([](double time, float& x, float& y) {
+                x = 0.0f;
+                y = time < 0.14 ? Ramp(time, 0.1, 0.14, 0.0f, -1.0f) : LetGo(time, 0.14, -1.0f);
+            }));
+            swiped = swiped && seen.touches == 1 && seen.frames >= 5 && seen.first_y < 0.3f &&
+                     seen.last_y > 0.98f && seen.largest_step < 0.45f && seen.shots == 0;
+            // Two flicks, one right after the other: two swipes with the finger off between.
+            seen = GameModel::Watch(rate, phase, 1.8, stick([](double time, float& x, float& y) {
+                x = 0.0f;
+                const double in = std::fmod(time, 0.6);
+                y = in < 0.14 ? Ramp(in, 0.1, 0.14, 0.0f, -1.0f) : LetGo(in, 0.14, -1.0f);
+            }));
+            twice = twice && seen.touches == 3 && seen.least_gap >= 1;
+        }
+        const std::string fps = " (a game of " + std::to_string(static_cast<int>(rate)) + " frames a second)";
+        Check(pulled, "the stick pulled back fast, held and let go shoots the catapult" + fps);
+        Check(flicked, "so does the stick pulled back and let go at once" + fps);
+        Check(half, "and the stick pulled back six tenths of the way" + fps);
+        Check(swiped, "a flick forward is a swipe from near the player to the far edge, seen on its way" + fps);
+        Check(twice, "flicks one after the other are swipes one after the other" + fps);
     }
 
     // A finger taken off by something else (a real one took over): the stick has to rest first.

@@ -16,7 +16,10 @@ namespace Input {
 /// "padrot=yaw,pitch,roll"; those poses stay in effect until a later line replaces them.
 /// "hands=x,y,z[,heading]" stands for a host that sees where the controller is held but not how
 /// it is turned ("hands=off" for losing sight of it), "touch=x,y" (0..1) for a finger on the
-/// touchpad while the line lasts, "mic=level" for noise of that loudness in the microphone
+/// touchpad while the line lasts, "finger=x,y" (-1..1) for the right stick as it moves that
+/// finger, "gesture=press", "gesture=swipe" or "gesture=pull" for the buttons that do the
+/// touchpad's gestures on a controller without one, held while the line lasts,
+/// "mic=level" for noise of that loudness in the microphone
 /// (root mean square, 1 is full scale: 0.35 is what a title takes for blowing hard),
 /// "recenter" for the player asking for the view to be reset where the head is at that moment,
 /// "worn=0" / "worn=1" for the headset being taken off and put back on.

@@ -13,6 +13,7 @@
 #include "common/ring_buffer_queue.h"
 #include "core/libraries/pad/pad.h"
 #include "core/libraries/system/userservice.h"
+#include "input/pad_gestures.h"
 #include "input/stick_finger.h"
 
 struct SDL_Gamepad;
@@ -146,6 +147,9 @@ private:
     bool m_finger_down = false;
     bool m_touchpad_noted = false;
     StickFinger m_stick_finger;
+    // On a gamepad without a touchpad, buttons do its gestures as well (see PadGestures).
+    PadGestures m_gestures;
+    bool m_gesture_press = false;
     bool m_stick_touch = false;
     float m_stick_touch_x = 0.5f;
     float m_stick_touch_y = 0.5f;

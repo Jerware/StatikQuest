@@ -37,7 +37,7 @@ for name in host.log core.log; do
   [ -s "$out/$name" ] || echo "no $name"
 done
 # The pictures of the status panel, as the activity drew them.
-for number in 0 1 2 3 4 5 6 7; do
+for number in 0 1 2 3 4 5 6 7 8 9 10 11; do
   "$ADB" exec-out "run-as $package cat files/drystart/status-$number.png" \
     > "$out/status-$number.png" 2>/dev/null
   [ -s "$out/status-$number.png" ] || rm -f "$out/status-$number.png"

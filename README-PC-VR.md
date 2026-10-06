@@ -120,13 +120,22 @@ In the game:
   face is straight ahead. The emulator does it by itself when ✕ is pressed for the first time
   after the headset came up, and when the headset's own "reset view" is used (hold the Meta
   button).
-- A controller without a touchpad (an Xbox pad): the right stick stands in for the finger,
-  and the Back / View button for the click. Push the stick the way you would swipe; for the
-  catapult at the end of a level (and the slingshot later on), **pull the stick towards you
-  and let go**: the finger lifts where the stick was pulled to, as a finger would, and the
-  shot goes off. The right stick does that with a DualSense as well while nothing touches
-  its pad; the game has no other use for it. (A stick that drifts, never resting at its
-  centre, is left out of this: it would hold a finger on the pad for good.)
+- **A controller without a touchpad** (an Xbox pad, the headset's own controllers) has
+  buttons for what the game wants done on one:
+  - **right trigger (R2): the pad pressed**, for as long as the trigger is pulled. That is
+    how the water cannon and the machine gun fire.
+  - **right shoulder button (R1; the right grip of VR controllers): a swipe forward**, once
+    for each press. That shoots the hook, throws the stars, opens the chests.
+  - **left trigger (L2): a pull back** that is held while the trigger is, and let go when it
+    is. That is the catapult at the end of every level: point the controller at the goal,
+    pull, let go. It also pulls on the hook's rope.
+
+  The game has no use for these buttons while it is played, and is still told of them (a few
+  of its menus have). Besides them, the right stick is a finger on the pad, for anything
+  else: it comes down behind the pad's middle, is dragged the way the stick is pushed, and
+  lifts where the stick was let go; the Back / View button presses the pad. The right stick
+  does that with a DualSense as well while nothing touches its pad. (A stick that drifts,
+  never resting at its centre, is left out: it would hold a finger on the pad for good.)
 - **Where the game has you blow** into the controller's microphone: blow at the headset's
   microphone, or hold the **PS button and □** together, which blows for as long as they are
   held. The console window says how loud the game heard the last ten seconds whenever it
@@ -172,11 +181,13 @@ While no gamepad is connected to the PC, the two Touch controllers are the gamep
 | B (right hand) | □ (punch) |
 | X (left hand) | ○ (back) |
 | Y (left hand) | △ |
-| right stick | the finger on the touchpad: push it the way you would swipe; pull it towards you and let go for the catapult at the end of a level |
+| right trigger | the touchpad pressed, for as long as it is pulled (water, guns); also R2 |
+| right grip | a swipe forward on the touchpad, once (hook, stars, chests); also R1 |
+| left trigger | a pull back on the touchpad, let go when the trigger is (the catapult at the end of a level); also L2 |
+| right stick | a finger on the touchpad, dragged the way the stick is pushed |
 | right stick pressed in | the touchpad pressed |
 | X and Y together (left hand) | blowing into the microphone, for as long as they are held |
-| triggers | L2, R2 |
-| grips | L1, R1 |
+| left grip | L1 |
 | menu button (left hand) | OPTIONS |
 | left stick pressed in | L3 |
 | both sticks pressed in | resets the view |
@@ -462,9 +473,16 @@ Things that had to be right, for whoever works on this again:
   memory. The console's memory is now set aside before the headset is looked for (found by
   evertec82). And a session that is asked for no pictures is only made anew for Virtual
   Desktop's runtime, which needs it; SteamVR's are left alone.
-- **The catapult at the end of a level with a stick** (#2): see "In the game". It took luck
-  before: the game shoots by where the finger is when it lifts, and a stick let go took the
-  finger back to the middle first.
+- **The catapult at the end of a level, and the rest of the touchpad, without a touchpad**
+  (#2): see "In the game". The catapult took luck with a stick, for two reasons. The game
+  shoots by where the finger is when it lifts, and a stick let go took the finger back to the
+  middle first. And the game looks at the pad once for every frame it draws: a stick is at
+  its end within a few hundredths of a second, so the pull began, for the game, where it
+  ended, the more often the fewer frames it drew (by a model of the game's own rule, one
+  fast pull in four failed at 60 frames a second and two in three at 30). The stick's finger
+  now stays where it comes down until the game has seen it there and moves no faster than a
+  finger does; and three buttons do the three things the game asks of the pad outright:
+  press it, swipe forward, pull back and let go.
 - **The right stick no longer holds a finger on a real touchpad** (#12): a stick that drifts
   touched the pad for good, and a real finger's swipes then counted for nothing. If swipes
   on a DualSense's touchpad still do nothing, the console window tells what Windows hands

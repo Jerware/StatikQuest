@@ -121,16 +121,21 @@ Playing:
 - The app begins with a menu for the field of view: a stick to a side chooses, ✕ / A or a
   trigger starts the game.
 - **With a gamepad**: put the Touch controllers aside and hold it. The headset tracks your
-  hands around it, and that is where the controller is in the game. A gamepad without a
-  touchpad has its right stick for the finger (for the catapult at the end of a level, pull
-  the stick towards you and let go) and its Create / Back / View button to press the pad. A
-  gamepad without motion sensors, which is every one that is not a PlayStation's, is turned
-  and tilted in the game by your hands, as far as the headset sees them.
+  hands around it, and that is where the controller is in the game. A gamepad without motion
+  sensors, which is every one that is not a PlayStation's, is turned and tilted in the game
+  by your hands, as far as the headset sees them.
 - **With the Touch controllers**: the right one is the controller in the game, where it is
-  and the way it points. Left stick to move; A is ✕, B is □, X is ○, Y is △; the grips are L1
-  and R1, the triggers L2 and R2; the right stick is the finger on the touchpad, and pressed
-  in it presses the pad; the left controller's menu button is OPTIONS. X and Y together
-  blow, where the game wants you to blow into the microphone.
+  and the way it points. Left stick to move; A is ✕, B is □, X is ○, Y is △; the left
+  controller's menu button is OPTIONS. X and Y together blow, where the game wants you to
+  blow into the microphone.
+- **The touchpad, on the Touch controllers and on a gamepad that has none**, is on buttons
+  (a card in the headset says so when the game starts, and again whenever you press
+  OPTIONS):
+  - **right trigger (R2): press it and hold**: the water cannon, the machine gun
+  - **right grip (R1): swipe forward**: the hook, the throwing stars, the chests
+  - **left trigger (L2): pull back, let go to shoot**: the catapult at the end of every
+    level (point the controller at the goal)
+  - the right stick is a finger on it, for anything else.
 - With both at hand, the game is played with the one you used last: a button on the other
   changes over.
 - The first screen asks to move the controller into a floating outline: hold it up in front
