@@ -102,9 +102,6 @@ Tests checked both actual executable layouts, 2880x3072 output and timing at 60 
 and timing at the original 1440x1536 resolution. We have not tested these 1.04 changes on
 Quest, other headsets, other regions or every 1.04 dump.
 
-The tester also reported a Bigscreen Beyond test with PR #6. That covers the SteamVR
-changes in that PR, not a separate 1.04 test on the Beyond.
-
 The 1.04 resolution offsets build on
 [Clodo76's investigation in issue #1](https://github.com/bigmak94/AstroQuest/issues/1).
 Reports in issues [#3](https://github.com/bigmak94/AstroQuest/issues/3),
