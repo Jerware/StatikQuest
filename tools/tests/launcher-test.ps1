@@ -59,6 +59,14 @@ if ($haveSfo) {
     Check "c  prefers CUSA12392 among two" (Find-Game $g) "$g\Zzz\eboot.bin"
 }
 
+# c2: the game's update in a folder of its own beside it, found first by its name
+if ($haveSfo) {
+    $g = "$base\c2\games"; Make-Game "$g\CUSA12392-UPDATE" $true; Make-Game "$g\Game\CUSA12392" $true
+    Check "c2 an update's folder is not the game" (Find-Game $g) "$g\Game\CUSA12392\eboot.bin"
+}
+$g = "$base\c3\games"; Make-Game "$g\CUSA12392-UPDATE" $true
+Check "c3 an update's folder alone is no game" (Find-Game $g) ""
+
 # d: only the leftovers of an unpacking
 $g = "$base\d\games"; Make-Game "$g\CUSA12392\.unpacking\files\uroot" $true
 Check "d  half-unpacked game is not taken" (Find-Game $g) ""

@@ -186,10 +186,13 @@ function Get-GameInfo([string]$eboot) {
     return Read-Sfo ([System.IO.Path]::Combine($folder, "sce_sys", "param.sfo"))
 }
 
-# The unpacked game under a folder: the one this is made for, if there are several.
+# The unpacked game under a folder: the one this is made for, if there are several. (A folder
+# named after a game with -UPDATE, -patch or -mods at the end is not a game: the emulator lays
+# what is in it over the game's own files.)
 function Find-Game([string]$top) {
     $first = $null
     foreach ($folder in (Get-Folders $top)) {
+        if ($folder -match '-(UPDATE|patch|mods)$') { continue }
         $eboot = [System.IO.Path]::Combine($folder, "eboot.bin")
         if (-not [System.IO.File]::Exists($eboot)) { continue }
         if ((Get-GameInfo $eboot)["TITLE_ID"] -eq $madeFor) { return $eboot }
