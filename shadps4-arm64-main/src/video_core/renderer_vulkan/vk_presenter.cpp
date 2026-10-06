@@ -1246,7 +1246,7 @@ void Presenter::DumpGpuImages() {
     }
     // (Several addresses may be given, apart by commas.)
     std::vector<VAddr> wanted_list;
-    for (const char* at = wanted_text; *at != ' ';) {
+    for (const char* at = wanted_text; *at != '\0';) {
         char* end = nullptr;
         wanted_list.push_back(std::strtoull(at, &end, 16));
         if (end == at) {
