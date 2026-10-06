@@ -14,6 +14,7 @@
 // that do what a finger does there.
 #include "pad_gestures.h"
 #include "stick_finger.h"
+#include "view_turn.h"
 
 /// PS4 pad button bits (ORBIS_PAD_BUTTON_*).
 namespace PadButton {
@@ -236,6 +237,13 @@ public:
         return std::exchange(recenter, 0u);
     }
 
+    /// The steps the player has asked the view to be turned by since the last call: to the
+    /// right if positive (see Input::ViewTurn).
+    int TakeTurn() {
+        std::scoped_lock lock{mutex};
+        return std::exchange(turns, 0);
+    }
+
     /// What the headset's controllers say to the host's own menu: a stick held to a side, or
     /// what confirms (A, or a trigger as everywhere else in the headset).
     uint32_t TouchMenu() {
@@ -291,6 +299,7 @@ private:
         // What the other one was doing on the touchpad is over.
         stick_finger.Reset();
         gestures.Reset();
+        view_turn.Reset();
         options_since = -1.0;
         options_fired = false;
         view_reset_held = false;
@@ -323,6 +332,8 @@ private:
         /// The buttons that do the touchpad's gestures, and which button each of them is.
         Input::PadGestures::Controls gestures;
         uint32_t press_button{}, swipe_button{}, pull_button{};
+        /// The button that, held, has the right stick turn the view (see Input::ViewTurn).
+        uint32_t turn_button{};
     };
 
     Reading Read() const {
@@ -368,6 +379,8 @@ private:
             read.press_button = right ? PadButton::R2 : PadButton::L2;
             read.swipe_button = right ? PadButton::R1 : PadButton::L1;
             read.pull_button = right ? PadButton::L2 : PadButton::R2;
+            // (The grip that is left without a meaning.)
+            read.turn_button = right ? PadButton::L1 : PadButton::R1;
         } else {
             const GamepadState& g = gamepad;
             read.buttons = g.buttons;
@@ -380,6 +393,7 @@ private:
             read.finger = g.touch_down;
             read.finger_x = g.touch_x;
             read.finger_y = g.touch_y;
+            read.turn_button = PadButton::L1;
             if (!gamepad_touchpad) {
                 read.gestures.press = g.right_trigger > 0.5f;
                 read.gestures.swipe = (g.buttons & PadButton::R1) != 0;
@@ -426,6 +440,19 @@ private:
         float touch_x = read.finger_x;
         float touch_y = read.finger_y;
         const Input::PadGestures::Touch made = gestures.Update(now, read.gestures);
+        // A button the game has no use for in play, held: each flick of the right stick to a
+        // side turns the view a step that way, for players who cannot turn round where they
+        // sit. The stick is no finger meanwhile, and no stick to the game either.
+        const bool turning = (buttons & read.turn_button) != 0;
+        if (const int steps = view_turn.Update(turning, read.right_x); steps != 0) {
+            turns += steps;
+            Note(steps > 0 ? "the view turns a step to the right"
+                           : "the view turns a step to the left");
+        }
+        if (turning) {
+            read.right_x = 0.0f;
+            read.right_y = 0.0f;
+        }
         if (read.finger) {
             // (The stick's finger is not back on the pad the moment the real one lifts.)
             stick_finger.Reset();
@@ -436,6 +463,8 @@ private:
             if (made.pressed) {
                 buttons |= PadButton::TouchPad;
             }
+            stick_finger.Reset();
+        } else if (turning) {
             stick_finger.Reset();
         } else if (stick_touchpad) {
             const Input::StickFinger::Touch dragged =
@@ -541,6 +570,8 @@ private:
 
     Input::StickFinger stick_finger;
     Input::PadGestures gestures;
+    Input::ViewTurn view_turn;
+    int turns{};
     uint32_t options_presses{};
     uint32_t held_back{};
     uint16_t sent_touch_x{TouchWidth / 2};

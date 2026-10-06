@@ -10,6 +10,7 @@
 #include <fmt/xchar.h>
 #include <hwinfo/hwinfo.h>
 
+#include "common/console_language.h"
 #include "common/debug.h"
 #include "common/logging/log.h"
 #include "common/thread.h"
@@ -283,6 +284,21 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     // Switch to configured log
     Common::Log::Switch((!id.empty() && EmulatorSettings.IsLogSeparate()) ? id + ".log"
                                                                           : "shad_log.txt");
+    // SHADPS4_CONSOLE_LANGUAGE: the language the console is set to, which is the one a title
+    // speaks if it has it. As a language tag ("fr-FR", as Windows and Android name theirs) or
+    // as the console's own number. Whatever starts the emulator for a player says theirs here.
+    if (const char* wanted = std::getenv("SHADPS4_CONSOLE_LANGUAGE");
+        wanted != nullptr && wanted[0] != '\0') {
+        if (const auto language = Common::ConsoleLanguageFromTag(wanted)) {
+            EmulatorSettings.SetConsoleLanguage(*language);
+            LOG_INFO(Core, "The console's language: {} (asked for as \"{}\")",
+                     Common::ConsoleLanguageName(*language), wanted);
+        } else {
+            LOG_INFO(Core,
+                     "The console's language: {} (it has none for \"{}\", which was asked for)",
+                     Common::ConsoleLanguageName(EmulatorSettings.GetConsoleLanguage()), wanted);
+        }
+    }
 
     auto guest_eboot_path = "/app0/" + eboot_name.generic_string();
     const auto eboot_path = mnt->GetHostPath(guest_eboot_path);

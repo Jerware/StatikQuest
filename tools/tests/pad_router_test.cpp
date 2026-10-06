@@ -596,6 +596,87 @@ int main() {
         Check(bench.out.pad.buttons == (Button::R2 | Button::R1 | Button::L2) && !bench.out.pad.touch_down,
               "its triggers and shoulder buttons are only that");
     }
+    {
+        // The view turns by steps: the grip that has no other meaning held, the right stick
+        // flicked to a side.
+        Bench bench;
+        bench.router.SetPlaying(true, 0.0);
+        TouchState touch = Held();
+        bench.Pass(0.2, &touch);
+        Check(bench.router.TakeTurn() == 0, "nothing turns the view by itself");
+        touch.right_x = 1.0f;
+        bench.Pass(0.3, &touch);
+        Check(bench.router.TakeTurn() == 0 && bench.out.pad.touch_down,
+              "the right stick alone is a finger on the touchpad, not a turn");
+        touch.right_x = 0.0f;
+        bench.Pass(0.6, &touch);
+        touch.left_grip = 1.0f;
+        bench.Pass(0.2, &touch);
+        Check(bench.router.TakeTurn() == 0, "the grip alone turns nothing");
+        touch.right_x = 1.0f;
+        bench.Pass(0.2, &touch);
+        Check(bench.router.TakeTurn() == 1, "the left grip held and the stick flicked right: a step to the right");
+        Check(!bench.out.pad.touch_down && bench.out.pad.right_x == 128,
+              "and the stick is no finger and no stick to the game meanwhile");
+        Check((bench.out.pad.buttons & Button::L1) != 0, "the grip is still L1 to the game");
+        bench.Pass(0.5, &touch);
+        Check(bench.router.TakeTurn() == 0, "a stick held to the side turns once");
+        touch.right_x = 0.0f;
+        bench.Pass(0.1, &touch);
+        touch.right_x = -1.0f;
+        bench.Pass(0.1, &touch);
+        touch.right_x = 0.0f;
+        bench.Pass(0.1, &touch);
+        touch.right_x = -1.0f;
+        bench.Pass(0.1, &touch);
+        Check(bench.router.TakeTurn() == -2, "two flicks to the left: two steps to the left");
+        Check(bench.Said("the view turns a step to the left"), "and it says so");
+        // The stick already at a side when the grip comes down turns nothing.
+        touch.left_grip = 0.0f;
+        touch.right_x = 0.0f;
+        bench.Pass(0.6, &touch);
+        touch.right_x = 1.0f;
+        bench.Pass(0.1, &touch);
+        touch.left_grip = 1.0f;
+        bench.Pass(0.3, &touch);
+        Check(bench.router.TakeTurn() == 0, "a stick that was at a side before the grip was held turns nothing");
+        // With the controller of the game in the left hand, it is the right grip.
+        Bench left;
+        left.router.SetPadHand(0);
+        left.router.SetPlaying(true, 0.0);
+        TouchState other = Held();
+        left.Pass(0.2, &other);
+        other.left_grip = 1.0f;
+        left.Pass(0.2, &other);
+        other.right_x = 1.0f;
+        left.Pass(0.3, &other);
+        Check(left.router.TakeTurn() == 0, "pad hand left: the left grip swipes, it does not turn");
+        other = Held();
+        left.Pass(1.0, &other);
+        other.right_grip = 1.0f;
+        left.Pass(0.2, &other);
+        other.right_x = -1.0f;
+        left.Pass(0.2, &other);
+        Check(left.router.TakeTurn() == -1, "pad hand left: the right grip held and a flick turn");
+    }
+    {
+        // On a gamepad it is L1, whatever else the gamepad has.
+        Bench bench;
+        bench.router.SetGamepadConnected(true, true, 0.0);
+        bench.router.SetPlaying(true, 0.0);
+        GamepadState pad;
+        bench.router.SetGamepad(pad, bench.time);
+        bench.Pass(0.2);
+        pad.buttons = Button::L1;
+        bench.router.SetGamepad(pad, bench.time);
+        bench.Pass(0.2);
+        pad.right_x = -1.0f;
+        bench.router.SetGamepad(pad, bench.time);
+        bench.Pass(0.2);
+        Check(bench.router.TakeTurn() == -1, "a gamepad: L1 held and the right stick flicked left turn the view");
+        Check(bench.out.pad.right_x == 128 && !bench.out.pad.touch_down,
+              "and the stick says nothing else meanwhile");
+    }
 
     std::printf("%d failed\n", failures);
     return failures == 0 ? 0 : 1;

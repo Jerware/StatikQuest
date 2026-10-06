@@ -176,6 +176,12 @@ public:
     /// RecenterSeat, and the title is told to take stock again, the way the console tells it
     /// when the player asks for the view to be reset.
     void RequestRecenter();
+    /// Turns the player round where they sit, by so many steps to the right (to the left if
+    /// negative): for those who cannot turn round themselves. The head stays where it is in
+    /// the title's world and faces another way; a controller that nothing locates comes
+    /// along. The title is told nothing: to it the player has turned. A reset of the view
+    /// faces them straight ahead again. (SHADPS4_VR_TURN=<degrees> is the step: 30, 0 for none.)
+    void TurnView(int steps);
     /// For a host whose poses are counted from the seat already (scripted tests): the seat is
     /// the origin of its space and stays there until RecenterSeat is called.
     void FixSeat();
@@ -308,10 +314,14 @@ private:
     // are only shown after.
     Vec3 previous_seat_position;
     Quat previous_seat_yaw;
+    // How far TurnView has turned the player since the view was last reset, to the left.
+    float view_turn{};
     std::chrono::steady_clock::time_point seat_changed;
     bool title_asked{};
     DeviceState pad;
     bool pad_position_tracked{};
+    // When a host last said where the controller is and how it is turned (UpdatePad).
+    std::chrono::steady_clock::time_point pad_host_pose_time;
     // Smoothed point the untracked controller hangs off.
     Vec3 pad_anchor;
     bool pad_anchor_valid{};

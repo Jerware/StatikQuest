@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <mutex>
 #include <utility>
 #include <vector>
@@ -15,6 +16,7 @@
 #include "core/libraries/system/userservice.h"
 #include "input/pad_gestures.h"
 #include "input/stick_finger.h"
+#include "input/view_turn.h"
 
 struct SDL_Gamepad;
 
@@ -102,6 +104,17 @@ public:
     void ApplyRemoteState(Libraries::Pad::OrbisPadButtonDataOffset buttons,
                           const std::array<int, 6>& axes, bool touch_down, float touch_x,
                           float touch_y);
+    /// In a headset, the headset's own controllers can play this controller in place of the
+    /// PC's gamepad (see Input::PadSource). While they do, what the gamepad's buttons, sticks
+    /// and touchpad say is left aside. The controller is at rest after either change.
+    void SetHeadsetPlays(bool plays);
+    bool HeadsetPlays() const {
+        return m_headset_plays.load(std::memory_order_relaxed);
+    }
+    /// ApplyRemoteState for the headset's controllers: nothing unless they play.
+    void ApplyHeadsetState(Libraries::Pad::OrbisPadButtonDataOffset buttons,
+                           const std::array<int, 6>& axes, bool touch_down, float touch_x,
+                           float touch_y);
     void Gyro(int id);
     void Acceleration(int id);
     void UpdateGyro(const float gyro[3]);
@@ -137,6 +150,10 @@ public:
 
 private:
     void PushState();
+    /// With m_states_queue_mutex held. The buttons that were down before.
+    Libraries::Pad::OrbisPadButtonDataOffset ApplyRemoteLocked(
+        Libraries::Pad::OrbisPadButtonDataOffset buttons, const std::array<int, 6>& axes,
+        bool touch_down, float touch_x, float touch_y);
     void ApplyTouch(int touchIndex, bool touchDown, float x, float y);
     /// Lets the right stick stand in for a finger on the touchpad (see controller.cpp).
     void UpdateStickTouch();
@@ -150,9 +167,12 @@ private:
     // On a gamepad without a touchpad, buttons do its gestures as well (see PadGestures).
     PadGestures m_gestures;
     bool m_gesture_press = false;
+    // The left shoulder button held, the stick turns the view instead (see ViewTurn).
+    ViewTurn m_view_turn;
     bool m_stick_touch = false;
     float m_stick_touch_x = 0.5f;
     float m_stick_touch_y = 0.5f;
+    std::atomic<bool> m_headset_plays{false};
     bool m_connected = false;
     int m_connected_count = 0;
     u8 m_touch_count = 0;

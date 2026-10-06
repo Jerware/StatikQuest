@@ -1560,6 +1560,16 @@ private:
             message.flags |= Protocol::PadPose::RecenterSeat;
             LOGI("view reset: %s", system_reset ? "the headset's own" : "asked for by the player");
         }
+        // The steps the player wants to be turned round by where they sit (a button held
+        // and the right stick flicked, see PadRouter): one a message.
+        turns_asked += pads.TakeTurn();
+        if (turns_asked > 0) {
+            --turns_asked;
+            message.flags |= Protocol::PadPose::TurnRight;
+        } else if (turns_asked < 0) {
+            ++turns_asked;
+            message.flags |= Protocol::PadPose::TurnLeft;
+        }
 
         // For the log: a place as seen from the head.
         const auto from_head = [&](const XrVector3f& place) {
@@ -1827,6 +1837,7 @@ private:
     /// When the headset's system redefines the space poses are given in (its "reset view"),
     /// or 0.
     XrTime space_change_time{};
+    int turns_asked{};
     bool pad_seen{};
     /// The hands were seen holding a gamepad in the frame before.
     bool hands_held{};

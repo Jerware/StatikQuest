@@ -210,6 +210,8 @@ public class MainActivity extends Activity
     private boolean ownControllers = true;
     private int padHand = 1;
     private float padTilt;
+    // The language the game is played in: the headset's own, or the one the settings name.
+    private String language = "";
     private int sharpen = 1;
     private boolean cubic;
     private boolean antialias = true;
@@ -517,6 +519,13 @@ public class MainActivity extends Activity
                     case "pad_tilt":
                         padTilt = Math.max(-60.0f, Math.min(60.0f, Float.parseFloat(value)));
                         break;
+                    case "language":
+                        language = value.equalsIgnoreCase("headset") ? "" : value;
+                        break;
+                    case "turn":
+                        extraEnv.add("SHADPS4_VR_TURN="
+                                + Math.max(0, Math.min(90, Integer.parseInt(value))));
+                        break;
                     case "sharpen":
                         sharpen = Math.max(0, Math.min(4, Integer.parseInt(value)));
                         break;
@@ -700,6 +709,10 @@ public class MainActivity extends Activity
                 // twice as many, and enlarges its scene to get even there.
                 env.add("SHADPS4_VR_SHARPEN=0.6");
             }
+            // The game speaks the language its console is set to, if it has it (English
+            // otherwise): the one the headset is set to, unless the settings name another.
+            env.add("SHADPS4_CONSOLE_LANGUAGE="
+                    + (language.isEmpty() ? Locale.getDefault().toLanguageTag() : language));
             env.addAll(extraEnv);
             // Explicit even at 100, so an inherited environment cannot change the choice.
             env.add("SHADPS4_VR_FOV=" + fieldOfView);
@@ -861,6 +874,7 @@ public class MainActivity extends Activity
                     + pad + " grip: swipe forward (hook, stars, chests)\n"
                     + other + " trigger: pull back, aim at the goal, let go (catapult)\n"
                     + "Right stick: a finger on the touchpad\n"
+                    + other + " grip held, right stick to a side: turn the view\n"
                     + "X and Y together: blow\n"
                     + "The menu button brings this back.";
         }
@@ -868,6 +882,7 @@ public class MainActivity extends Activity
                 + "R1: swipe forward (hook, stars, chests)\n"
                 + "L2: pull back, aim at the goal, let go (catapult)\n"
                 + "Right stick: a finger on the touchpad\n"
+                + "L1 held, right stick to a side: turn the view\n"
                 + "OPTIONS brings this back.";
     }
 

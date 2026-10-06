@@ -125,6 +125,10 @@ $unknown = (Get-VrInstructions '') -join "`n"
 Check "Unknown runtime instructions do not assume Virtual Desktop" ($unknown -match 'Virtual Desktop') $false
 Check "Unknown runtime instructions say how to move the gamepad" ($unknown -match 'Hold the PS button') $true
 Check "VDXR instructions say how to move the gamepad" ($vd -match 'Hold the PS button') $true
+foreach ($text in @($steam, $vd, $unknown)) {
+    Check "Instructions say how to turn round" ($text -match 'hold L1') $true
+    Check "Instructions say the headset's controllers play besides a gamepad" ($text -match 'whenever they were used after it') $true
+}
 $script:settings = [ordered]@{}
 Check "Desktop defaults to stereo" (Get-DesktopView) "stereo"
 $script:settings = [ordered]@{ desktop_view = "spectator" }
@@ -152,22 +156,68 @@ Check "Launcher clears inherited crop by default" $env:SHADPS4_VR_DESKTOP_CROP "
 
 foreach ($assignment in $ast.EndBlock.Statements) {
     if ($assignment -is [System.Management.Automation.Language.AssignmentStatementAst] -and
-        $assignment.Left.Extent.Text -in @('$widths', '$caps')) {
+        $assignment.Left.Extent.Text -in @('$widths', '$caps', '$gameLanguages')) {
         . ([scriptblock]::Create($assignment.Extent.Text))
     }
 }
+
+# The Visual C++ runtime: looked for where a 64-bit program finds it, whatever PowerShell this is.
+$runtimeFolder = Join-Path $base "system"
+$besideFolder = Join-Path $base "beside"
+[void][System.IO.Directory]::CreateDirectory($runtimeFolder)
+[void][System.IO.Directory]::CreateDirectory($besideFolder)
+$runtimeFiles = @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "msvcp140_2.dll", "msvcp140_atomic_wait.dll")
+Check "An empty system folder lacks all of the runtime" ((Get-MissingRuntime $runtimeFolder "") -join ",") ($runtimeFiles -join ",")
+foreach ($name in $runtimeFiles) { if ($name -ne "vcruntime140_1.dll") { [System.IO.File]::WriteAllText((Join-Path $runtimeFolder $name), "x") } }
+Check "The 32-bit runtime alone lacks the file that only exists in 64 bits" ((Get-MissingRuntime $runtimeFolder "") -join ",") "vcruntime140_1.dll"
+[System.IO.File]::WriteAllText((Join-Path $besideFolder "vcruntime140_1.dll"), "x")
+Check "A file next to the emulator counts" (Get-MissingRuntime $runtimeFolder $besideFolder).Count 0
+$is64 = [Environment]::Is64BitProcess
+Check "This PC's own runtime is found from this PowerShell (64-bit: $is64)" ((Get-MissingRuntime "" "") -join ",") ""
+if ($is64) {
+    Check "A 64-bit PowerShell hands over to no other" (Get-NativePowerShell) ""
+} else {
+    Check "A 32-bit PowerShell knows the 64-bit one to hand over to" ([System.IO.File]::Exists((Get-NativePowerShell))) $true
+}
+
+# The game's language.
+$script:settings = [ordered]@{}
+Check "The language is Windows' own unless one is set" (Get-GameLanguage) ([System.Globalization.CultureInfo]::CurrentUICulture.Name)
+$script:settings = [ordered]@{ language = "windows" }
+Check "language=windows is Windows' own" (Get-GameLanguage) ([System.Globalization.CultureInfo]::CurrentUICulture.Name)
+$script:settings = [ordered]@{ language = "ja-JP" }
+Check "A language that is set is the one asked for" (Get-GameLanguage) "ja-JP"
+foreach ($assignment in $ast.EndBlock.Statements) {
+    if ($assignment -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+        $assignment.Left.Extent.Text -eq '$env:SHADPS4_CONSOLE_LANGUAGE') {
+        . ([scriptblock]::Create($assignment.Extent.Text))
+    }
+}
+Check "Launcher tells the emulator the language" $env:SHADPS4_CONSOLE_LANGUAGE "ja-JP"
+Check "The game's 28 languages are offered" $gameLanguages.Count 28
+Check "Each has a name" (@($gameLanguages | Where-Object { (Get-LanguageName $_) -eq "" -or (Get-LanguageName $_) -eq $_ }).Count) 0
+$script:settings = [ordered]@{}
 $SettingsFile = Join-Path $base 'menu-settings.txt'
 $script:menuAction = "choose"
 function Show-Form($form) {
     $script:menuForm = $form
     $view = $form.Controls["desktopView"]
     $crop = $form.Controls["desktopCrop"]
+    $language = $form.Controls["language"]
     foreach ($control in $form.Controls) {
         Check "Menu bounds contain $($control.Text) $($control.Name)" $form.ClientRectangle.Contains($control.Bounds) $true
     }
     Check "Menu offers three desktop modes" $view.Items.Count 3
+    Check "Menu offers Windows' language and the game's 28" $language.Items.Count 29
+    foreach ($control in $form.Controls) {
+        if ($control -ne $language -and $control.Bounds.IntersectsWith($language.Bounds)) {
+            Check "Language list overlaps $($control.Text) $($control.Name)" $true $false
+        }
+    }
     Check "Desktop view and crop controls do not overlap" $view.Bounds.IntersectsWith($crop.Bounds) $false
     if ($script:menuAction -eq "choose") {
+        Check "Menu defaults to Windows' language" $language.SelectedIndex 0
+        $language.SelectedIndex = 1 + [array]::IndexOf($gameLanguages, "fr-FR")
         Check "Menu defaults to stereo" $view.SelectedIndex 0
         Check "Menu defaults to uncropped image" $crop.Checked $false
         Check "Stereo disables crop control" $crop.Enabled $false
@@ -178,6 +228,8 @@ function Show-Form($form) {
         $crop.Checked = $true
         return [System.Windows.Forms.DialogResult]::OK
     }
+    Check "Menu restores French" $language.SelectedIndex (1 + [array]::IndexOf($gameLanguages, "fr-FR"))
+    if ($script:menuAction -eq "restore") { $language.SelectedIndex = 0 }
     Check "Menu restores combined eyes" $view.SelectedIndex 2
     Check "Menu restores crop" $crop.Checked $true
     $view.SelectedIndex = 0
@@ -190,6 +242,7 @@ Read-Settings
 Check "Menu accepts combined eyes" (Show-Menu) $true
 $script:menuForm.Dispose()
 Check "Menu saves combined eyes" (Setting "desktop_view") "combined"
+Check "Menu saves French" (Setting "language") "fr-FR"
 Check "Menu saves crop" (Setting "desktop_crop") "1"
 $script:menuAction = "cancel"
 Check "Menu cancellation does not start game" (Show-Menu) $false
@@ -201,6 +254,7 @@ $script:menuAction = "restore"
 Check "Menu accepts stereo again" (Show-Menu) $true
 $script:menuForm.Dispose()
 Check "Menu saves stereo again" (Get-DesktopView) "stereo"
+Check "Menu saves Windows' language again" (Setting "language") "windows"
 Check "Menu saves uncropped image again" (Setting "desktop_crop") "0"
 
 [System.IO.Directory]::Delete($base, $true)

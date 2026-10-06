@@ -27,9 +27,11 @@
 #include "common/thread.h"
 #include "core/vr/openxr_host.h"
 #include "input/controller.h"
+#include "input/pad_source.h"
 #include "input/scripted_input.h"
 #include "input/pad_gestures.h"
 #include "input/stick_finger.h"
+#include "input/view_turn.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 
 #define XR_USE_PLATFORM_WIN32
@@ -351,8 +353,11 @@ struct OpenXrHost::Impl {
     u32 frames_since_optics{};
     u32 fov_samples{};
 
-    // The headset's own controllers, which stand in for a gamepad where the PC has none.
+    // The headset's own controllers, which stand in for a gamepad where the PC has none, or
+    // has one that is not the one in use (see Input::PadSource).
     bool use_controllers{true};
+    // What of them was in use at the last look (the buttons that play, the sticks).
+    u32 controllers_in_use{};
     int pad_hand{1};
     XrVector3f pad_offset{};
     XrActionSet action_set{XR_NULL_HANDLE};
@@ -396,6 +401,7 @@ struct OpenXrHost::Impl {
     float sent_touch_y{0.5f};
     Input::StickFinger stick_finger;
     Input::PadGestures gestures;
+    Input::ViewTurn view_turn;
     bool blowing{};
     std::atomic<u32> rumble_wanted{};
     u32 rumble_applied{};
@@ -933,19 +939,19 @@ struct OpenXrHost::Impl {
         sent_touch = false;
         stick_finger.Reset();
         gestures.Reset();
+        view_turn.Reset();
         if (blowing) {
             blowing = false;
             Input::SetBlowing(false);
         }
-        (*Common::Singleton<Input::GameControllers>::Instance())[0]->ApplyRemoteState(
-            sent_buttons, sent_axes, false, sent_touch_x, sent_touch_y);
+        (*Common::Singleton<Input::GameControllers>::Instance())[0]->SetHeadsetPlays(false);
         Runtime::Instance().ReleasePad();
         LOG_INFO(Core_Vr, "The headset's controllers no longer stand in for the gamepad: {}",
                  why);
     }
 
     /// Reads the headset's controllers and hands what they say on as the first player's
-    /// gamepad, while the PC has no gamepad of its own.
+    /// gamepad, while the PC has no gamepad of its own or they were used after it.
     void UpdateControllers(XrTime time) {
         actions_synced = false;
         if (!actions_ready) {
@@ -967,11 +973,7 @@ struct OpenXrHost::Impl {
             return;
         }
         auto* const controller = (*Common::Singleton<Input::GameControllers>::Instance())[0];
-        if (controller->m_sdl_gamepad != nullptr) {
-            ReleaseControllers("a gamepad is connected to the PC");
-            ApplyRumble(false);
-            return;
-        }
+        const bool gamepad = controller->m_sdl_gamepad != nullptr;
 
         XrActionStateGetInfo get{XR_TYPE_ACTION_STATE_GET_INFO};
         bool any_active = false;
@@ -1006,6 +1008,42 @@ struct OpenXrHost::Impl {
             return state.currentState;
         };
 
+        // SHADPS4_XR_TEST_PRESS=<seconds>[,...] and SHADPS4_XR_TEST_TURN=<seconds>[,...], for
+        // tests: so long after the controllers were first read, the right one's A is held for
+        // half a second, or the other hand's grip is held and the right stick flicked to the
+        // right (to the left for a negative time), as if somebody did.
+        bool test_press = false;
+        float test_grip = 0.0f;
+        float test_flick = 0.0f;
+        {
+            static const auto times = [](const char* name) {
+                std::vector<double> list;
+                const char* at = std::getenv(name);
+                while (at != nullptr && *at != '\0') {
+                    list.push_back(std::atof(at));
+                    at = std::strchr(at, ',');
+                    at = at != nullptr ? at + 1 : nullptr;
+                }
+                return list;
+            };
+            static const std::vector<double> presses = times("SHADPS4_XR_TEST_PRESS");
+            static const std::vector<double> turns = times("SHADPS4_XR_TEST_TURN");
+            static const auto start = Clock::now();
+            const double now = std::chrono::duration<double>(Clock::now() - start).count();
+            for (const double at : presses) {
+                test_press = test_press || (now >= at && now < at + 0.5);
+            }
+            for (const double at : turns) {
+                const double from = std::abs(at);
+                if (now >= from && now < from + 0.6) {
+                    test_grip = 1.0f;
+                    if (now >= from + 0.2 && now < from + 0.4) {
+                        test_flick = at < 0.0 ? -1.0f : 1.0f;
+                    }
+                }
+            }
+        }
+
         using Buttons = Libraries::Pad::OrbisPadButtonDataOffset;
         Buttons buttons{};
         const auto add = [&](bool down, Buttons button) {
@@ -1013,46 +1051,75 @@ struct OpenXrHost::Impl {
                 buttons |= button;
             }
         };
-        add(pressed(act_cross), Buttons::Cross);
+        add(pressed(act_cross) || test_press, Buttons::Cross);
         add(pressed(act_square), Buttons::Square);
         // The left controller's two buttons together are not circle and triangle: they blow
         // into the microphone, for as long as they are held (Input::SetBlowing).
         const bool circle = pressed(act_circle);
         const bool triangle = pressed(act_triangle);
         const bool blow = circle && triangle;
-        if (blow != blowing) {
-            blowing = blow;
-            Input::SetBlowing(blow);
-        }
         add(circle && !blow, Buttons::Circle);
         add(triangle && !blow, Buttons::Triangle);
         add(pressed(act_options), Buttons::Options);
         const bool left_stick_in = pressed(act_l3);
         const bool right_stick_in = pressed(act_finger_press);
-        const float left_grip = pulled(act_l1);
-        const float right_grip = pulled(act_r1);
+        const float left_grip = std::max(pulled(act_l1), pad_hand == 0 ? 0.0f : test_grip);
+        const float right_grip = std::max(pulled(act_r1), pad_hand == 0 ? test_grip : 0.0f);
         add(left_grip > 0.5f, Buttons::L1);
         add(right_grip > 0.5f, Buttons::R1);
         const float left_trigger = pulled(act_l2);
         const float right_trigger = pulled(act_r2);
         const XrVector2f move = stick(act_move);
-        const XrVector2f finger = stick(act_finger);
+        XrVector2f finger = stick(act_finger);
+        if (test_flick != 0.0f) {
+            finger.x = test_flick;
+        }
         if (!any_active) {
             // Both lie somewhere, asleep.
+            controllers_in_use = 0;
             ReleaseControllers("they are not in the player's hands");
             ApplyRumble(false);
             return;
         }
+        // With a gamepad on the PC as well, whichever was used last plays. Used: a button
+        // that plays pressed, a stick pushed or pressed in. (Not a trigger, a grip or the
+        // menu button: a hand does that to a controller it only rests on or puts away.)
+        const double seconds =
+            std::chrono::duration<double>(Clock::now().time_since_epoch()).count();
+        const auto pushed = [](const XrVector2f& stick) {
+            return std::max(std::abs(stick.x), std::abs(stick.y)) > 0.5f;
+        };
+        const u32 in_use = (True(buttons & Buttons::Cross) ? 1u : 0u) |
+                           (True(buttons & Buttons::Square) ? 2u : 0u) | (circle ? 4u : 0u) |
+                           (triangle ? 8u : 0u) | (left_stick_in ? 16u : 0u) |
+                           (right_stick_in ? 32u : 0u) | (pushed(move) ? 64u : 0u) |
+                           (pushed(finger) ? 128u : 0u);
+        const bool used = (in_use & ~controllers_in_use) != 0;
+        controllers_in_use = in_use;
+        if (!Input::FirstPadSource().Update(seconds, gamepad, used)) {
+            ReleaseControllers("the gamepad on the PC was used");
+            ApplyRumble(false);
+            return;
+        }
+        if (blow != blowing) {
+            blowing = blow;
+            Input::SetBlowing(blow);
+        }
         if (!controllers_used) {
             controllers_used = true;
+            controller->SetHeadsetPlays(true);
             LOG_INFO(Core_Vr,
-                     "No gamepad is connected to the PC: the headset's controllers stand in for "
+                     "{}: the headset's controllers stand in for "
                      "it (left stick to move, right A = cross, right B = square, left X/A = "
                      "circle, left Y/B = triangle, right stick = finger on the touchpad, "
                      "pressed in = touchpad pressed, left menu/trackpad = OPTIONS, "
                      "both sticks pressed in = reset the view; the {} "
                      "one is the controller in the game: its trigger presses the touchpad, its "
-                     "grip swipes forward, the other trigger pulls back and lets go)",
+                     "grip swipes forward, the other trigger pulls back and lets go; the other "
+                     "grip held, the right stick flicked to a side turns the view a step)",
+                     gamepad ? "The headset's controllers were used, the gamepad on the PC was "
+                               "not (it plays again when it is used)"
+                             : "No gamepad is connected to the PC",
                      pad_hand == 0 ? "left" : "right");
         }
 
@@ -1091,13 +1158,18 @@ struct OpenXrHost::Impl {
         // as long as it is pulled, the grip of that hand swipes forward once, the other
         // hand's trigger pulls back and lets go when it is let go. (They stay L1, R1, L2 and
         // R2 besides: the title has no use for those in play, but its menus have.)
-        const double seconds =
-            std::chrono::duration<double>(Clock::now().time_since_epoch()).count();
         Input::PadGestures::Controls controls;
         controls.press = (pad_hand == 0 ? left_trigger : right_trigger) > 0.5f;
         controls.swipe = (pad_hand == 0 ? left_grip : right_grip) > 0.5f;
         controls.pull = (pad_hand == 0 ? right_trigger : left_trigger) > 0.5f;
         const Input::PadGestures::Touch made = gestures.Update(seconds, controls);
+        // The grip of the other hand, which is left without a meaning, held: each flick of
+        // the right stick to a side turns the view a step that way (see Input::ViewTurn), for
+        // players who cannot turn round where they sit. The stick moves no finger meanwhile.
+        const bool turning = (pad_hand == 0 ? right_grip : left_grip) > 0.5f;
+        if (const int steps = view_turn.Update(turning, finger.x); steps != 0) {
+            Runtime::Instance().TurnView(steps);
+        }
         // Besides that, the right stick moves a finger over the touchpad (see
         // Input::StickFinger: a stick let go lifts the finger where it was, which is what
         // lets a pull on the stick shoot the game's catapults). A stick pushed away from the
@@ -1109,6 +1181,8 @@ struct OpenXrHost::Impl {
             if (made.pressed) {
                 buttons |= Buttons::TouchPad;
             }
+        } else if (turning) {
+            stick_finger.Reset();
         } else {
             dragged = stick_finger.Update(seconds, finger.x, -finger.y);
         }
@@ -1127,7 +1201,7 @@ struct OpenXrHost::Impl {
                 sent_touch_y = touch_y;
             }
             // (A finger that lifts does so from where it was.)
-            controller->ApplyRemoteState(buttons, axes, touch, sent_touch_x, sent_touch_y);
+            controller->ApplyHeadsetState(buttons, axes, touch, sent_touch_x, sent_touch_y);
         }
 
         XrSpaceVelocity velocity{XR_TYPE_SPACE_VELOCITY};

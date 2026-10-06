@@ -69,7 +69,8 @@ in a small window at every start.
    controller in the game neither turns nor follows you, and the end of a level (swiping Astro
    out of the controller) cannot be done. That is what happened in the first session on
    2026-10-02 (the log says "PS4 Controller"; the console window now warns about it).
-   **Without a gamepad on the PC the headset's own controllers play** (see below).
+   **The headset's own controllers play as well**: with no gamepad on the PC, and with one
+   whenever they were used after it (see below).
 2. **Virtual Desktop Streamer** has to be running on the PC (the launcher starts it if it is
    not), with its own OpenXR runtime, VDXR, as the PC's OpenXR runtime (Streamer window,
    Options). It is, on this PC.
@@ -83,7 +84,8 @@ in a small window at every start.
    from a dump can be unpacked, not an encrypted one from the PlayStation Store). When it
    finds neither, a window asks where the game is, and what is chosen there is kept as
    `game=` in the settings. A small window comes up next: the **resolution** of each eye (a slider, from the
-   console's 1440x1536 up to 3600x3840), the **most frames a second**, and the **field of
+   console's 1440x1536 up to 3600x3840), the **most frames a second**, the **language of the
+   game** (Windows' own, or one of the game's 28), and the **field of
    view**; Play starts the game with them (they are kept in `pc-vr\settings.txt`; untick "Show
    this window at every start" to go without it). A console window then says what is found
    and what happens; the game's window opens behind it and shows both eyes' pictures side by
@@ -120,6 +122,12 @@ In the game:
   face is straight ahead. The emulator does it by itself when ✕ is pressed for the first time
   after the headset came up, and when the headset's own "reset view" is used (hold the Meta
   button).
+- **Turning round without turning yourself**, for whoever sits where they cannot: hold
+  **L1** (with the headset's controllers: the left grip) and flick the right stick to a
+  side. The view turns 30 degrees that way with each flick, about your head: you stay where
+  you are in the game and face another way, and a gamepad that nothing tracks comes round
+  with you. The game has no use for L1 while it is played. Resetting the view faces you
+  straight ahead again. (`turn=45` in the settings for another step, `turn=0` for none.)
 - **A controller without a touchpad** (an Xbox pad, the headset's own controllers) has
   buttons for what the game wants done on one:
   - **right trigger (R2): the pad pressed**, for as long as the trigger is pulled. That is
@@ -172,7 +180,8 @@ long as they are seen; your own place counts while they are not.
 
 ### With the headset's own controllers
 
-While no gamepad is connected to the PC, the two Touch controllers are the gamepad:
+The two Touch controllers are the gamepad while no gamepad is connected to the PC, and,
+while one is, from the moment they are used:
 
 | Touch controller | DualShock 4 |
 | --- | --- |
@@ -187,7 +196,7 @@ While no gamepad is connected to the PC, the two Touch controllers are the gamep
 | right stick | a finger on the touchpad, dragged the way the stick is pushed |
 | right stick pressed in | the touchpad pressed |
 | X and Y together (left hand) | blowing into the microphone, for as long as they are held |
-| left grip | L1 |
+| left grip | L1; held, the right stick flicked to a side turns the view a step |
 | menu button (left hand) | OPTIONS |
 | left stick pressed in | L3 |
 | both sticks pressed in | resets the view |
@@ -196,8 +205,18 @@ While no gamepad is connected to the PC, the two Touch controllers are the gamep
 where the game's DualShock is, tracked fully (a gamepad only gives its turning, and its
 place as far as hand tracking sees the hands around it). At the first screen, hold the right
 controller into the outline; gadgets shoot where it points. `controller_hand=left` in the
-settings makes it the left one. The game's rumble goes to both controllers. A gamepad that
-is connected to the PC takes over at once, and gives the controllers back when it goes.
+settings makes it the left one (the right grip then turns the view). The game's rumble goes
+to both controllers.
+
+**With a gamepad on the PC as well, whichever was used last plays.** A button of the
+headset's controllers that plays (A, B, X, Y, a stick pushed or pressed in; not a trigger, a
+grip or the menu button by itself, which a hand also does to a controller it only rests on)
+takes the game over once the gamepad has said nothing for a quarter of a second, and the
+gamepad takes it back with its first button, stick or touch. The console window says each
+change. Until 0.18 a gamepad that was merely connected, lying on a desk, kept the headset's
+controllers from doing anything. One case stays as it was: a gamepad that a streaming
+program makes of the headset's controllers themselves (Virtual Desktop's gamepad emulation)
+says what they say as they say it, and is then the one that plays.
 
 ## The game's versions
 
@@ -290,6 +309,8 @@ is optional.
 | `mic_gain=3` | what the microphone hears, that many times louder for the game (0.1 to 30): for when blowing does too little |
 | `controllers=0` | the headset's own controllers never stand in for a gamepad |
 | `controller_hand=left` | which Touch controller is the controller in the game (default `right`) |
+| `language=fr-FR` | the language the game is played in, as Windows names languages (`fr-FR`, `de-DE`, `pt-BR`, `ja-JP`...); default `windows`: the one Windows is shown in. The game has 28; it is in English for any other. The launcher's window has the list |
+| `turn=45` | how many degrees the view turns for each flick of the right stick with L1 held (default 30; `0`: never) |
 | `pause=0` | the game is never made to wait when the headset is off the head or shows something else |
 | `surround=0` | fold the game's surround sound down instead of rendering it for the headset's speakers |
 | `real_time=0` | let the game count time in frames, as on the console |
@@ -442,6 +463,52 @@ Things that had to be right, for whoever works on this again:
   microphone is the one the runtime names. Both fall back to Windows' default devices.
   The sound follows its device: when that goes away the sound moves to Windows' default
   device, and back when it is there again (see "Fixed in 0.13").
+
+## Fixed and added in 0.19 (2026-10-06), from what players wrote elsewhere
+
+Reports from the project's thread on Reddit and from the comments under the videos about it.
+
+- **The launcher asked for the Visual C++ runtime again and again**, however often it was
+  installed; one player had to cut the check out of the launcher to play. Started from a
+  32-bit program (a file manager, a game launcher), `Play Astro Bot VR.bat` got a 32-bit
+  PowerShell, to which Windows shows the 32-bit system folder under the name of the 64-bit
+  one: and one of the runtime's files, `vcruntime140_1.dll`, exists in 64 bits only. The
+  launcher now hands over to the 64-bit PowerShell first (which also puts the OpenXR
+  runtime's registry entry where it looks), names the files it misses, and its question has
+  a third answer: start the game all the same.
+- **The game was in English whatever the console's language should have been.** The
+  emulator's console was set to English and nothing offered another. The launcher now says
+  which language Windows is shown in, and its window has the game's 28 to choose from
+  (`language=`); the game takes it as it takes a PlayStation's.
+- **The headset's controllers did nothing while a gamepad was connected to the PC**, even
+  one that lay unused. Whichever was used last plays now: see "With the headset's own
+  controllers".
+- **Turning the view by steps**, asked for by a player who sits where they cannot turn
+  round: L1 (the left grip) held, the right stick flicked to a side. See "In the game".
+- **A question in a box behind the game's window at the very first start** ("Save
+  Migration": whether to move saves over from where an older shadPS4 kept them), which held
+  the game up until somebody saw and answered it. The packages avoided it by bringing the
+  folder it is about; started any other way, it came. It is only asked now where there is
+  something to move.
+
+## Linux, through Proton, as reported
+
+There is no Linux build of the PC version, and none of this has been tried here. A player
+(klejmanm, on Reddit) reports the Windows build running on Arch and Mint with Radeon RX
+6000/7000 cards, shown in a Quest through WiVRn, when it is started by Steam and not by a
+script of one's own (Wine's OpenXR layer got in the way otherwise):
+
+1. Steam > Games > Add a Non-Steam Game: `pc-vr/shadps4.exe`, "Start In" the `pc-vr`
+   folder. In its Properties > Compatibility, force GE-Proton or Proton Experimental.
+2. Properties > General > Launch Options, on one line, with your own paths. The launcher
+   is not used this way, so what it would set is given here:
+
+   ```
+   PRESSURE_VESSEL_IMPORT_OPENXR_1_RUNTIMES=1 PRESSURE_VESSEL_FILESYSTEMS_RW=/var/lib/flatpak/app/io.github.wivrn.wivrn SHADPS4_OPENXR=1 SHADPS4_XR_WAIT=60 SHADPS4_TITLE_EYE_WIDTH=2880 SHADPS4_VR_FPS_CAP=60 SHADPS4_VR_FOV=100 SHADPS4_VR_FOV_OF=headset SHADPS4_VR_SHARPEN=0.3 SHADPS4_CONSOLE_LANGUAGE=en-US WINE_DISABLE_DNS=1 %command% -g "/path/to/games/CUSA12392/eboot.bin"
+   ```
+
+Before 0.19 the first start also needed the "Save Migration" box answered on the desktop,
+or the headset's session timed out; that box no longer comes.
 
 ## Fixed and added on 2026-10-06, from the reports on GitHub
 

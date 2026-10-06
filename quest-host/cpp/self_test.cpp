@@ -353,6 +353,32 @@ std::string RunSelfTest(const CoreLaunch& launch, const std::string& out_dir, in
         note("the head follows %zu looks", looks.size());
     }
 
+    // HOST_TURN="<second>:<steps>;...": the player asks to be turned round where they sit, so
+    // many steps to the right (to the left if negative), as a button held and the right stick
+    // flicked ask in a session.
+    struct Turn {
+        float at;
+        int steps;
+        bool done;
+    };
+    std::vector<Turn> turns;
+    for (const auto& [name, value] : launch.extra_env) {
+        if (name != "HOST_TURN") {
+            continue;
+        }
+        size_t at = 0;
+        while (at < value.size()) {
+            const size_t end = std::min(value.find(';', at), value.size());
+            Turn turn{};
+            if (std::sscanf(value.substr(at, end - at).c_str(), "%f:%d", &turn.at, &turn.steps) ==
+                2) {
+                turns.push_back(turn);
+            }
+            at = end + 1;
+        }
+        note("the view is turned %zu times", turns.size());
+    }
+
     // HOST_PAD="<from second>:<kind>,<right>,<up>,<ahead>,<left>,<tilt>,<roll>;..." among the
     // settings: what the host says of the controller from when on, the way a session does.
     // Where it is in metres from the head (which this test keeps where it starts), how it is
@@ -457,6 +483,20 @@ std::string RunSelfTest(const CoreLaunch& launch, const std::string& out_dir, in
             reset.flags = Protocol::PadPose::RecenterSeat;
             core.SendPadPose(reset);
             note("view reset asked for with the head turned %.0f degrees", yaw * 57.29578f);
+        }
+
+        for (Turn& turn : turns) {
+            if (turn.done || now < turn.at) {
+                continue;
+            }
+            turn.done = true;
+            for (int step = 0; step < std::abs(turn.steps); ++step) {
+                Protocol::PadPose message;
+                message.flags = turn.steps > 0 ? Protocol::PadPose::TurnRight
+                                               : Protocol::PadPose::TurnLeft;
+                core.SendPadPose(message);
+            }
+            note("%.0f s: the view is asked to turn %d steps to the right", now, turn.steps);
         }
 
         // The controller, as a session would report it.

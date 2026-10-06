@@ -143,6 +143,9 @@ static void NoteViewButtons(OrbisPadButtonDataOffset before, OrbisPadButtonDataO
 }
 
 void GameController::Button(OrbisPadButtonDataOffset button, bool is_pressed) {
+    if (HeadsetPlays()) {
+        return;
+    }
     const auto before = m_state.buttonsState;
     m_state.OnButton(button, is_pressed);
     PushState();
@@ -152,8 +155,28 @@ void GameController::Button(OrbisPadButtonDataOffset button, bool is_pressed) {
 }
 
 void GameController::Axis(Input::Axis axis, int value, bool smooth) {
+    if (HeadsetPlays()) {
+        return;
+    }
     m_state.OnAxis(axis, value, smooth);
     PushState();
+}
+
+OrbisPadButtonDataOffset GameController::ApplyRemoteLocked(OrbisPadButtonDataOffset buttons,
+                                                           const std::array<int, 6>& axes,
+                                                           bool touch_down, float touch_x,
+                                                           float touch_y) {
+    const OrbisPadButtonDataOffset before = m_state.buttonsState;
+    m_connected = true;
+    m_connected_count = 1;
+    m_state.buttonsState = buttons;
+    for (int i = 0; i < std::to_underlying(Axis::AxisMax); ++i) {
+        m_state.OnAxis(static_cast<Input::Axis>(i), axes[i], false);
+    }
+    m_state.OnTouchpad(0, touch_down, touch_x, touch_y);
+    m_state.time = Libraries::Kernel::sceKernelGetProcessTime();
+    m_states_queue.Push(m_state);
+    return before;
 }
 
 void GameController::ApplyRemoteState(OrbisPadButtonDataOffset buttons,
@@ -162,19 +185,53 @@ void GameController::ApplyRemoteState(OrbisPadButtonDataOffset buttons,
     OrbisPadButtonDataOffset before;
     {
         std::lock_guard lock(m_states_queue_mutex);
-        before = m_state.buttonsState;
-        m_connected = true;
-        m_connected_count = 1;
-        m_state.buttonsState = buttons;
-        for (int i = 0; i < std::to_underlying(Axis::AxisMax); ++i) {
-            m_state.OnAxis(static_cast<Input::Axis>(i), axes[i], false);
-        }
-        m_state.OnTouchpad(0, touch_down, touch_x, touch_y);
-        m_state.time = Libraries::Kernel::sceKernelGetProcessTime();
-        m_states_queue.Push(m_state);
+        before = ApplyRemoteLocked(buttons, axes, touch_down, touch_x, touch_y);
     }
     if (IsFirstController(this)) {
         NoteViewButtons(before, buttons);
+    }
+}
+
+void GameController::ApplyHeadsetState(OrbisPadButtonDataOffset buttons,
+                                       const std::array<int, 6>& axes, bool touch_down,
+                                       float touch_x, float touch_y) {
+    OrbisPadButtonDataOffset before;
+    {
+        std::lock_guard lock(m_states_queue_mutex);
+        // (The gamepad may have taken the controller back a moment ago, from another thread.)
+        if (!HeadsetPlays()) {
+            return;
+        }
+        before = ApplyRemoteLocked(buttons, axes, touch_down, touch_x, touch_y);
+    }
+    if (IsFirstController(this)) {
+        NoteViewButtons(before, buttons);
+    }
+}
+
+void GameController::SetHeadsetPlays(bool plays) {
+    OrbisPadButtonDataOffset before;
+    {
+        std::lock_guard lock(m_states_queue_mutex);
+        if (HeadsetPlays() == plays) {
+            return;
+        }
+        m_headset_plays.store(plays, std::memory_order_relaxed);
+        // Whoever played until now leaves nothing held.
+        static constexpr std::array<int, 6> Rest{128, 128, 128, 128, 0, 0};
+        before = ApplyRemoteLocked({}, Rest, false, 0.5f, 0.5f);
+    }
+    {
+        std::scoped_lock lock{m_finger_mutex};
+        m_finger_down = false;
+        m_stick_touch = false;
+        m_gesture_press = false;
+        m_stick_finger.Reset();
+        m_gestures.Reset();
+        m_view_turn.Reset();
+    }
+    if (IsFirstController(this)) {
+        NoteViewButtons(before, {});
     }
 }
 
@@ -197,10 +254,24 @@ void GameController::UpdateStickTouch() {
         const char* value = std::getenv("SHADPS4_STICK_TOUCHPAD");
         return value == nullptr || value[0] != '0';
     }();
-    if (m_sdl_gamepad == nullptr || !Core::Vr::Runtime::Instance().IsHeadsetConnected()) {
+    if (m_sdl_gamepad == nullptr || !Core::Vr::Runtime::Instance().IsHeadsetConnected() ||
+        HeadsetPlays()) {
         return;
     }
     std::scoped_lock lock{m_finger_mutex};
+    // The left shoulder button, which such a title has no use for in play, held: each flick
+    // of the right stick to a side turns the view a step that way (see ViewTurn), for players
+    // who cannot turn round where they sit. The stick moves no finger meanwhile. (Not while
+    // the PS button is held: it gives the shoulder buttons another meaning.)
+    const bool turning =
+        SDL_GetGamepadButton(m_sdl_gamepad, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) &&
+        !SDL_GetGamepadButton(m_sdl_gamepad, SDL_GAMEPAD_BUTTON_GUIDE);
+    if (const int steps = m_view_turn.Update(
+            turning, static_cast<float>(SDL_GetGamepadAxis(m_sdl_gamepad, SDL_GAMEPAD_AXIS_RIGHTX)) /
+                         32767.0f);
+        steps != 0) {
+        Core::Vr::Runtime::Instance().TurnView(steps);
+    }
     if (m_finger_down) {
         // A real finger is on the pad: the stick's has nothing to say, and is not back on
         // the pad the moment the real one lifts either.
@@ -236,6 +307,8 @@ void GameController::UpdateStickTouch() {
     if (made.down) {
         m_stick_finger.Reset();
         touch = {true, made.x, made.y};
+    } else if (turning) {
+        m_stick_finger.Reset();
     } else if (enabled) {
         const float x = static_cast<float>(SDL_GetGamepadAxis(m_sdl_gamepad, SDL_GAMEPAD_AXIS_RIGHTX)) /
                         32767.0f;
@@ -322,7 +395,8 @@ bool GameController::SetVibration(u8 smallMotor, u8 largeMotor) {
     if (IsFirstController(this)) {
         Core::Vr::Runtime::Instance().SetPadVibration(smallMotor, largeMotor);
     }
-    if (m_sdl_gamepad != nullptr) {
+    // (A gamepad that lies on the desk while the headset's controllers play stays still.)
+    if (m_sdl_gamepad != nullptr && !HeadsetPlays()) {
         return SDL_RumbleGamepad(m_sdl_gamepad, (smallMotor / 255.0f) * 0xFFFF,
                                  (largeMotor / 255.0f) * 0xFFFF, -1);
     }
@@ -330,6 +404,9 @@ bool GameController::SetVibration(u8 smallMotor, u8 largeMotor) {
 }
 
 void GameController::SetTouchpadState(int touchIndex, bool touchDown, float x, float y) {
+    if (HeadsetPlays()) {
+        return;
+    }
     // A finger on the real touchpad: the right stick stops standing in for one. (Its finger
     // lifts first: the real one coming down is a touch of its own, not that one moving.)
     std::scoped_lock lock{m_finger_mutex};

@@ -116,6 +116,10 @@ struct PadPose {
     /// how it is turned and tilted: it stands in for motion sensors the controller does not
     /// have, and `position` is taken as it is without `OrientationValid`.
     static constexpr std::uint32_t HeldInHands = 1u << 6;
+    /// The player asks to be turned round one step where they sit, to the left or to the
+    /// right (see Runtime::TurnView). (The message needs nothing else to be valid.)
+    static constexpr std::uint32_t TurnLeft = 1u << 7;
+    static constexpr std::uint32_t TurnRight = 1u << 8;
 
     Header header{.type = MessageType::PadPose};
     std::uint32_t flags{};

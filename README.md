@@ -78,7 +78,7 @@ Download `AstroQuest-<version>-Quest3.apk` from the
    debugging in the headset, and run
 
    ```sh
-   adb install -r AstroQuest-0.18-Quest3.apk
+   adb install -r AstroQuest-0.19-Quest3.apk
    ```
 
    (or drag the APK onto SideQuest).
@@ -138,6 +138,10 @@ Playing:
   - the right stick is a finger on it, for anything else.
 - With both at hand, the game is played with the one you used last: a button on the other
   changes over.
+- **To turn round without turning yourself** (on a seat that does not turn): hold the left
+  grip, or L1 on a gamepad, and flick the right stick to a side. Each flick turns the view 30
+  degrees that way; resetting the view faces you straight ahead again.
+- **The game speaks the headset's language**, of those it has (28; English otherwise).
 - The first screen asks to move the controller into a floating outline: hold it up in front
   of you where the outline is.
 - On the world map, **look** at a planet and press ✕.
@@ -171,16 +175,59 @@ Download `AstroQuest-<version>-PC-VR-Windows.zip` from the
    set the frame rate to **120** (the game then runs at 60 frames a second, as on the console).
 4. **Connect the DualSense to the PC**, by USB cable or by Bluetooth paired with the PC, not
    with the headset: paired with the headset, it reaches the PC without motion sensors or
-   touchpad. With no gamepad on the PC, the Touch controllers play instead.
+   touchpad. The Touch controllers play as well: with no gamepad on the PC, and with one
+   whenever they were the ones used last.
 5. **Connect to the PC with Virtual Desktop**, then start **`Play Astro Bot VR.bat`** on the
    desktop you see in the headset. The first time, it offers to unpack the game if it is a
    package (or asks where the game is). Then a small window lets you choose each eye's resolution, the
-   frame rate and the field of view; Play starts the game, and the headset switches to it
-   after a few seconds.
+   frame rate, the game's language (Windows' own unless you choose another) and the field of
+   view; Play starts the game, and the headset switches to it after a few seconds.
 
 For the controller to be placed by your hands, turn on hand tracking in the headset and let
 Virtual Desktop forward tracking data to the PC. The Touch controller layout, all settings and
 what to do when something does not work are in [README-PC-VR.md](README-PC-VR.md).
+
+## Common questions
+
+**How do I get the game onto my computer?** AstroQuest needs the game's files as they are on
+a PlayStation 4. Copying them off ("dumping") takes a PS4 that can run homebrew and a dumper
+application on it, with your own disc or your own purchase; what comes out is the game's
+folder, or an unencrypted `.pkg` made from it, and both work here. How to prepare a console
+for that is outside this project. A package downloaded from the PlayStation Store, even your
+own, is encrypted, and nothing here can open it: the launcher says so when it is given one.
+No game files come with AstroQuest and none are handed out.
+
+**Which headsets?** On the headset alone: Quest 3 (the Quest 3S has the same chip and should
+work; nobody has reported it yet). A Quest 2 or Pro has not been tried and is slower. On a
+PC: any headset with an OpenXR runtime on Windows, which is every Quest through Virtual
+Desktop or Steam Link, and PC headsets through SteamVR (Index, PS VR2 with its PC adapter,
+Bigscreen Beyond, Pimax and others have been reported working).
+
+**Do I need a PlayStation controller?** No. The headset's own controllers play, on the
+headset alone and on the PC, and so do other gamepads; see "Playing". A DualSense is still
+the closest to what the game was made for.
+
+**Without Virtual Desktop?** On the PC, yes: with SteamVR as the OpenXR runtime
+([README-PC-VR.md](README-PC-VR.md#valve-index-through-steamvr)). Start SteamVR first, then
+`Play Astro Bot VR.bat`.
+
+**The picture looks like it is "reprojected", whatever I set.** The game draws one frame
+for every two refreshes of the headset, as it does on a PlayStation VR: 60 frames a second at
+120 Hz, 45 at 90 Hz, 36 at 72 Hz, and your head's turning is filled in between. Set the
+headset to 120 Hz for the console's own 60. On a fast PC, "Frames a second, at most" in the
+launcher's window can be raised to the headset's rate.
+
+**The game is in English.** From 0.19 on it takes the language of Windows or of the headset
+(one of the game's 28; English otherwise); the PC launcher's window has a list to choose
+another from.
+
+**The launcher keeps asking for the Visual C++ runtime although it is installed.** Fixed in
+0.19 (it looked in the wrong place when it was started from a 32-bit program), and its
+question now has a "start the game all the same".
+
+**Linux?** There is no Linux build of the PC version. A player reports it running through
+Steam's Proton with WiVRn; their recipe is in
+[README-PC-VR.md](README-PC-VR.md#linux-through-proton-as-reported).
 
 ## Building from source
 

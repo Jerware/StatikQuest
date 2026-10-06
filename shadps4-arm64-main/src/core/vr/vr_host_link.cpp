@@ -216,6 +216,12 @@ void HostLink::ReadLoop() {
             if ((pad.flags & Protocol::PadPose::RecenterYaw) != 0) {
                 runtime.ResetPadYaw();
             }
+            if ((pad.flags & Protocol::PadPose::TurnLeft) != 0) {
+                runtime.TurnView(-1);
+            }
+            if ((pad.flags & Protocol::PadPose::TurnRight) != 0) {
+                runtime.TurnView(1);
+            }
             const Vec3 position{pad.position[0], pad.position[1], pad.position[2]};
             if ((pad.flags & Protocol::PadPose::AssumedOffset) != 0) {
                 runtime.SetPadOffset(position);

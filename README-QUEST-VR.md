@@ -131,6 +131,28 @@ What else is new is for the PC (`README-PC-VR.md`): SteamVR and other PC headset
 for spectators on the monitor, a gamepad in the game that can be moved where nothing tracks
 it, an easier catapult with a stick, blowing with buttons.
 
+**App 0.19 (2026-10-06): what players wrote elsewhere** (the project's thread on Reddit, the
+comments under the videos about it).
+
+- **The game speaks the headset's language.** It was in English whatever the headset was set
+  to: the emulator's console was set to English and nothing offered another. The app now
+  tells the emulator the language the headset is set to, and the game takes it as it takes a
+  PlayStation's, if it has it (28 languages; English otherwise). `language=` in the settings
+  names another. Tried on the PC, where the same emulator shows the game's first screens in
+  French, Japanese and Arabic; on the headset, without wearing it.
+- **Turning the view by steps**, for whoever sits where they cannot turn round (the game has
+  things behind the player, and expects them to look): the left grip held (L1 on a gamepad;
+  the right grip with `pad_hand=left`), each flick of the right stick to a side turns the
+  view 30 degrees that way. The turn is about the head: the player stays where they are in
+  the game and faces another way, and the controller comes round with them. The game is
+  told nothing; to it, the player has turned. A reset of the view faces them straight ahead
+  again. `turn=45` for another step, `turn=0` for none. The card that names the buttons has
+  a line for it. Tried on the PC against a simulated headset (the view turns, the head stays
+  where it is); **not worn**.
+
+What else is new is for the PC: a launcher that no longer asks for a runtime that is
+installed, and a gamepad and the headset's controllers that take turns there too.
+
 **App 0.8 (2026-10-03)**, after the fourth session (levels 1-1 to 1-3 played, the game stopped
 on entering 1-4 twice):
 
@@ -241,6 +263,8 @@ Optional settings go in `/sdcard/Android/data/com.astrobotquest.vrhost/files/vrh
 | `hands=0` | do not use hand tracking; a gamepad stays at its fixed spot |
 | `own_controllers=0` | never play with the headset's own controllers, whoever holds them |
 | `pad_hand=left` | with the headset's own controllers, the left one is the controller in the game instead of the right one |
+| `language=fr-FR` | the language the game is played in, as a language tag (`fr-FR`, `de-DE`, `pt-BR`, `ja-JP`...). Default: the one the headset is set to. The game has 28; it is in English for any other |
+| `turn=45` | how many degrees the view turns for each flick of the right stick with the left grip (or L1) held (default 30; `0`: never) |
 | `pad_tilt=-15` | for a gamepad without motion sensors, which the hands holding it turn and tilt in the game: how many degrees higher (lower, if negative) its front points than the hands do (-60 to 60). For a gamepad that points too high or too low in the game |
 | `sharpen=0` | no sharpening of the picture. Default 1: the emulator sharpens every frame of the game once. 2: the headset's Super Resolution filter on every refresh instead (finer; about a twentieth of the GPU's time). 3: that filter whenever the system finds the GPU has time for it (in a level: hardly ever). 4: the headset's plainer filter. See "The picture" |
 | `cubic=1` | have the headset enlarge the picture with a cubic filter instead of a linear one (sharper, for some GPU time on every refresh) |
@@ -328,15 +352,16 @@ system makes of them for other apps says neither, and is ignored):
 | right trigger | the touchpad pressed, while it is pulled (water, guns); also R2 |
 | right grip | a swipe forward on the touchpad (hook, stars, chests); also R1 |
 | left trigger | a pull back on the touchpad, let go when the trigger is (the catapult); also L2 |
-| left grip | L1 |
+| left grip | L1; held, the right stick flicked to a side turns the view a step (see "Where the player sits") |
 | right stick | a finger on the touchpad, as on a gamepad without one |
 | right stick pressed in | the touchpad pressed |
 | menu button (left) | OPTIONS; held for a second, it resets the view |
 | both sticks pressed in | resets the view |
 
-(With `pad_hand=left` the trigger and the grip that press and swipe are the left ones, and
-the right trigger pulls.) Both controllers shake with the game's rumble, the left one more
-with the heavy motor and the right one more with the light one.
+(With `pad_hand=left` the trigger and the grip that press and swipe are the left ones, the
+right trigger pulls, and the right grip turns the view.) Both controllers shake with the
+game's rumble, the left one more with the heavy motor and the right one more with the light
+one.
 
 **With a gamepad and the headset's controllers both at hand, the game is played with the one
 that was used last**: a button on the other takes over, and `host.log` says so. From a
@@ -366,6 +391,15 @@ pressed for the first time (the player has settled, controller in hand, looking 
 when OPTIONS is held for a second or the PS button is pressed, and when the headset's own reset
 is used. `core.log` says each time where the seat is, and every ten seconds where the game takes
 the player to sit and where the head is from there.
+
+**Turning round without turning** (0.19) is the seat turned about the head, 30 degrees for
+each step (`Runtime::TurnView`): the head keeps its place in the game's world and faces
+another way, a controller the headset sees is placed anew from the turned seat, and one it
+does not see keeps its place before the player. The game is not told: a player on a swivel
+chair would look the same to it. The steps are asked for with a button the game has no use
+for in play, held, and the right stick flicked to a side (the left grip, or L1; see
+"Controllers"), and are undone by the next reset of the view. `core.log` says each one
+("The view turns a step to the right: ...").
 
 ## Speed
 
@@ -721,6 +755,7 @@ Settings of `quest-selftest.sh` that make it more like one (given like the core'
 | `HOST_DISPLAY=<Hz>` | the test's loop goes round once per refresh of a display of that rate, tells the emulator of each as the app does, and counts for how many refreshes each frame of the game stayed the newest |
 | `HOST_LOOK="<s>:<left>,<up>;..."` | where the head looks from which second on (degrees); `8:85,22;110:0,-12` finds the first level from the world map and then looks along it |
 | `HOST_PAD="<s>:<kind>,<right>,<up>,<ahead>,<left>,<tilt>,<roll>;..."` | what the app says of the controller from which second on, the way a session does: `c` one of the headset's own controllers (it says everything of itself), `h` hands around a gamepad without motion sensors, `p` hands around one that has them (only where it is), `n` nothing seen; where it is in metres from the head, how it is turned in degrees. With `HOST_LOOK=0:0,-18` the controller is in the picture |
+| `HOST_TURN="<s>:<steps>;..."` | the view is turned by so many steps to the right at that second (to the left if negative), as the left grip held and the right stick flicked ask in a session. With `HOST_LOOK=0:0,0` the pictures before and after show the same scene from two sides |
 | `HOST_SHOTS=<s>` | a picture every so many seconds instead of every ten |
 | `XDG_DATA_HOME=<folder>` | where the emulator keeps its data, saves among them. The self-test starts from nothing each time, so the game plays its prologue (four minutes); with a folder that holds a save it is in the first level after 75 seconds |
 | `SHADPS4_VR_FOLLOW_DISPLAY=0` | the emulated headset keeps to its own clock although the host tells of its display's refreshes |

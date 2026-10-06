@@ -289,12 +289,18 @@ void Runtime::RecenterSeatLocked() {
         pad_attitude = Normalize(Multiply(turned, pad_attitude));
         pad.pose.orientation = pad_attitude;
     }
+    if (view_turn != 0.0f && !pad_attitude_valid && !pad_position_tracked) {
+        // A controller that nothing knows anything of was turned with the player (TurnView):
+        // it points straight ahead again, as they face.
+        pad.pose.orientation = {};
+    }
     previous_seat_position = seat_position;
     previous_seat_yaw = seat_yaw;
     seat_changed = std::chrono::steady_clock::now();
     seat_position = host_head.pose.position;
     seat_yaw = yaw;
     seat_valid = true;
+    view_turn = 0.0f;
     PlaceHead();
     // Where the controller was seen is of the old seat; the host says where it is every frame.
     pad_seen = false;
@@ -320,6 +326,63 @@ void Runtime::FixSeat() {
     seat_yaw = {};
     seat_valid = true;
     title_asked = true;
+}
+
+void Runtime::TurnView(int steps) {
+    static const float step = [] {
+        float degrees = 30.0f;
+        if (const char* value = std::getenv("SHADPS4_VR_TURN"); value != nullptr && *value != '\0') {
+            degrees = std::clamp(static_cast<float>(std::atof(value)), 0.0f, 90.0f);
+        }
+        return degrees / 57.29578f;
+    }();
+    if (steps == 0 || step == 0.0f) {
+        return;
+    }
+    std::scoped_lock lock{mutex};
+    if (!seat_valid || !host_head.tracked) {
+        return;
+    }
+    // (Angles about +Y count to the left.)
+    const float left = -step * static_cast<float>(steps);
+    // What the title sees of the player turns by this; the seat, in the headset's own
+    // space, by as much the other way.
+    const Quat turn = FromAxisAngle({0.0f, 1.0f, 0.0f}, left);
+    const Quat seat_turn = Conjugate(turn);
+    previous_seat_position = seat_position;
+    previous_seat_yaw = seat_yaw;
+    seat_changed = std::chrono::steady_clock::now();
+    // The seat turns about the head: the head stays where it is in the title's world.
+    const Vec3& at = host_head.pose.position;
+    const Vec3 from_seat = Rotate(
+        seat_turn, {at.x - seat_position.x, at.y - seat_position.y, at.z - seat_position.z});
+    seat_position = {at.x - from_seat.x, at.y - from_seat.y, at.z - from_seat.z};
+    seat_yaw = Normalize(Multiply(seat_turn, seat_yaw));
+    view_turn += left;
+    PlaceHead();
+    // The controller is in the player's hands and turns with them. One that a host locates is
+    // placed anew with every pose; one that is not keeps its place before the player (see
+    // GetPad) and, by its own sensors, the way it points from there.
+    if (pad_attitude_valid) {
+        pad_attitude = Normalize(Multiply(turn, pad_attitude));
+    }
+    if (!pad_position_tracked) {
+        // (Also one that nothing has ever said anything of: it points straight ahead of the
+        // player, whichever way that is.)
+        pad.pose.orientation =
+            pad_attitude_valid ? pad_attitude : Normalize(Multiply(turn, pad.pose.orientation));
+        ++pad.sequence;
+    }
+    pad_seen_offset = Rotate(turn, pad_seen_offset);
+    pad_seen = false;
+    pad_shown_valid = false;
+    pad_yaw_reference_valid = false;
+    LOG_INFO(Core_Vr,
+             "The view turns a step to the {}: the head stays at {:.2f} {:.2f} {:.2f} of the "
+             "title's space and faces {:.0f} degrees to the left of where it faced when the "
+             "view was last reset",
+             steps > 0 ? "right" : "left", head.pose.position.x, head.pose.position.y,
+             head.pose.position.z, view_turn * 57.29578f);
 }
 
 void Runtime::RequestRecenter() {
@@ -377,6 +440,7 @@ void Runtime::UpdatePad(const DeviceState& host_state) {
     pad.sequence = sequence;
     pad.tracked = true;
     pad_position_tracked = true;
+    pad_host_pose_time = std::chrono::steady_clock::now();
 }
 
 void Runtime::ReleasePad() {
@@ -390,7 +454,8 @@ void Runtime::ReleasePad() {
     pad_shown_position = pad.pose.position;
     pad_shown_valid = true;
     pad_shown_time = std::chrono::steady_clock::now();
-    pad.pose.orientation = pad_attitude_valid ? pad_attitude : Quat{};
+    pad.pose.orientation =
+        pad_attitude_valid ? pad_attitude : FromAxisAngle({0.0f, 1.0f, 0.0f}, view_turn);
     pad.linear_velocity = {};
     pad.angular_velocity = {};
     ++pad.sequence;
@@ -492,6 +557,12 @@ void Runtime::UpdatePadGyro(const Vec3& angular_velocity) {
         pad_attitude = Normalize(pad_attitude);
     }
 
+    // A host that says where the controller is and how it is turned (the headset's own
+    // controller, standing in for it) is believed over the sensors of a gamepad that is
+    // there as well, on a desk: those only keep count of how that one is turned.
+    if (pad_position_tracked && now - pad_host_pose_time < std::chrono::milliseconds{200}) {
+        return;
+    }
     pad.pose.orientation = pad_attitude;
     pad.angular_velocity = Rotate(pad_attitude, angular_velocity);
     ++pad.sequence;
@@ -913,9 +984,13 @@ DeviceState Runtime::GetPad() {
     }
     // (The player's own place is theirs to say: it counts for more than where the controller
     // was last seen.)
-    const Vec3& assumed = own_pad_place            ? own_pad_offset
-                          : pad_seen_offset_valid ? pad_seen_offset
-                                                  : config.pad_offset;
+    // (Its own place and the standard one are before the player whichever way TurnView has
+    // them face; where it was seen is where it was seen.)
+    const Vec3 assumed =
+        !own_pad_place && pad_seen_offset_valid
+            ? pad_seen_offset
+            : Rotate(FromAxisAngle({0.0f, 1.0f, 0.0f}, view_turn),
+                     own_pad_place ? own_pad_offset : config.pad_offset);
     const Vec3 goal = seen ? pad_seen_position
                            : Vec3{pad_anchor.x + assumed.x, pad_anchor.y + assumed.y,
                                   pad_anchor.z + assumed.z};

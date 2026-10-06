@@ -4,6 +4,26 @@
 # main ones can be chosen in a small window before the game starts.
 param([string]$SettingsFile = "", [switch]$NoMenu)
 
+# The 64-bit PowerShell of this PC, for a 32-bit one to hand over to; "" where this is it.
+# Started from a 32-bit program (a file manager, a game launcher), "powershell" is the 32-bit
+# one, and Windows shows that other system folders and another registry than the emulator
+# gets, which is a 64-bit program: the Visual C++ runtime looked missing however often it was
+# installed (one of its files only exists in 64 bits), and so would the OpenXR runtime.
+function Get-NativePowerShell {
+    if (-not [Environment]::Is64BitOperatingSystem -or [Environment]::Is64BitProcess) { return "" }
+    $native = Join-Path $env:windir "Sysnative\WindowsPowerShell\v1.0\powershell.exe"
+    if ([System.IO.File]::Exists($native)) { return $native }
+    return ""
+}
+$nativePowerShell = Get-NativePowerShell
+if ($nativePowerShell -ne "") {
+    $again = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $MyInvocation.MyCommand.Path)
+    if ($SettingsFile -ne "") { $again += @("-SettingsFile", $SettingsFile) }
+    if ($NoMenu) { $again += "-NoMenu" }
+    & $nativePowerShell @again
+    exit $LASTEXITCODE
+}
+
 $ErrorActionPreference = "Continue"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $root = Split-Path -Parent $here
@@ -53,10 +73,35 @@ Read-Settings
 $widths = @(1440, 1800, 2160, 2520, 2880, 3240, 3600)
 function EyeHeight([int]$width) { return [int]([math]::Round(1536.0 * $width / 1440 / 8) * 8) }
 $caps = @(120, 90, 72, 60, 45, 40, 36, 30)
+# The languages the game has, as Windows names them.
+$gameLanguages = @("en-US", "en-GB", "fr-FR", "fr-CA", "es-ES", "es-419", "de-DE", "it-IT", "nl-NL",
+                   "pt-PT", "pt-BR", "ru-RU", "pl-PL", "tr-TR", "sv-SE", "nb-NO", "da-DK", "fi-FI",
+                   "cs-CZ", "hu-HU", "el-GR", "ro-RO", "ar-SA", "ja-JP", "ko-KR", "zh-Hant", "zh-Hans",
+                   "th-TH")
+# language: the language the game is played in. windows (the default): the one Windows is shown
+# in; otherwise one of the above. The emulator sets its console to it, and the game takes the
+# console's language as it does on a PlayStation (English where it does not have it).
+function Get-GameLanguage {
+    $wanted = Setting "language" "windows"
+    if ($wanted -eq "" -or $wanted -eq "windows") {
+        return [System.Globalization.CultureInfo]::CurrentUICulture.Name
+    }
+    return $wanted
+}
+# A language's name in that language, and in English where that differs.
+function Get-LanguageName([string]$tag) {
+    try {
+        $culture = [System.Globalization.CultureInfo]::GetCultureInfo($tag)
+        if ($culture.NativeName -eq $culture.EnglishName) { return $culture.EnglishName }
+        return ($culture.NativeName + " - " + $culture.EnglishName)
+    } catch { return $tag }
+}
 
 function Get-VrInstructions([string]$runtime) {
     # How to move the gamepad in the game while nothing tracks where it is.
     $placeHelp = "Hold the PS button and press the D-pad to move it (L1 nearer, R1 farther); PS + triangle switches between your place for it and the standard one."
+    # For players who sit where they cannot turn round.
+    $turnHelp = "To turn round without turning yourself: hold L1 (the headset's controllers: the left grip) and flick the right stick to a side."
     if ($runtime -match 'steamvr|steamxr') {
         return @(
             "Start SteamVR and check that the headset is ready (an Index: with its base stations). Virtual Desktop is not needed."
@@ -66,7 +111,8 @@ function Get-VrInstructions([string]$runtime) {
             "SteamVR does not track bare hands: the gamepad in the game stays in front of you and turns with its own sensors."
             $placeHelp
             "Sound and microphone: the ones chosen in SteamVR's Audio settings; the game uses the microphone for blowing."
-            "No gamepad: the headset's controllers play (right A jump, right B punch, left X or A back, left Y or B triangle, left menu or trackpad press = OPTIONS)."
+            "The headset's controllers play too, with no gamepad or whenever they were used after it (right A jump, right B punch, left X or A back, left Y or B triangle, left menu or trackpad press = OPTIONS)."
+            $turnHelp
         )
     }
     if ($runtime -match 'virtualdesktop') {
@@ -77,7 +123,8 @@ function Get-VrInstructions([string]$runtime) {
             "Where it is in the game comes from your hands: hand tracking on in the headset, and in"
             "Virtual Desktop's settings hand tracking forwarded to the PC. Without that it stays in front of you:"
             $placeHelp
-            "No gamepad: Touch controllers play (A jump, B punch, X back, Y triangle, left menu = OPTIONS)."
+            "The Touch controllers play too, with no gamepad or whenever they were used after it (A jump, B punch, X back, Y triangle, left menu = OPTIONS)."
+            $turnHelp
         )
     }
     return @(
@@ -85,7 +132,8 @@ function Get-VrInstructions([string]$runtime) {
         "The DualSense: connect it to THIS PC by USB or Bluetooth, with Steam Input disabled for any Steam shortcut."
         "Without hand tracking, the gamepad in the game stays in front of you and turns with its own sensors."
         $placeHelp
-        "No gamepad: the headset's controllers play (right A jump, right B punch, left X or A back, left Y or B triangle)."
+        "The headset's controllers play too, with no gamepad or whenever they were used after it (right A jump, right B punch, left X or A back, left Y or B triangle)."
+        $turnHelp
     )
 }
 
@@ -574,14 +622,24 @@ function Resolve-Game {
     }
 }
 
-# The Microsoft Visual C++ runtime, which the emulator is built against.
-function Test-Runtime {
-    $system = [System.Environment]::SystemDirectory
+# The Microsoft Visual C++ runtime, which the emulator is built against: the files of it that
+# are neither in Windows' (64-bit) system folder nor next to the emulator.
+function Get-MissingRuntime([string]$system = "", [string]$beside = "") {
+    if ($system -eq "") {
+        $system = [System.Environment]::SystemDirectory
+        # (To a 32-bit PowerShell that name shows the 32-bit files.)
+        if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
+            $system = Join-Path $env:windir "Sysnative"
+        }
+    }
+    $missing = @()
     foreach ($name in @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll",
                         "msvcp140_2.dll", "msvcp140_atomic_wait.dll")) {
-        if (-not [System.IO.File]::Exists((Join-Path $system $name))) { return $false }
+        if ([System.IO.File]::Exists((Join-Path $system $name))) { continue }
+        if ($beside -ne "" -and [System.IO.File]::Exists((Join-Path $beside $name))) { continue }
+        $missing += $name
     }
-    return $true
+    return ,$missing
 }
 
 # --- the window -------------------------------------------------------------------------------
@@ -642,9 +700,25 @@ function Show-Menu {
     $label = New-Object System.Windows.Forms.Label
     $label.Text = "Frames a second, at most"
     $label.Font = New-Object System.Drawing.Font("Segoe UI", 9.5, [System.Drawing.FontStyle]::Bold)
-    $label.SetBounds(16, $y, 520, 20)
+    $label.SetBounds(16, $y, 250, 20)
+    $form.Controls.Add($label)
+    $label = New-Object System.Windows.Forms.Label
+    $label.Text = "Language of the game"
+    $label.Font = New-Object System.Drawing.Font("Segoe UI", 9.5, [System.Drawing.FontStyle]::Bold)
+    $label.SetBounds(284, $y, 260, 20)
     $form.Controls.Add($label)
     $y += 24
+    $language = New-Object System.Windows.Forms.ComboBox
+    $language.Name = "language"
+    $language.DropDownStyle = "DropDownList"
+    [void]$language.Items.Add("As Windows: " + (Get-LanguageName ([System.Globalization.CultureInfo]::CurrentUICulture.Name)))
+    foreach ($tag in $gameLanguages) { [void]$language.Items.Add((Get-LanguageName $tag)) }
+    # (A language written into the settings that is not in the list stays what it is unless
+    # another is chosen here.)
+    $languageBefore = [array]::IndexOf($gameLanguages, (Setting "language" "windows")) + 1
+    $language.SelectedIndex = $languageBefore
+    $language.SetBounds(284, $y, 260, 26)
+    $form.Controls.Add($language)
     $fps = New-Object System.Windows.Forms.ComboBox
     $fps.DropDownStyle = "DropDownList"
     foreach ($cap in $caps) {
@@ -742,6 +816,9 @@ function Show-Menu {
     if ($result -ne [System.Windows.Forms.DialogResult]::OK) { return $false }
     Save-Setting "resolution" ($widths[$resolution.Value])
     Save-Setting "fps" ($caps[$fps.SelectedIndex])
+    if ($language.SelectedIndex -ne $languageBefore) {
+        Save-Setting "language" ($(if ($language.SelectedIndex -le 0) { "windows" } else { $gameLanguages[$language.SelectedIndex - 1] }))
+    }
     Save-Setting "fov" ($fov.Value * 5)
     Save-Setting "menu" ($(if ($again.Checked) { "1" } else { "0" }))
     Save-Setting "desktop_view" ($desktopModes[$desktopView.SelectedIndex])
@@ -755,10 +832,14 @@ if (-not [System.IO.File]::Exists($emulator)) {
     [void](Show-Box ("The emulator, shadps4.exe, is missing from`n" + $here + "`n`nUnzip the whole AstroQuest package again. (Built from the source: run tools/make-pc-vr.sh.)") "OK" "Error")
     exit 1
 }
-if (-not (Test-Runtime)) {
-    $answer = Show-Box "The emulator needs the Microsoft Visual C++ runtime, which is not installed on this PC.`n`nDownload its installer from Microsoft now? Run it, then start Play Astro Bot VR again." "YesNo" "Warning"
+# (Never a dead end: whoever has installed it and is still told it is missing can go on, and
+# Windows itself says so if a file really is not there.)
+$missingRuntime = Get-MissingRuntime "" $here
+if ($missingRuntime.Count -gt 0) {
+    Say ("Of the Microsoft Visual C++ runtime, not found on this PC: " + ($missingRuntime -join ", ")) "Yellow"
+    $answer = Show-Box ("The emulator needs the Microsoft Visual C++ runtime (64-bit), and this PC seems to lack it: " + ($missingRuntime -join ", ") + " not found.`n`nYes: download its installer from Microsoft. Run it, then start Play Astro Bot VR again.`nNo: it is installed, start the game all the same.`nCancel: quit.") "YesNoCancel" "Warning"
     if ($answer -eq "Yes") { Start-Process "https://aka.ms/vs/17/release/vc_redist.x64.exe" }
-    exit 1
+    if ($answer -ne "No") { exit 1 }
 }
 
 $game = Resolve-Game
@@ -835,6 +916,8 @@ if ((Setting "pause" "1") -eq "0") { $env:SHADPS4_XR_PAUSE = "0" }
 if ((Setting "controllers" "1") -eq "0") { $env:SHADPS4_XR_CONTROLLERS = "0" }
 if ((Setting "controller_hand" "right") -eq "left") { $env:SHADPS4_XR_PAD_HAND = "left" }
 $env:SHADPS4_XR_WAIT = Setting "wait" "60"
+$env:SHADPS4_CONSOLE_LANGUAGE = Get-GameLanguage
+if ((Setting "turn") -ne "") { $env:SHADPS4_VR_TURN = Setting "turn" }
 foreach ($pair in $extraEnv) {
     $at = $pair.IndexOf("=")
     if ($at -ge 1) { Set-Item -Path ("Env:" + $pair.Substring(0, $at)) -Value $pair.Substring($at + 1) }
@@ -943,7 +1026,7 @@ function Show-Log {
                 Say ("  " + $Matches[1])
             } elseif ($line -match '^\[Input\] <Warning> \([^)]*\) \S+ (?:\w+: )?(Controller .*)$') {
                 Say ("  " + $Matches[1]) "Yellow"
-            } elseif ($line -match '^\[Core\] <Info> \([^)]*\) \S+ (?:\w+: )?(CUSA12392 in a build .*|The title draws at up to .*|The scene is drawn at .*|Frames are given .*)$') {
+            } elseif ($line -match '^\[Core\] <Info> \([^)]*\) \S+ (?:\w+: )?(CUSA12392 in a build .*|The title draws at up to .*|The scene is drawn at .*|Frames are given .*|The console.s language: .*)$') {
                 Say ("  " + $Matches[1])
             } elseif ($line -match '^\[Core\] <Warning> \([^)]*\) \S+ (?:\w+: )?(This build of CUSA12392 .*)$') {
                 Say ("  " + $Matches[1]) "Yellow"
@@ -966,6 +1049,9 @@ Show-Log
 Say ""
 if ($null -ne $process.ExitCode -and $process.ExitCode -ne 0) {
     Say ("The emulator ended with code " + $process.ExitCode + ". Its log is $log") "Yellow"
+    if ($process.ExitCode -eq -1073741515) {
+        Say "Windows could not find a file the emulator needs: most likely the Microsoft Visual C++ runtime (64-bit) is not installed. Its installer: https://aka.ms/vs/17/release/vc_redist.x64.exe"
+    }
     if ($memoryShort -and ((Get-Date) - $startedAt).TotalSeconds -lt 30) {
         Say "It stopped as it started, and Windows was short of memory then (see above): close other programs and start again."
     }

@@ -88,15 +88,19 @@ its own. https://github.com/bigmak94/AstroQuest
    its Options. In the headset, set Virtual Desktop's frame rate to 120 (Streaming settings).
    (With SteamVR instead: start it and see that the headset is ready.)
 3. Connect the DualSense to this PC (USB cable, or Bluetooth paired with the PC, not with the
-   headset). Without a gamepad the headset's own controllers play.
+   headset). The headset's own controllers play too: without a gamepad, and with one
+   whenever they were used after it.
 4. Connect Virtual Desktop to this PC, then start "Play Astro Bot VR.bat": its window says
-   what does what. (If the Microsoft Visual C++ runtime is missing, it says so and offers
+   what does what, and has the game's language to choose (Windows' own unless you say
+   otherwise). (If the Microsoft Visual C++ runtime is missing, it says so and offers
    Microsoft's download.)
 
 In the game: hold the controller where the outline is on the first screen; look at a planet
 and press X to choose it; hold OPTIONS for a second to reset the view. With the headset's
 controllers or a gamepad without a touchpad: right trigger presses the touchpad, right grip
 (R1) swipes forward, left trigger pulls back and lets go (the catapult at the end of a level).
+To turn round without turning yourself: hold L1 (the headset's controllers: the left grip)
+and flick the right stick to a side.
 Settings are in pc-vr\settings.txt, the log in pc-vr\user\log\shad_log.txt, saves in
 pc-vr\user\home.
 
