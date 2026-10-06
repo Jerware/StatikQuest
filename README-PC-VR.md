@@ -8,6 +8,110 @@ multisampling, and draws far larger than the console ever did: 2880x3072 an eye 
 four times the pixels of its largest size (1440x1536, what a PlayStation 4 Pro uses), chosen
 in a small window at every start.
 
+## Game versions
+
+The PC emulator supports the verified European **CUSA12392 1.00 and 1.04 executable
+layouts** in one build. There is no version selector: choose your game's `eboot.bin` or
+complete package. The emulator checks the executable's signatures, offsets and original
+values before applying resolution, allocation or timing patches. A package filename,
+`APP_VER` or `VERSION` does not determine compatibility.
+
+### A complete 1.04 game in one package
+
+Put your dumped, unencrypted full-game `.pkg` in `games`, or select it when the launcher
+asks where the game is. Let the launcher unpack it, then press Play. A complete 1.04
+package already includes the base assets; you do not need to install 1.00 first.
+
+For an already unpacked complete 1.04 game, select its `eboot.bin` or put its folder in
+`games`. Keep `sce_sys\param.sfo`, `sce_module` and the other game assets with it. Do not
+copy just the updated executable into an otherwise incomplete folder.
+
+We tested a base game with a separate update, not a merged 1.04 package. A complete
+package with the same verified executable layout uses the same profile; modified or
+unknown layouts do not receive title patches.
+
+### A base game plus a separate 1.04 update
+
+An update-only package lacks the base assets. The launcher's base-game installer rejects
+packages marked as updates, so they cannot overwrite your base installation. Use shadPS4's
+native update overlay instead:
+
+1. Unpack the base game into `games\CUSA12392` with the launcher.
+2. Extract your dumped update into a staging folder with PkgTool (included in the PC
+   distribution) or another compatible extractor. For example, from the AstroQuest folder
+   in PowerShell:
+
+   ```powershell
+   $tool = ".\pc-vr\pkgtool\PkgTool.exe"
+   $update = "C:\Games\astrobot-update-1.04.pkg"
+   & $tool pkg_extract --passcode ("0" * 32) $update ".\update-unpacked"
+   ```
+
+3. PkgTool puts the game files under `update-unpacked\uroot`. Rename that folder to
+   `CUSA12392-UPDATE` and place it beside the base folder in `games`. If your extractor
+   writes the files directly into its output folder, use that folder instead.
+4. Check that the update has `sce_sys\param.sfo`. PkgTool stores this metadata outside
+   `uroot`, so extract it separately. Run `pkg_listentries` and use the **Index** shown on
+   the `PARAM_SFO` row; the example below uses `10`, which may differ in your package:
+
+   ```powershell
+   & $tool pkg_listentries $update
+   New-Item -ItemType Directory -Force ".\games\CUSA12392-UPDATE\sce_sys" | Out-Null
+   & $tool pkg_extractentry --passcode ("0" * 32) $update 10 ".\games\CUSA12392-UPDATE\sce_sys\param.sfo"
+   ```
+
+The resulting layout is:
+
+```text
+games\CUSA12392\eboot.bin
+games\CUSA12392\sce_sys\param.sfo
+games\CUSA12392-UPDATE\eboot.bin
+games\CUSA12392-UPDATE\sce_sys\param.sfo
+```
+
+Leave the base assets and all the extracted update files in those folders. Launch the
+**base** `games\CUSA12392\eboot.bin`; shadPS4 loads the update executable and overlays
+the update's files where present. The launcher reports the selected path and package
+metadata, then prints the emulator's verified executable profile:
+
+- `CUSA12392/c48320 (upstream)`: the supported 1.00 layout.
+- `CUSA12392/ccc0b0`: the supported 1.04 layout.
+- `Unrecognized or modified CUSA12392 layout`: no title resolution or time-step patches
+  were applied. Check your complete dump; do not rename a package or edit its metadata
+  to force a profile.
+
+### Saves and rollback
+
+For an independent 1.04 test, use a second AstroQuest folder with its own `pc-vr\user`
+directory, fresh saves and caches, and copies of the required configuration and system
+modules. Keep your working 1.00 installation unchanged. Both versions otherwise use the
+same title ID and save location; back up `pc-vr\user` before switching game files in one
+installation. Do not assume a save written by 1.04 can be loaded by 1.00.
+
+With a base-plus-update installation, move the `CUSA12392-UPDATE` folder outside `games`
+to return to the base version, then restore the matching save backup. Keep the folder
+for later; do not merge update files into the base folder.
+
+We fully built and linked the compatibility changes in a local build that also includes
+the Index and spectator changes from PRs #6 and #11, and linked a separate Release/OpenXR
+build of the standalone compatibility branch. Headset gameplay testing used the combined
+local build. On a Valve Index through SteamVR/OpenXR
+with a PC-connected DualSense and fresh 1.04 saves, the tester completed controller
+calibration and played the first level. Combined-eye spectator crop also passed.
+Tests checked both actual executable layouts, 2880x3072 output and timing at 60 and 40 FPS,
+and timing at the original 1440x1536 resolution. We have not tested these 1.04 changes on
+Quest, other headsets, other regions or every 1.04 dump.
+
+The tester also reported a Bigscreen Beyond test with PR #6. That covers the SteamVR
+changes in that PR, not a separate 1.04 test on the Beyond.
+
+The 1.04 resolution offsets build on
+[Clodo76's investigation in issue #1](https://github.com/bigmak94/AstroQuest/issues/1).
+Reports in issues [#3](https://github.com/bigmak94/AstroQuest/issues/3),
+[#5](https://github.com/bigmak94/AstroQuest/issues/5) and
+[#7](https://github.com/bigmak94/AstroQuest/issues/7) describe related 1.04 symptoms;
+they are not separate tested configurations.
+
 ## Playing
 
 1. **The controller goes to the PC**, not to the headset: a USB-C cable, or Bluetooth (hold
@@ -350,7 +454,7 @@ it; the system's runtime stays Virtual Desktop's.
 | `tools/xrsim-keys.ps1 <key>:<ms> ...` | works the simulator's window: `B` is A and X, `N` is B and Y, `Y G H J` the sticks, `I` the sticks pressed in, `Comma` the menu button (hold keys for a second: short presses are not always seen); `Look:<dx>,<dy>` turns the simulated head, `Click:<x>,<y>` clicks |
 | `tools/pc-rate-compare.sh <name> "<NAME=value ...>"` | the same scripted level walk at 60 frames a second and with the given settings, a picture every two seconds from each |
 | `tools/xr-probe-win` (`build/xr-probe-win/xr_probe_win.exe`) | what a runtime offers: extensions, system, Vulkan requirements |
-| `tools/tests/launcher-test.ps1` | tries the launcher's search for the game (unpacked games and packages, names with brackets, leftovers of an unpacking) on made-up folders |
+| `tools/tests/launcher-test.ps1` | checks game discovery, update-only installer rejection, cancellation and profile log messages. Supply `-PkgTool <path>` for package-header tests; `-BasePackage <path>` and `-UpdatePackage <path>` also check your local dumps without extracting them |
 | `tools/ui-drive.ps1 -Steps "text\|picture.png\|button\|seconds", ...` | works the launcher's own windows and message boxes from outside: waits for one that shows a text, saves a picture of it, presses a button. With a release unzipped somewhere and a package put in its `games` folder, that is the whole first start, from the question about unpacking to Play |
 
 Settings for tests: `SHADPS4_XR_HEAD=0` (the head is a script's to move, the host only
@@ -396,3 +500,16 @@ bash tools/make-pc-vr.sh                                                   # cop
 
 The OpenXR loader (Khronos OpenXR-SDK 1.1.63, `externals/openxr-sdk`) is built with the
 emulator; `ENABLE_OPENXR` (on for Windows) switches the whole of it.
+
+The compatibility checks need a C++23 compiler and no headset or game files:
+
+```sh
+clang++ -std=c++23 -Ishadps4-arm64-main/src tools/tests/known_title_profile_test.cpp -o build/profile-test.exe
+clang++ -std=c++23 -Ishadps4-arm64-main/src tools/tests/vr_tracker_calibration_test.cpp -o build/calibration-test.exe
+build/profile-test.exe
+build/calibration-test.exe
+```
+
+The profile test also accepts two local flat mapped images, 1.00 then 1.04, to check
+real layouts. Do not pass SELF files or ELF files with their headers, and keep extracted
+game files outside Git.

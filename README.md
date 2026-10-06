@@ -43,8 +43,10 @@ over Virtual Desktop and fixed since. Expect rough edges, and please report what
   console and game: either as the game's folder (the one with `eboot.bin`, `sce_sys`,
   `sce_module` in it, about 13 GB) or as the `.pkg` package made from the dump, which the PC
   launcher unpacks by itself. (A package downloaded from the PlayStation Store is encrypted
-  and cannot be used.) Other regions and versions are untested, and the fixes for the game's
-  timing and resolution only apply to this one.
+  and cannot be used.) The standalone Quest app has only been tested with 1.00. PC VR also
+  supports the verified 1.04 executable layout: see
+  [Game versions](README-PC-VR.md#game-versions) for full-game packages and separate updates.
+  Other regions and executable layouts are untested.
 - To install on the headset: a computer with
   [adb](https://developer.android.com/tools/releases/platform-tools) (or
   [SideQuest](https://sidequestvr.com/)) and the headset in

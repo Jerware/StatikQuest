@@ -3,18 +3,23 @@
 #   powershell -ExecutionPolicy Bypass -File tools/tests/launcher-test.ps1
 # With the game in games/CUSA12392 its param.sfo is used for the layouts; without it, the
 # checks that need one are left out.
+param([string]$GameSfo = "", [string]$PkgTool = "", [string]$BasePackage = "", [string]$UpdatePackage = "")
+
 $top = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $launcher = Join-Path $top "pc-vr\launch.ps1"
 Add-Type -AssemblyName System.Windows.Forms
-$ast = [System.Management.Automation.Language.Parser]::ParseFile($launcher, [ref]$null, [ref]$null)
+$parseErrors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($launcher, [ref]$null, [ref]$parseErrors)
+if ($parseErrors.Count -gt 0) { throw ($parseErrors | Out-String) }
 foreach ($function in $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $false)) {
     . ([scriptblock]::Create($function.Extent.Text))
 }
 $unpackFolder = ".unpacking"
 $madeFor = "CUSA12392"
-$realSfo = Join-Path $top "games\CUSA12392\sce_sys\param.sfo"
+$realSfo = if ($GameSfo) { $GameSfo } else { Join-Path $top "games\CUSA12392\sce_sys\param.sfo" }
 $haveSfo = [System.IO.File]::Exists($realSfo)
-$base = Join-Path $top "build\launcher-test"
+$base = [System.IO.Path]::GetFullPath((Join-Path $top "build\launcher-test"))
+if (-not $base.StartsWith($top + "\build\", [System.StringComparison]::OrdinalIgnoreCase)) { throw "Unsafe test folder" }
 if ([System.IO.Directory]::Exists($base)) { [System.IO.Directory]::Delete($base, $true) }
 $failed = 0
 function Check([string]$what, $got, $want) {
@@ -28,11 +33,14 @@ function Make-Game([string]$folder, [bool]$withSfo) {
         [System.IO.File]::Copy($realSfo, (Join-Path $folder "sce_sys\param.sfo"))
     }
 }
-function Make-Package([string]$path, [string]$contentId, [int]$size) {
+function Make-Package([string]$path, [string]$contentId, [int]$size, [uint32]$flags = 0) {
     [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($path))
     $bytes = New-Object byte[] $size
     $bytes[0] = 0x7F; $bytes[1] = 0x43; $bytes[2] = 0x4E; $bytes[3] = 0x54
     [System.Text.Encoding]::ASCII.GetBytes($contentId).CopyTo($bytes, 0x40)
+    $flagBytes = [System.BitConverter]::GetBytes($flags)
+    [Array]::Reverse($flagBytes)
+    $flagBytes.CopyTo($bytes, 0x78)
     [System.IO.File]::WriteAllBytes($path, $bytes)
 }
 
@@ -82,6 +90,58 @@ $g = "$base\a\games"
 Check "g  a folder" (Use-Path "$base\a") "$g\CUSA12392\eboot.bin"
 Check "g  an eboot.bin" (Use-Path "$g\CUSA12392\eboot.bin") "$g\CUSA12392\eboot.bin"
 Check "g  nothing there" (Use-Path "$base\a\nothing.bin") ""
+
+$g = "$base\h\games"
+foreach ($suffix in @("-UPDATE", "-patch", "-mods")) { Make-Game "$g\CUSA12392$suffix" $true }
+Check "h  overlays alone are not a base game" (Find-Game $g) ""
+Make-Game "$g\CUSA12392" $true
+Check "h  selects the base beside its overlays" (Find-Game $g) "$g\CUSA12392\eboot.bin"
+
+if (-not $PkgTool) { $PkgTool = Join-Path $top "tools\pkgtool\PkgTool.exe" }
+if ([System.IO.File]::Exists($PkgTool)) {
+    $full = "$base\full-1.04.pkg"
+    Make-Package $full "EP9000-CUSA12392_00-PLATFORMERVR00EU" 8192
+    Check "i  a full package needs no version choice" (Test-UpdatePackage (Read-PackageHeader $full $PkgTool)) $false
+    foreach ($flags in @(0x00100000, 0x00200000, 0x40000000, 0x41000000, 0x60000000)) {
+        $patch = "$base\patch.pkg"
+        Make-Package $patch "EP9000-CUSA12392_00-PLATFORMERVR00EU" 8192 $flags
+        Check "i  patch header flags $flags" (Test-UpdatePackage (Read-PackageHeader $patch $PkgTool)) $true
+    }
+    if ($BasePackage) { Check "i  actual base package" (Test-UpdatePackage (Read-PackageHeader $BasePackage $PkgTool)) $false }
+    if ($UpdatePackage) { Check "i  actual update package" (Test-UpdatePackage (Read-PackageHeader $UpdatePackage $PkgTool)) $true }
+
+    function Show-Box([string]$text) { $script:boxText = $text; return "No" }
+    $here = Split-Path -Parent (Split-Path -Parent $PkgTool)
+    $root = $base
+    $gamesFolder = "$base\h\games"
+    $longestInside = 126
+    Check "i  update rejected before unpacking" (Expand-Package ([System.IO.FileInfo]$patch)) ""
+    Check "i  update-only explanation" $boxText.StartsWith("This package is an update") $true
+    Check "i  base executable remains untouched" ([System.IO.File]::ReadAllText("$gamesFolder\CUSA12392\eboot.bin")) "x"
+    Check "i  no staging folder created" ([System.IO.Directory]::Exists("$gamesFolder\CUSA12392\.unpacking")) $false
+    Check "i  full-package cancellation" (Expand-Package ([System.IO.FileInfo]$full)) ""
+    Check "i  full package reaches unpack confirmation" $boxText.Contains("Unpack it now?") $true
+    Check "i  cancellation creates no staging folder" ([System.IO.Directory]::Exists("$gamesFolder\CUSA12392\.unpacking")) $false
+    $truncated = "$base\truncated.pkg"
+    Make-Package $truncated "EP9000-CUSA12392_00-PLATFORMERVR00EU" 128
+    Check "i  malformed header rejected" (Expand-Package ([System.IO.FileInfo]$truncated)) ""
+    Check "i  malformed-header explanation" $boxText.StartsWith("The package header could not be read") $true
+} else { "SKIP  package-header checks: supply -PkgTool" }
+
+function Say([string]$text, [string]$color = "Gray") { $script:messages += "$color|$text" }
+$messages = @()
+$log = "$base\profile-log.txt"
+$position = 0
+$shown = @{}
+[System.IO.File]::WriteAllLines($log, @(
+    "[Core] <Info> (Loader) known_title.cpp:785 OnGameLoaded: Verified title profile CUSA12392/ccc0b0: resolution and time-step support enabled",
+    "[Core] <Warning> (Loader) known_title.cpp:766 OnGameLoaded: Unrecognized or modified CUSA12392 layout: title resolution and time-step patches disabled (no game memory changed)",
+    "[Core] <Warning> (Loader) known_title.cpp:778 OnGameLoaded: Title patch rejected at 0x123: no title patches enabled"
+))
+Show-Log
+Check "j  prints verified executable profile" ($messages[0] -like "Gray|*Verified title profile CUSA12392/ccc0b0:*") $true
+Check "j  prints unknown-layout warning" ($messages[1] -like "Yellow|*Unrecognized or modified CUSA12392 layout:*") $true
+Check "j  prints patch rejection" ($messages[2] -like "Yellow|*Title patch rejected at 0x123:*") $true
 
 [System.IO.Directory]::Delete($base, $true)
 "failed: $failed"
