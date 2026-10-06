@@ -368,9 +368,18 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
         LOG_INFO(Loader, "PSVR Supported: {}", (bool)psf_attributes.support_ps_vr.Value());
         LOG_INFO(Loader, "PSVR Required: {}", (bool)psf_attributes.require_ps_vr.Value());
     }
+    Core::KnownTitle::Prepare();
+#ifndef ENABLE_BACHATA_RUNTIME
+    // The console's address space is set aside before anything of a headset is looked for.
+    // A title maps its memory at addresses of its own choosing (ASTRO BOT Rescue Mission its
+    // heap at 0x300000000), and what an OpenXR runtime brings into the process when it is
+    // loaded may come to lie right there if it is first: SteamVR's did, and the title stopped
+    // at its start with "Mapping cannot fit inside free region". (After Prepare, which says
+    // how much memory the title is to have.)
+    memory = Core::Memory::Instance();
+#endif
     Core::Vr::Runtime::Instance().Configure(psf_attributes.support_ps_vr.Value() != 0,
                                             psf_attributes.require_ps_vr.Value() != 0);
-    Core::KnownTitle::Prepare();
     if (!args.empty()) {
         const auto argc = std::min<size_t>(args.size(), 32);
         for (auto i = 0; i < argc; i++) {
@@ -394,9 +403,6 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     Common::Singleton<FileSys::HandleTable>::Instance()->CreateStdHandles();
 
     // Initialize components
-#ifndef ENABLE_BACHATA_RUNTIME
-    memory = Core::Memory::Instance();
-#endif
     controllers = Common::Singleton<Input::GameControllers>::Instance();
 #ifndef ENABLE_BACHATA_RUNTIME
     linker = Common::Singleton<Core::Linker>::Instance();

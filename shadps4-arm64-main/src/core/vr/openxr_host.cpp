@@ -291,6 +291,9 @@ struct OpenXrHost::Impl {
     u32 system_failures{};
     Clock::time_point last_wanted;
     bool ever_wanted{};
+    /// Whether a session that is asked for no pictures is made anew after a while (see
+    /// CheckWanted): for the runtime that says nothing when its headset goes away.
+    bool renew_unwanted{};
     Clock::time_point last_frame_ended;
     float lose_after{};
     bool pause_when_away{true};
@@ -481,6 +484,11 @@ struct OpenXrHost::Impl {
                                    XR_VERSION_MAJOR(properties.runtimeVersion),
                                    XR_VERSION_MINOR(properties.runtimeVersion),
                                    XR_VERSION_PATCH(properties.runtimeVersion));
+        // (SHADPS4_XR_RENEW_UNWANTED=1 or 0 says so for any runtime, for tests.)
+        const char* renew = std::getenv("SHADPS4_XR_RENEW_UNWANTED");
+        renew_unwanted = renew != nullptr && renew[0] != '\0'
+                             ? renew[0] != '0'
+                             : runtime_name.starts_with("VirtualDesktopXR");
         return true;
     }
 
@@ -1410,6 +1418,10 @@ struct OpenXrHost::Impl {
     /// the table is not a reason to make sessions all day, and a new session takes the
     /// headset away from whatever else it shows.
     /// A session that is on the head and was asked for pictures since is left alone.
+    /// All of this for Virtual Desktop's runtime only. Others say what becomes of their
+    /// sessions through the states and events OpenXR has for it, and ask for no pictures
+    /// whenever nobody looks (SteamVR while its headset rests, or while its dashboard is in
+    /// front): a session ended under them for that is a session they were still using.
     void CheckWanted(bool wanted, Clock::time_point now) {
         if (wanted) {
             last_wanted = now;
@@ -1418,7 +1430,7 @@ struct OpenXrHost::Impl {
             focus_patience = FirstFocusPatience;
             return;
         }
-        if (session_lost) {
+        if (session_lost || !renew_unwanted) {
             return;
         }
         if (state == XR_SESSION_STATE_FOCUSED) {
