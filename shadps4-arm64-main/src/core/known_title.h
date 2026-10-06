@@ -10,7 +10,8 @@ struct Vec3;
 }
 
 /// What is known about the inner workings of particular titles, and what the emulator does with
-/// it. Everything here applies to one exact build of one title and does nothing for any other.
+/// it. Everything here applies to exact builds of one title, told apart by what their images
+/// hold when loaded (known_title_builds.h), and does nothing for any other title or build.
 ///
 /// Astro Bot Rescue Mission (CUSA12392):
 ///  - It advances its world by one sixtieth of a second for every frame it draws, however long

@@ -1017,6 +1017,7 @@ set(CORE src/core/aerolib/stubs.cpp
           src/core/guest_cpu/guest_watchdog.h
           src/core/known_title.cpp
           src/core/known_title.h
+          src/core/known_title_builds.h
           src/core/linker.cpp
          src/core/linker.h
          src/core/memory.cpp
