@@ -90,6 +90,16 @@ bool EnvFlag(const char* name, bool& out) {
     return true;
 }
 
+std::filesystem::path OwnPadPlacePath() {
+    return Common::FS::GetUserPath(Common::FS::PathType::UserDir) / "vr_controller.json";
+}
+
+/// How far from the standard place the player's own may be: within reach, and before them.
+Vec3 WithinReach(const Vec3& offset) {
+    return {std::clamp(offset.x, -0.40f, 0.40f), std::clamp(offset.y, -0.70f, 0.30f),
+            std::clamp(offset.z, -0.90f, -0.15f)};
+}
+
 FileConfig LoadFileConfig() {
     FileConfig result;
     const auto path = Common::FS::GetUserPath(Common::FS::PathType::UserDir) / "vr.json";
@@ -178,6 +188,15 @@ Runtime& Runtime::Instance() {
 void Runtime::Configure(bool psvr_supported, bool psvr_required) {
     const FileConfig file_config = LoadFileConfig();
     config = file_config.config;
+    if (std::ifstream file{OwnPadPlacePath()}; file) {
+        const auto json = nlohmann::json::parse(file, nullptr, false);
+        if (const auto it = json.is_object() ? json.find("own_place") : json.end();
+            it != json.end() && it->is_array() && it->size() == 3 && (*it)[0].is_number() &&
+            (*it)[1].is_number() && (*it)[2].is_number()) {
+            own_pad_offset = WithinReach(
+                {(*it)[0].get<float>(), (*it)[1].get<float>(), (*it)[2].get<float>()});
+        }
+    }
     switch (file_config.mode) {
     case HeadsetMode::On:
         config.headset_connected = true;
@@ -544,6 +563,38 @@ void Runtime::SetPadOffset(const Vec3& offset) {
     pad_seen_offset_valid = false;
 }
 
+void Runtime::MoveOwnPadPlace(const Vec3& by) {
+    Vec3 place;
+    {
+        std::scoped_lock lock{mutex};
+        own_pad_offset =
+            WithinReach({own_pad_offset.x + by.x, own_pad_offset.y + by.y, own_pad_offset.z + by.z});
+        own_pad_place = true;
+        place = own_pad_offset;
+    }
+    LOG_INFO(Core_Vr,
+             "The controller, while nothing sees where it is, is held to be at the player's own "
+             "place: {:.2f} m to the right of the eyes, {:.2f} below and {:.2f} ahead",
+             place.x, -place.y, -place.z);
+    std::ofstream file{OwnPadPlacePath()};
+    file << nlohmann::json{{"own_place", {place.x, place.y, place.z}}}.dump() << "\n";
+}
+
+void Runtime::SwitchPadPlace() {
+    bool own;
+    Vec3 place;
+    {
+        std::scoped_lock lock{mutex};
+        own_pad_place = !own_pad_place;
+        own = own_pad_place;
+        place = own ? own_pad_offset : config.pad_offset;
+    }
+    LOG_INFO(Core_Vr,
+             "The controller, while nothing sees where it is, is held to be at {} place: {:.2f} "
+             "m to the right of the eyes, {:.2f} below and {:.2f} ahead",
+             own ? "the player's own" : "the standard", place.x, -place.y, -place.z);
+}
+
 void Runtime::UpdatePadYawReference(float yaw) {
     std::scoped_lock lock{mutex};
     // The host counts the heading from its own straight ahead.
@@ -820,7 +871,11 @@ DeviceState Runtime::GetPad() {
                            pad_seen_position.z - pad_anchor.z};
         pad_seen_offset_valid = true;
     }
-    const Vec3& assumed = pad_seen_offset_valid ? pad_seen_offset : config.pad_offset;
+    // (The player's own place is theirs to say: it counts for more than where the controller
+    // was last seen.)
+    const Vec3& assumed = own_pad_place            ? own_pad_offset
+                          : pad_seen_offset_valid ? pad_seen_offset
+                                                  : config.pad_offset;
     const Vec3 goal = seen ? pad_seen_position
                            : Vec3{pad_anchor.x + assumed.x, pad_anchor.y + assumed.y,
                                   pad_anchor.z + assumed.z};

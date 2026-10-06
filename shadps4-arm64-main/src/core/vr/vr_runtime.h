@@ -215,6 +215,16 @@ public:
     void ClearPadPosition();
     /// Replaces Config::pad_offset, and forgets where the controller was last seen.
     void SetPadOffset(const Vec3& offset);
+    /// A controller that nothing locates is held to be at a fixed place before the player:
+    /// the standard one (Config::pad_offset, which is where the title looks for it when it
+    /// starts) or one of the player's own choosing, for wherever the standard one is in the
+    /// way of the view or out of reach of what the controller is to be held to. The player's
+    /// own place is kept in the user folder; every start begins at the standard one.
+    /// Moves the player's own place by so many metres (right, up, towards the player), and
+    /// puts the controller there.
+    void MoveOwnPadPlace(const Vec3& by);
+    /// From the standard place to the player's own, or back.
+    void SwitchPadPlace();
     /// What the host can tell about the controller's heading (0 = straight ahead, positive to
     /// the left). The attitude worked out from the motion sensors is pulled towards it, which
     /// takes out the drift a gyroscope has about the vertical.
@@ -299,6 +309,9 @@ private:
     // Smoothed point the untracked controller hangs off.
     Vec3 pad_anchor;
     bool pad_anchor_valid{};
+    // The player's own place for it, from that point, and whether it is there.
+    Vec3 own_pad_offset{0.0f, -0.30f, -0.45f};
+    bool own_pad_place{};
     std::chrono::steady_clock::time_point pad_anchor_time;
     // Attitude estimated from the controller's motion sensors.
     Quat pad_attitude;
