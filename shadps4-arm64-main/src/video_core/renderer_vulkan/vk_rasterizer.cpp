@@ -1493,10 +1493,20 @@ void Rasterizer::UpdateViewportScissorState() const {
     }
 
     const auto& vp_ctl = regs.viewport_control;
+    u32 viewport_count = 1;
     for (u32 i = 0; i < AmdGpu::NUM_VIEWPORTS; i++) {
+        if (regs.viewports[i].xscale != 0.f) {
+            viewport_count = i + 1;
+        }
+    }
+    for (u32 i = 0; i < viewport_count; i++) {
         const auto& vp = regs.viewports[i];
         const auto& vp_d = regs.viewport_depths[i];
         if (vp.xscale == 0) {
+            // ViewportIndex refers to the register slot, not to a compacted list of active
+            // viewports. Keep disabled slots so subsequent eyes retain their indices.
+            viewports.push_back({.width = 1.f, .height = 1.f, .maxDepth = 1.f});
+            scissors.push_back({.offset = {0, 0}, .extent = {0, 0}});
             continue;
         }
 
@@ -1562,24 +1572,6 @@ void Rasterizer::UpdateViewportScissorState() const {
         });
     }
 
-    if (viewports.empty()) {
-        // Vulkan requires providing at least one viewport.
-        constexpr vk::Viewport empty_viewport = {
-            .x = -1.0f,
-            .y = -1.0f,
-            .width = 1.0f,
-            .height = 1.0f,
-            .minDepth = 0.0f,
-            .maxDepth = 1.0f,
-        };
-        constexpr vk::Rect2D empty_scissor = {
-            .offset = {0, 0},
-            .extent = {1, 1},
-        };
-        viewports.push_back(empty_viewport);
-        scissors.push_back(empty_scissor);
-    }
-
     // A measuring aid, not a setting: SHADPS4_DBG_VIEWPORT_SCALE=<0..1> shrinks everything that is
     // drawn towards the corner of its target. The picture is wrong, but how much faster the GPU
     // gets tells how much of its time goes into filling pixels rather than into the draws
@@ -1599,10 +1591,14 @@ void Rasterizer::UpdateViewportScissorState() const {
         for (auto& scissor : scissors) {
             scissor.offset.x = static_cast<s32>(scissor.offset.x * debug_scale);
             scissor.offset.y = static_cast<s32>(scissor.offset.y * debug_scale);
-            scissor.extent.width =
-                std::max(static_cast<u32>(scissor.extent.width * debug_scale), 1u);
-            scissor.extent.height =
-                std::max(static_cast<u32>(scissor.extent.height * debug_scale), 1u);
+            if (scissor.extent.width != 0) {
+                scissor.extent.width =
+                    std::max(static_cast<u32>(scissor.extent.width * debug_scale), 1u);
+            }
+            if (scissor.extent.height != 0) {
+                scissor.extent.height =
+                    std::max(static_cast<u32>(scissor.extent.height * debug_scale), 1u);
+            }
         }
     }
 
