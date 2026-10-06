@@ -152,7 +152,8 @@ static void NoteLoudness(const PortIn& port, const s16* samples, int frames) {
     if (now - since < std::chrono::seconds{10}) {
         return;
     }
-    if (first || Decibels(loudest) > -30.0) {
+    // (Not for a microphone that has given nothing at all: that is what the line below is for.)
+    if ((first && any_sound) || Decibels(loudest) > -30.0) {
         LOG_INFO(Lib_AudioIn,
                  "Microphone: the loudest of the last 10 seconds was {:.0f} dB (the game takes "
                  "-21 dB for blowing at half strength, -9 dB for blowing as hard as can be)",
