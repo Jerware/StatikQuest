@@ -403,7 +403,13 @@ Things that had to be right, for whoever works on this again:
   addresses for 1.04 are Clodo76's. Any other version still plays as before: at the
   console's sizes, and in slow motion where frames take long.
 - **A package that is only the game's update** was unpacked as if it were the game. The
-  launcher now takes the game's own package first and says what an update alone is.
+  launcher now takes the game's own package first and says what an update alone is. To play
+  the game with its update, use a copy that has the update in it, or put the update's files
+  in a folder named `CUSA12392-UPDATE` next to the game's `CUSA12392`: the emulator takes
+  what is there over the game's own files (shadPS4's way of keeping updates), and the
+  game's folder stays as it was. On the headset the same goes for
+  `/data/local/tmp/astro/games/CUSA12392-UPDATE`. Without that folder the game plays as on
+  its disc, 1.00, which is the version tried the most here.
 - **The game stopped as it started with code -1073741819** (#9) where Windows listed a
   gamepad that could not be opened: nobody was logged in then, and the game takes its first
   player for granted.
