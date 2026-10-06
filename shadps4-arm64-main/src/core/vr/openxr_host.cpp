@@ -27,6 +27,7 @@
 #include "common/thread.h"
 #include "core/vr/openxr_host.h"
 #include "input/controller.h"
+#include "input/scripted_input.h"
 #include "input/stick_finger.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 
@@ -393,6 +394,7 @@ struct OpenXrHost::Impl {
     float sent_touch_x{0.5f};
     float sent_touch_y{0.5f};
     Input::StickFinger stick_finger;
+    bool blowing{};
     std::atomic<u32> rumble_wanted{};
     u32 rumble_applied{};
     Clock::time_point rumble_time;
@@ -928,6 +930,10 @@ struct OpenXrHost::Impl {
         sent_axes = {128, 128, 128, 128, 0, 0};
         sent_touch = false;
         stick_finger.Reset();
+        if (blowing) {
+            blowing = false;
+            Input::SetBlowing(false);
+        }
         (*Common::Singleton<Input::GameControllers>::Instance())[0]->ApplyRemoteState(
             sent_buttons, sent_axes, false, sent_touch_x, sent_touch_y);
         Runtime::Instance().ReleasePad();
@@ -1006,8 +1012,17 @@ struct OpenXrHost::Impl {
         };
         add(pressed(act_cross), Buttons::Cross);
         add(pressed(act_square), Buttons::Square);
-        add(pressed(act_circle), Buttons::Circle);
-        add(pressed(act_triangle), Buttons::Triangle);
+        // The left controller's two buttons together are not circle and triangle: they blow
+        // into the microphone, for as long as they are held (Input::SetBlowing).
+        const bool circle = pressed(act_circle);
+        const bool triangle = pressed(act_triangle);
+        const bool blow = circle && triangle;
+        if (blow != blowing) {
+            blowing = blow;
+            Input::SetBlowing(blow);
+        }
+        add(circle && !blow, Buttons::Circle);
+        add(triangle && !blow, Buttons::Triangle);
         add(pressed(act_options), Buttons::Options);
         const bool left_stick_in = pressed(act_l3);
         const bool right_stick_in = pressed(act_finger_press);

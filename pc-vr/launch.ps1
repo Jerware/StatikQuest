@@ -814,6 +814,7 @@ if ((Setting "antialias" "1") -eq "0") { $env:SHADPS4_RESOLVE_AA = "0" }
 if ((Setting "hands" "1") -eq "0") { $env:SHADPS4_XR_HANDS = "0" }
 if ((Setting "predict_ms") -ne "") { $env:SHADPS4_XR_PREDICT_MS = Setting "predict_ms" }
 if ((Setting "stick_touchpad" "1") -eq "0") { $env:SHADPS4_STICK_TOUCHPAD = "0" }
+if ((Setting "mic_gain") -ne "") { $env:SHADPS4_MIC_GAIN = Setting "mic_gain" }
 if ((Setting "surround" "1") -eq "0") { $env:SHADPS4_VIRTUAL_SURROUND = "0" }
 if ((Setting "real_time" "1") -eq "0") { $env:SHADPS4_TITLE_TIMESTEP = "0" }
 $fovSetting = Setting "fov" "100"
@@ -872,6 +873,8 @@ if ($env:SHADPS4_OPENXR -ne "0" -and [int]$env:SHADPS4_XR_WAIT -gt 0) {
     Say ("The game waits up to " + $env:SHADPS4_XR_WAIT + " seconds for the headset before it starts on the monitor.")
 }
 Say "Hold OPTIONS for a second (or press the PS button) to reset the view."
+Say "Where the game wants you to blow: into the headset's microphone, or hold the PS button and square"
+Say "(X and Y together on VR controllers)."
 Say "With VR controllers: the right stick is the touchpad (pull it back and let go to shoot at the end of a level),"
 Say "both sticks pressed in reset the view."
 Say "Close the game's window to quit."
@@ -937,6 +940,8 @@ function Show-Log {
                 Say ("  " + $Matches[1])
             } elseif ($line -match '^\[Core\] <Warning> \([^)]*\) \S+ (?:\w+: )?(This build of CUSA12392 .*)$') {
                 Say ("  " + $Matches[1]) "Yellow"
+            } elseif ($line -match '^\[Lib\.AudioIn\] <(Info|Warning)> \([^)]*\) \S+ (?:\w+: )?(Microphone: .*)$') {
+                if ($Matches[1] -eq "Warning") { Say ("  " + $Matches[2]) "Yellow" } else { Say ("  " + $Matches[2]) }
             } elseif ($line -match '<Critical>.*?: (.*)$') {
                 $text = $Matches[1]
                 if (-not $shown.ContainsKey($text)) { $shown[$text] = 1; Say ("  ! " + $text) "Red" }

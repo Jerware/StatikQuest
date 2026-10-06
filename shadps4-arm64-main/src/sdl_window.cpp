@@ -24,6 +24,7 @@
 #include "core/user_settings.h"
 #include "imgui/renderer/imgui_core.h"
 #include "input/controller.h"
+#include "input/scripted_input.h"
 #include "input/input_handler.h"
 #include "input/input_mouse.h"
 #include "core/vr/vr_runtime.h"
@@ -464,8 +465,8 @@ void WindowSDL::OnGamepadEvent(const SDL_Event* event) {
     // The PS button is nothing a title ever sees. In a headset, pressed and let go, it resets
     // the view. Held, it has the D-pad move the place a controller that nothing locates is
     // held to be at (up, down, left, right; L1 nearer, R1 farther; two centimetres a press),
-    // and triangle switch between that place and the standard one. None of that reaches the
-    // title.
+    // triangle switch between that place and the standard one, and square blow into the
+    // microphone for as long as it is held. None of that reaches the title.
     if (event->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ||
         event->type == SDL_EVENT_GAMEPAD_BUTTON_UP) {
         static bool held = false;
@@ -488,6 +489,9 @@ void WindowSDL::OnGamepadEvent(const SDL_Event* event) {
         } else if (button < 32 && !down && (kept_back & (1u << button)) != 0) {
             // Let go of after it did something else than the title would have seen.
             kept_back &= ~(1u << button);
+            if (button == SDL_GAMEPAD_BUTTON_WEST) {
+                Input::SetBlowing(false);
+            }
             return;
         } else if (held && down && button < 32) {
             static constexpr float Step = 0.02f;
@@ -513,6 +517,9 @@ void WindowSDL::OnGamepadEvent(const SDL_Event* event) {
                 break;
             case SDL_GAMEPAD_BUTTON_NORTH:
                 runtime.SwitchPadPlace();
+                break;
+            case SDL_GAMEPAD_BUTTON_WEST:
+                Input::SetBlowing(true);
                 break;
             default:
                 taken = false;

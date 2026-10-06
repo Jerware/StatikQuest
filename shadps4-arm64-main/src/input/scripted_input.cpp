@@ -28,6 +28,7 @@ namespace {
 using Buttons = Libraries::Pad::OrbisPadButtonDataOffset;
 
 std::atomic<float> microphone_level{0.0f};
+std::atomic<bool> blowing{false};
 
 struct Step {
     double start;
@@ -325,7 +326,19 @@ void Replay(std::vector<Step> steps) {
 } // namespace
 
 float ScriptedMicrophoneLevel() {
-    return microphone_level.load(std::memory_order_relaxed);
+    // (0.36: a little above what ASTRO BOT takes for blowing as hard as can be.)
+    return std::max(microphone_level.load(std::memory_order_relaxed),
+                    blowing.load(std::memory_order_relaxed) ? 0.36f : 0.0f);
+}
+
+void SetBlowing(bool blowing_now) {
+    if (blowing.exchange(blowing_now, std::memory_order_relaxed) != blowing_now && blowing_now) {
+        static std::atomic<bool> said{false};
+        if (!said.exchange(true)) {
+            LOG_INFO(Input,
+                     "Blowing with buttons: the game hears it as blowing into the microphone");
+        }
+    }
 }
 
 void StartScriptedInput(const std::filesystem::path& script) {
