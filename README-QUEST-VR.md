@@ -74,6 +74,28 @@ clipping and the pixel-density gain at the center. Raw headset detection remains
 Regression checks compare the same angular directions in both eyes, including directions
 that were visible in one eye and black in the other at 50% in 0.15 and 0.16.
 
+**App 0.18 (2026-10-06): what the reports on GitHub brought.** The first release since 0.13:
+it has the field-of-view menu and the fixes of 0.14 to 0.17 above, and
+
+- **the game's version 1.04 plays.** An updated copy of the game stopped at "Adjust your
+  position until you fit roughly inside the silhouette", over a green picture: from its
+  first update on, the game asks the tracker to find the controller anew there and waits to
+  see the controller's status go from calibrating back to tracking, which the emulator's
+  tracker never said. It does now. The updated executable is laid out differently as well,
+  and is known now next to the disc's: the game's own speed and the choice of its picture's
+  size apply to both (core.log says `CUSA12392 in a build known from inside: ...`). The game
+  with its update can be one folder, or the update in a folder of its own beside the game's:
+  `/data/local/tmp/astro/games/CUSA12392-UPDATE` (see "The game's versions" in
+  `README-PC-VR.md`). Tried on the headset without wearing it, into a level.
+- A microphone the app was once refused: the app asks again at its next start; if the
+  headset no longer shows the question, allow it in the headset's Settings, under the app
+  permissions for the microphone, for "Astro VR Host". core.log says what the game hears
+  ("Microphone: the loudest of the last 10 seconds was ...").
+
+What else is new is for the PC (`README-PC-VR.md`): SteamVR and other PC headsets, a view
+for spectators on the monitor, a gamepad in the game that can be moved where nothing tracks
+it, an easier catapult with a stick, blowing with buttons.
+
 **App 0.8 (2026-10-03)**, after the fourth session (levels 1-1 to 1-3 played, the game stopped
 on entering 1-4 twice):
 
