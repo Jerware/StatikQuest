@@ -191,7 +191,7 @@ std::vector<Step> ParseScript(const std::filesystem::path& script) {
     return steps;
 }
 
-void Replay(std::vector<Step> steps) {
+void Replay(std::vector<Step> steps, std::filesystem::path live_script) {
     Common::SetCurrentThreadName("shadPS4:ScriptedInput");
     const auto begin = std::chrono::steady_clock::now();
     double last_end = 0.0;
@@ -207,7 +207,18 @@ void Replay(std::vector<Step> steps) {
     std::array<int, 6> previous_axes{128, 128, 128, 128, 0, 0};
     std::optional<std::array<float, 2>> previous_touch;
     StickFinger stick_finger;
+    std::filesystem::file_time_type live_stamp{};
     while (true) {
+        if (!live_script.empty()) {
+            std::error_code error;
+            const auto stamp = std::filesystem::last_write_time(live_script, error);
+            if (!error && stamp != live_stamp) {
+                live_stamp = stamp;
+                steps = ParseScript(live_script);
+                started.resize(steps.size());
+                LOG_INFO(Input, "Live script now has {} steps", steps.size());
+            }
+        }
         const double now =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
 
@@ -314,7 +325,7 @@ void Replay(std::vector<Step> steps) {
             previous_axes = axes;
             previous_touch = touch;
         }
-        if (now > last_end + 1.0) {
+        if (live_script.empty() && now > last_end + 1.0) {
             break;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -348,7 +359,8 @@ void StartScriptedInput(const std::filesystem::path& script) {
         return;
     }
     LOG_INFO(Input, "Replaying {} input steps from {}", steps.size(), script.string());
-    std::thread{Replay, std::move(steps)}.detach();
+    const char* live = std::getenv("SHADPS4_LIVE_INPUT");
+    std::thread{Replay, std::move(steps), std::filesystem::path{live ? live : ""}}.detach();
 }
 
 } // namespace Input
