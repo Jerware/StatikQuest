@@ -11,16 +11,14 @@
 #include <mutex>
 #include <string>
 #include <string_view>
-#include <vector>
 #include <fmt/format.h>
 
 #include "common/elf_info.h"
 #include "common/logging/log.h"
-#include "common/singleton.h"
 #include "core/emulator_settings.h"
 #include "core/known_title.h"
-#include "core/linker.h"
-#include "core/module.h"
+#include "core/known_title_profile.h"
+#include "core/memory.h"
 #include "core/vr/vr_runtime.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 
@@ -30,64 +28,25 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
-// Astro Bot Rescue Mission, CUSA12392, in the build whose code at SetRecentre reads as below
-// (the function of its tracking manager that asks for the head's position to be taken anew).
-constexpr u64 SetRecentre = 0xc48320;
-constexpr u8 SetRecentreCode[] = {0x40, 0x0f, 0xb6, 0xc6, 0xff, 0xc0, 0x89, 0x07, 0xc3};
+using Profiles::ConsoleGraphicsHeap;
+using Profiles::ConsoleSizes;
+using Profiles::ConsoleSmallPool;
+using Profiles::ConsoleTargetPool;
 
-// The tracking manager, a singleton: the point it counts positions from, and for the headset
-// the position counted from it.
-constexpr u64 ManagerPointer = 0x2e025a8;
 constexpr u64 ManagerOrigin = 0x6210;
 constexpr u64 ManagerHeadState = 0x6848;
 constexpr u64 StatePosition = 0x10;
 constexpr u64 StatePositionValid = 0x54;
-
-// The engine's frame rate and what it derives from it when the rate is set (its function at
-// 0xe48fd0): the time one frame stands for, in seconds and in microseconds. Everything in the
-// game that moves reads one of the latter two.
-constexpr u64 EngineFrameRate = 0x16688a8;         // double
-constexpr u64 EngineFrameSeconds = 0x16688b0;      // float
-constexpr u64 EngineFrameMicroseconds = 0x16688b8; // u64
-constexpr u64 ImageEnd = EngineFrameMicroseconds + sizeof(u64);
-
-// What sets the size the scene is drawn at, a singleton made when first asked for: the size is
-// one of a list (ConsoleSizes, the first three are for a television), a base (4 on the
-// console, 6 on its Pro model) plus an offset that the game moves between a lowest and a
-// highest one by how long it finds the GPU to take over its drawing. It reads that off
-// timestamps which, emulated, tell how long the emulator took to pass the drawing on, not how
-// long the GPU takes over it: left to itself, the game draws large where the GPU is busiest.
-constexpr u64 ResolutionPointer = 0x2dff9e0;
-constexpr u64 ResolutionBase = 0x0;     // s32
-constexpr u64 ResolutionLevel = 0x4;    // s32
-constexpr u64 ResolutionOffset = 0x20;  // s32
-constexpr u64 ResolutionHighest = 0x28; // s32, an offset
-constexpr u64 ResolutionLowest = 0x2c;  // s32, an offset
+constexpr u64 ResolutionBase = 0x0;
+constexpr u64 ResolutionLevel = 0x4;
+constexpr u64 ResolutionOffset = 0x20;
+constexpr u64 ResolutionHighest = 0x28;
+constexpr u64 ResolutionLowest = 0x2c;
 constexpr s32 FirstHeadsetLevel = 3;
 constexpr s32 LastHeadsetLevel = 6;
-// The sizes of the list, an eye, as the console has them.
-constexpr std::array<std::array<u32, 2>, 7> ConsoleSizes{{
-    {640, 360}, {1280, 720}, {1920, 1080}, {816, 870}, {960, 1080}, {1200, 1280}, {1440, 1536}}};
 
-// Where the sizes of the headset's list are written down (see Larger): a table of widths, one of
-// heights, the same once more in the switch of the function that makes the scene's targets
-// (heights, then widths), and a table of pixel counts the title's own choice goes by.
-constexpr u64 SizeWidths = 0x12da900;  // u32 [7]
-constexpr u64 SizeHeights = 0x12da920; // u32 [7]
-constexpr std::array<std::array<u64, 2>, 4> SizeSwitch{{
-    {0xf2242f, 0xf22435}, {0xf2240d, 0xf22413}, {0xf22551, 0xf22557}, {0xf2255f, 0xf22565}}};
-constexpr u64 SizePixels = 0x1645048; // u64, 32 bytes apart
-// The pictures handed to the headset, made three pairs at a time: their width and height.
-constexpr std::array<u64, 4> EyeSizes{0xc3fad0, 0xc3fad5, 0xc3fb5c, 0xc3fb61};
-// What the targets are taken from: a pool of 200 MB (its size in two places), a smaller one of
-// 10 MB for what goes with them (in three), and the heap of graphics memory both come from,
-// 872 MB, which the title takes from the console's memory at its start.
-constexpr std::array<u64, 2> TargetPool{0xef8bf7, 0xef8c4d};
-constexpr std::array<u64, 3> SmallPool{0xf22194, 0xf221be, 0xf221dd};
-constexpr u64 GraphicsHeap = 0x1269708; // u64
-constexpr u32 ConsoleTargetPool = 0xc800000;
-constexpr u32 ConsoleSmallPool = 0xa00000;
-constexpr u64 ConsoleGraphicsHeap = 0x36800000;
+VAddr title_base{};
+std::atomic<const Profiles::Profile*> active_profile{nullptr};
 
 /// The title drawing larger than it does on the console: every size of the headset's list (and
 /// the pictures handed to the headset) grown by the same factor, and the memory that takes.
@@ -145,30 +104,6 @@ std::string SizeName(s32 level) {
     return fmt::format("{}x{}", size[0], size[1]);
 }
 
-/// Where the title's image starts if it is the build described above, 0 otherwise.
-VAddr KnownBase() {
-    static const VAddr base = []() -> VAddr {
-        if (Common::ElfInfo::Instance().GameSerial() != "CUSA12392") {
-            return 0;
-        }
-        const Module* eboot = Common::Singleton<Linker>::Instance()->GetModule(0);
-        if (eboot == nullptr || !eboot->IsValid() ||
-            eboot->aligned_base_size < std::max(ManagerPointer + sizeof(u64), ImageEnd)) {
-            return 0;
-        }
-        const VAddr image = eboot->GetBaseAddress();
-        if (std::memcmp(reinterpret_cast<const void*>(image + SetRecentre), SetRecentreCode,
-                        sizeof(SetRecentreCode)) != 0) {
-            LOG_INFO(Core, "This is another build of CUSA12392 than the one known from inside: "
-                           "it is left to itself");
-            return 0;
-        }
-        LOG_INFO(Core, "CUSA12392 in the build known from inside");
-        return image;
-    }();
-    return base;
-}
-
 template <typename T>
 T Read(VAddr address) {
     T value;
@@ -179,6 +114,63 @@ T Read(VAddr address) {
 template <typename T>
 void Write(VAddr address, T value) {
     std::memcpy(reinterpret_cast<void*>(address), &value, sizeof(T));
+}
+
+bool Accessible(VAddr address, u64 bytes, bool write = false) {
+    if (address == 0) {
+        return false;
+    }
+    void* end{};
+    u32 protection{};
+    if (Memory::Instance()->QueryProtection(address, nullptr, &end, &protection) != 0) {
+        return false;
+    }
+    const auto limit = reinterpret_cast<VAddr>(end);
+    const u32 required = write ? 3 : 1;
+    return limit >= address && bytes <= limit - address && (protection & required) == required;
+}
+
+const Profiles::Profile* RecognizeProfile(VAddr base, u64 size) {
+    if (Common::ElfInfo::Instance().GameSerial() != "CUSA12392" || base == 0) {
+        return nullptr;
+    }
+    const auto image = std::span{reinterpret_cast<const u8*>(base), static_cast<size_t>(size)};
+    const auto mapped = [&](u64 at, u64 bytes) {
+        return Profiles::Contains(image, at, bytes) && at <= UINT64_MAX - base &&
+               Accessible(base + at, bytes);
+    };
+    const Profiles::Profile* selected = nullptr;
+    for (const auto& profile : Profiles::Known) {
+        if (!mapped(profile.recentre, Profiles::RecentreCode.size()) ||
+            !mapped(profile.manager_pointer, sizeof(u64)) ||
+            !mapped(profile.resolution_pointer, sizeof(u64)) ||
+            !mapped(profile.frame_rate, sizeof(double)) ||
+            !mapped(profile.frame_seconds, sizeof(float)) ||
+            !mapped(profile.frame_microseconds, sizeof(u64)) ||
+            !mapped(profile.widths, sizeof(u32) * Profiles::ConsoleSizes.size()) ||
+            !mapped(profile.heights, sizeof(u32) * Profiles::ConsoleSizes.size()) ||
+            !mapped(profile.pixels, 32 * 6 + sizeof(u64))) {
+            continue;
+        }
+        const auto changes = Profiles::ResolutionChanges(profile, ConsoleSizes, ConsoleTargetPool,
+                                                         ConsoleSmallPool, ConsoleGraphicsHeap);
+        if (!std::ranges::all_of(
+                changes, [&](const auto& change) { return mapped(change.at, change.bytes); })) {
+            continue;
+        }
+        if (&profile == &Profiles::Known[1] &&
+            !std::ranges::all_of(Profiles::AlternateCode,
+                                 [&](const auto& check) { return mapped(check.at, check.size); })) {
+            continue;
+        }
+        if (Profiles::Matches(image, profile)) {
+            if (selected != nullptr) {
+                return nullptr;
+            }
+            selected = &profile;
+        }
+    }
+    return selected;
 }
 
 /// The time step the title was made for.
@@ -305,8 +297,8 @@ public:
         s32 fastest_now = refresh > SlowDisplay ? 1 : fastest_pace;
         if (fps_cap > 0.0) {
             // The fewest refreshes that keep frames to the cap.
-            fastest_now = std::max<s32>(
-                1, static_cast<s32>(std::ceil(1.0 / (refresh * fps_cap) - 0.01)));
+            fastest_now =
+                std::max<s32>(1, static_cast<s32>(std::ceil(1.0 / (refresh * fps_cap) - 0.01)));
         }
         if (fixed_pace == 0 && (fastest_now != fastest || pace < fastest_now)) {
             // The display turned out to be another kind than was thought (its rate is only
@@ -378,7 +370,8 @@ private:
         const auto since_change = now - changed;
         const auto cost_at = [&](s32 other) { return gpu * cost[other] / cost[level]; };
         // The slowest pace frames are ever held to, and the smallest size wanted at a pace.
-        const s32 slowest = std::max(std::max(2, fastest), static_cast<s32>(SlowestWanted / refresh));
+        const s32 slowest =
+            std::max(std::max(2, fastest), static_cast<s32>(SlowestWanted / refresh));
         const auto smallest_at = [&](s32 refreshes_given) {
             return !paced || refreshes_given >= slowest ? FirstHeadsetLevel : UsualLevel;
         };
@@ -473,8 +466,8 @@ private:
         // (A frame for every refresh is not tried again for long where the title's own work was
         // seen not to fit one, as on a display that refreshes faster than the title can draw
         // whatever its size: every try is a few seconds of frames that come unevenly.)
-        const bool own_fits = pace != 2 || own_time == 0.0 ||
-                              own_time * (1.0 + Over) <= refresh || now - last_pace_regret > Forget;
+        const bool own_fits = pace != 2 || own_time == 0.0 || own_time * (1.0 + Over) <= refresh ||
+                              now - last_pace_regret > Forget;
         if (paced && pace > fastest && now > faster_allowed && own_fits) {
             const s32 smallest = sized ? smallest_at(pace - 1) : level;
             if (cost_at(smallest) * (1.0 + PaceMargin) <= (pace - 1) * refresh) {
@@ -594,14 +587,18 @@ private:
 
 // The size the title draws its scene at right now, as an index into ConsoleSizes; -1 when
 /// it has not got that far. Holds it to `wanted` on the way unless that is 0.
-s32 TendResolution(VAddr base, s32 wanted) {
-    const u64 control = Read<u64>(base + ResolutionPointer);
-    if (control == 0) {
+s32 TendResolution(VAddr base, const Profiles::Profile& profile, s32 wanted) {
+    const u64 control = Read<u64>(base + profile.resolution_pointer);
+    if (!Accessible(control, ResolutionLowest + sizeof(s32), true)) {
         return -1;
     }
     const s32 level = Read<s32>(control + ResolutionLevel);
+    const s32 base_level = Read<s32>(control + ResolutionBase);
+    if (level < 0 || level > LastHeadsetLevel || base_level < 0 || base_level > LastHeadsetLevel) {
+        return -1;
+    }
     if (wanted != 0 && level >= FirstHeadsetLevel) {
-        const s32 offset = wanted - Read<s32>(control + ResolutionBase);
+        const s32 offset = wanted - base_level;
         Write<s32>(control + ResolutionOffset, offset);
         Write<s32>(control + ResolutionHighest, offset);
         Write<s32>(control + ResolutionLowest, offset);
@@ -655,10 +652,11 @@ private:
 } // namespace
 
 void OnFrameSubmitted() {
-    const VAddr base = KnownBase();
-    if (base == 0) {
+    const auto* profile = active_profile.load(std::memory_order_acquire);
+    if (profile == nullptr) {
         return;
     }
+    const VAddr base = title_base;
     const Settings& settings = GetSettings();
 
     static bool running = false;
@@ -702,7 +700,7 @@ void OnFrameSubmitted() {
         wanted = governor.Level(frame, now, 0);
         break;
     }
-    const s32 resolution = TendResolution(base, wanted);
+    const s32 resolution = TendResolution(base, *profile, wanted);
     frame_pace.store(governor.Pace(), std::memory_order_relaxed);
 
     if (settings.time_step) {
@@ -710,9 +708,9 @@ void OnFrameSubmitted() {
         // was made for: a frame for every refresh of a display faster than 60 Hz.
         const double shortest = governor.Pace() == 1 ? 1.0 / 250.0 : Nominal;
         step = time_step.Next(frame, settings.longest_step, shortest);
-        Write<double>(base + EngineFrameRate, 1.0 / step);
-        Write<float>(base + EngineFrameSeconds, static_cast<float>(step));
-        Write<u64>(base + EngineFrameMicroseconds, static_cast<u64>(step * 1e6));
+        Write<double>(base + profile->frame_rate, 1.0 / step);
+        Write<float>(base + profile->frame_seconds, static_cast<float>(step));
+        Write<u64>(base + profile->frame_microseconds, static_cast<u64>(step * 1e6));
     }
 
     if (frame <= Stall) {
@@ -729,8 +727,7 @@ void OnFrameSubmitted() {
                  "left to itself); it draws the scene at {} an eye and is given {} refreshes a "
                  "frame ({:.1f} ms), the GPU busy {:.0f}% of the time",
                  report_real / report_frames * 1e3, step * 1e3, 100.0 * stepped / report_real,
-                 report_real, 100.0 * Nominal * report_frames / report_real,
-                 SizeName(resolution),
+                 report_real, 100.0 * Nominal * report_frames / report_real, SizeName(resolution),
                  summary.pace, summary.slot * 1e3, summary.load * 100.0);
         report_time = now;
         report_real = 0.0;
@@ -758,59 +755,33 @@ void Prepare() {
 }
 
 void OnGameLoaded(VAddr base, u64 size) {
-    if (Common::ElfInfo::Instance().GameSerial() != "CUSA12392" || size < ImageEnd ||
-        std::memcmp(reinterpret_cast<const void*>(base + SetRecentre), SetRecentreCode,
-                    sizeof(SetRecentreCode)) != 0) {
+    active_profile.store(nullptr, std::memory_order_release);
+    const auto image = std::span{reinterpret_cast<u8*>(base), static_cast<size_t>(size)};
+    const auto* profile = RecognizeProfile(base, size);
+    if (profile == nullptr) {
+        if (Common::ElfInfo::Instance().GameSerial() == "CUSA12392") {
+            LOG_WARNING(Core, "Unrecognized or modified CUSA12392 layout: title resolution and "
+                              "time-step patches disabled (no game memory changed)");
+        }
         return;
     }
     const Larger& larger = GetLarger();
-    if (larger.factor == 1.0) {
-        return;
-    }
-    // Every place is checked for what the console's build has there before anything is
-    // written: a title that turns out to be other than thought is left as it is.
-    struct Change {
-        u64 at;
-        u64 was;
-        u64 now;
-        u32 bytes;
-    };
-    std::vector<Change> changes;
-    for (s32 level = FirstHeadsetLevel; level <= LastHeadsetLevel; ++level) {
-        const auto& was = ConsoleSizes[level];
-        const auto& now = larger.sizes[level];
-        changes.push_back({SizeWidths + 4 * level, was[0], now[0], 4});
-        changes.push_back({SizeHeights + 4 * level, was[1], now[1], 4});
-        changes.push_back({SizeSwitch[level - FirstHeadsetLevel][0], was[1], now[1], 4});
-        changes.push_back({SizeSwitch[level - FirstHeadsetLevel][1], was[0], now[0], 4});
-        changes.push_back({SizePixels + 32 * level, u64{was[0]} * was[1], u64{now[0]} * now[1], 8});
-    }
-    const auto& eye_was = ConsoleSizes[LastHeadsetLevel];
-    const auto& eye_now = larger.sizes[LastHeadsetLevel];
-    for (u32 i = 0; i < EyeSizes.size(); ++i) {
-        changes.push_back({EyeSizes[i], eye_was[i % 2], eye_now[i % 2], 4});
-    }
-    for (const u64 at : TargetPool) {
-        changes.push_back({at, ConsoleTargetPool, larger.target_pool, 4});
-    }
-    for (const u64 at : SmallPool) {
-        changes.push_back({at, ConsoleSmallPool, larger.small_pool, 4});
-    }
-    changes.push_back({GraphicsHeap, ConsoleGraphicsHeap, larger.graphics_heap, 8});
-
-    for (const Change& change : changes) {
-        u64 found = 0;
-        std::memcpy(&found, reinterpret_cast<const void*>(base + change.at), change.bytes);
-        if (found != change.was) {
-            LOG_WARNING(Core,
-                        "The title has {:#x} at {:#x} where {:#x} was expected: it draws at the "
-                        "console's sizes",
-                        found, change.at, change.was);
+    if (larger.factor != 1.0) {
+        const auto changes = Profiles::ResolutionChanges(*profile, larger.sizes, larger.target_pool,
+                                                         larger.small_pool, larger.graphics_heap);
+        u64 rejected_at{};
+        if (!Profiles::Apply(image, changes, rejected_at)) {
+            LOG_WARNING(Core, "Title patch rejected at {:#x}: no title patches enabled",
+                        rejected_at);
             return;
         }
     }
-    for (const Change& change : changes) {
-        std::memcpy(reinterpret_cast<void*>(base + change.at), &change.now, change.bytes);
+    title_base = base;
+    active_profile.store(profile, std::memory_order_release);
+    LOG_INFO(Core, "Verified title profile {}: resolution and time-step support enabled",
+             profile->name);
+    if (larger.factor == 1.0) {
+        return;
     }
     LOG_INFO(Core,
              "The title draws at up to {} an eye instead of 1440x1536 ({:.2f} times as wide), "
@@ -822,8 +793,8 @@ void OnGameLoaded(VAddr base, u64 size) {
 void NoteView(const Vr::Vec3& tracker_head) {
     static constexpr auto Interval = std::chrono::seconds{10};
 
-    const VAddr base = KnownBase();
-    if (base == 0) {
+    const auto* profile = active_profile.load(std::memory_order_acquire);
+    if (profile == nullptr) {
         return;
     }
     static std::mutex mutex;
@@ -835,13 +806,14 @@ void NoteView(const Vr::Vec3& tracker_head) {
     if (!lock.owns_lock()) {
         return;
     }
-    const u64 manager = Read<u64>(base + ManagerPointer);
-    if (manager == 0) {
+    const u64 manager = Read<u64>(title_base + profile->manager_pointer);
+    if (!Accessible(manager, ManagerHeadState + sizeof(u64))) {
         return;
     }
     const auto origin = Read<Vr::Vec3>(manager + ManagerOrigin);
     const u64 state = Read<u64>(manager + ManagerHeadState);
-    if (state == 0 || Read<u8>(state + StatePositionValid) == 0) {
+    if (!Accessible(state, StatePositionValid + sizeof(u8)) ||
+        Read<u8>(state + StatePositionValid) == 0) {
         return;
     }
     const auto head = Read<Vr::Vec3>(state + StatePosition);
