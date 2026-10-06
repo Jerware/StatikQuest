@@ -95,6 +95,14 @@ The other order works too: start the game at the PC and put the headset on after
 game waits up to a minute for the headset (`wait` in the settings) and starts in it; after
 that it starts on the monitor and moves to the headset whenever Virtual Desktop connects.
 
+For people watching on the monitor, choose **Desktop view > Single eye (spectator)** in the
+launcher. It shows the complete left-eye picture with its proportions kept, leaving black
+bars where needed. The headset still gets both eyes
+at full resolution; the desktop reuses an existing eye image rather than rendering another
+camera. It follows the player's head, not a separate spectator camera. **Stereo (both eyes)**
+restores the original desktop view and remains the default. This setting is for the PC build;
+the standalone Quest app and external VR-host transport keep their stereo output.
+
 In the game:
 
 - The first screen asks to move the controller into a floating outline. Hold the controller
@@ -142,6 +150,31 @@ controller into the outline; gadgets shoot where it points. `controller_hand=lef
 settings makes it the left one. The game's rumble goes to both controllers. A gamepad that
 is connected to the PC takes over at once, and gives the controllers back when it goes.
 
+## Desktop Spectator View
+
+The launcher offers **Stereo**, **Single eye** and **Combined eyes**. Single eye shows the
+complete left-eye picture. Combined eyes keep that eye as the main picture and add the
+other eye's non-overlapping peripheral strip. This is an experimental composite, not a
+separate spectator camera: nearby objects can disagree at the join because the eyes are
+in different places. Combined eyes preserve the source eye's proportions and widen the
+desktop canvas by the extra peripheral coverage. With symmetric horizontal projections,
+Combined eyes have the same aspect ratio as Single eye and add no peripheral view.
+These desktop choices leave the headset's stereo picture unchanged.
+
+By default, the desktop preserves the complete image with black bars as needed, without
+stretching or cropping. **Crop top/bottom to fill** scales Single eye or Combined eyes to
+the desktop width and crops the top and bottom equally on a wide monitor. It does not
+stretch the image, add scene coverage or change the headset. Narrow windows can still
+have bars above and below; the sides are never cropped. Stereo ignores this option.
+Fullscreen follows shadPS4's native `GPU.full_screen` setting in
+`pc-vr\user\config.json`; the launcher does not override it or save a separate preference.
+
+Sony describes the original PSVR's standard TV social screen as an undistorted, cropped
+right-eye image ([official FAQ](https://blog.playstation.com/archive/2016/10/03/playstation-vr-the-ultimate-faq/)).
+Games could also supply a separate TV image; Astro Bot-specific use of that path has not
+been confirmed here. Our default spectator option preserves the complete image; cropping
+is optional.
+
 ## Settings
 
 `pc-vr\settings.txt`, one `key=value` a line (the file explains each):
@@ -154,6 +187,8 @@ is connected to the PC takes over at once, and gives the controllers back when i
 | `fov=100` | how much of the headset's field of view the game draws, 70 to 100 percent: 100 fills all of it; less puts the same pixels over fewer degrees, sharper, with a dark border |
 | `fov_of=psvr` | `fov` is a percent of a PlayStation VR's field of view (100 by 103 degrees an eye, what the game was made for) instead of the headset's own (`fov_of=headset`, the default) |
 | `menu=0` | no window with the main settings at the start |
+| `desktop_view=spectator` | one complete eye on the monitor; `combined` adds the other eye's peripheral strip; default `stereo` keeps both eyes side by side. Does not change the headset view |
+| `desktop_crop=1` | scale Single eye or Combined eyes to the desktop width, cropping the top/bottom if needed; default `0` preserves the complete image. Stereo and headset output are unchanged |
 | `sharpen=0.3` | sharpening of the picture on its way out, 0 to 1. Virtual Desktop has its own on top |
 | `msaa=4` | the most samples a pixel gets; default as the console draws it. With `1` the emulator smooths edges itself (unless `antialias=0`) |
 | `hands=0` | do not use hand tracking to place the controller |
@@ -391,6 +426,13 @@ clang-cl /std:c++latest /EHsc /Ishadps4-arm64-main/src /Ishadps4-arm64-main/exte
 ./build/openxr_view_test.exe
 clang-cl /std:c++latest /EHsc /Ishadps4-arm64-main/src /Ishadps4-arm64-main/externals/json/include tools/tests/headset_fov_cache_test.cpp /Fobuild/headset_fov_cache_test.obj /Febuild/headset_fov_cache_test.exe
 ./build/headset_fov_cache_test.exe
+```
+
+To check desktop composition, in the same shell:
+
+```powershell
+clang-cl /std:c++latest /EHsc /Ishadps4-arm64-main/src tools/tests/spectator_view_test.cpp /Fobuild/spectator_view_test.obj /Febuild/spectator_view_test.exe
+./build/spectator_view_test.exe
 ```
 
 Virtual Desktop's runtime has no headset to offer unless one is connected, so the OpenXR path

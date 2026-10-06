@@ -18,7 +18,7 @@ $base = Join-Path $top "build\launcher-test"
 if ([System.IO.Directory]::Exists($base)) { [System.IO.Directory]::Delete($base, $true) }
 $failed = 0
 function Check([string]$what, $got, $want) {
-    if ("$got" -eq "$want") { "ok    $what" } else { $script:failed++; "FAIL  $what`n      got:  $got`n      want: $want" }
+    if ("$got" -eq "$want") { Write-Host "ok    $what" } else { $script:failed++; Write-Host "FAIL  $what`n      got:  $got`n      want: $want" }
 }
 function Make-Game([string]$folder, [bool]$withSfo) {
     [void][System.IO.Directory]::CreateDirectory($folder)
@@ -93,6 +93,83 @@ Check "VDXR instructions still forward hand tracking" ($vd -match 'hand tracking
 Check "VDXR instructions do not describe an Index" ($vd -match 'Index') $false
 $unknown = (Get-VrInstructions '') -join "`n"
 Check "Unknown runtime instructions do not assume Virtual Desktop" ($unknown -match 'Virtual Desktop') $false
+$script:settings = [ordered]@{}
+Check "Desktop defaults to stereo" (Get-DesktopView) "stereo"
+$script:settings = [ordered]@{ desktop_view = "spectator" }
+Check "Spectator setting selects one eye" (Get-DesktopView) "spectator"
+$script:settings = [ordered]@{ desktop_view = "unknown" }
+Check "Unknown desktop view falls back to stereo" (Get-DesktopView) "stereo"
+$script:settings = [ordered]@{ desktop_view = "combined"; desktop_crop = "1" }
+Check "Combined setting selects both eyes" (Get-DesktopView) "combined"
+foreach ($assignment in $ast.EndBlock.Statements) {
+    if ($assignment -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+        $assignment.Left.Extent.Text -in @('$env:SHADPS4_VR_DESKTOP_VIEW', '$env:SHADPS4_VR_DESKTOP_CROP')) {
+        . ([scriptblock]::Create($assignment.Extent.Text))
+    }
+}
+Check "Launcher exports combined view" $env:SHADPS4_VR_DESKTOP_VIEW "combined"
+Check "Launcher exports crop enabled" $env:SHADPS4_VR_DESKTOP_CROP "1"
+$script:settings = [ordered]@{}
+foreach ($assignment in $ast.EndBlock.Statements) {
+    if ($assignment -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+        $assignment.Left.Extent.Text -eq '$env:SHADPS4_VR_DESKTOP_CROP') {
+        . ([scriptblock]::Create($assignment.Extent.Text))
+    }
+}
+Check "Launcher clears inherited crop by default" $env:SHADPS4_VR_DESKTOP_CROP "0"
+
+foreach ($assignment in $ast.EndBlock.Statements) {
+    if ($assignment -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+        $assignment.Left.Extent.Text -in @('$widths', '$caps')) {
+        . ([scriptblock]::Create($assignment.Extent.Text))
+    }
+}
+$SettingsFile = Join-Path $base 'menu-settings.txt'
+$script:menuAction = "choose"
+function Show-Form($form) {
+    $script:menuForm = $form
+    $view = $form.Controls["desktopView"]
+    $crop = $form.Controls["desktopCrop"]
+    foreach ($control in $form.Controls) {
+        Check "Menu bounds contain $($control.Text) $($control.Name)" $form.ClientRectangle.Contains($control.Bounds) $true
+    }
+    Check "Menu offers three desktop modes" $view.Items.Count 3
+    Check "Desktop view and crop controls do not overlap" $view.Bounds.IntersectsWith($crop.Bounds) $false
+    if ($script:menuAction -eq "choose") {
+        Check "Menu defaults to stereo" $view.SelectedIndex 0
+        Check "Menu defaults to uncropped image" $crop.Checked $false
+        Check "Stereo disables crop control" $crop.Enabled $false
+        $view.SelectedIndex = 1
+        Check "Single eye enables crop control" $crop.Enabled $true
+        $view.SelectedIndex = 2
+        Check "Combined eyes enable crop control" $crop.Enabled $true
+        $crop.Checked = $true
+        return [System.Windows.Forms.DialogResult]::OK
+    }
+    Check "Menu restores combined eyes" $view.SelectedIndex 2
+    Check "Menu restores crop" $crop.Checked $true
+    $view.SelectedIndex = 0
+    Check "Switching to stereo disables crop" $crop.Enabled $false
+    $crop.Checked = $false
+    if ($script:menuAction -eq "cancel") { return [System.Windows.Forms.DialogResult]::Cancel }
+    return [System.Windows.Forms.DialogResult]::OK
+}
+Read-Settings
+Check "Menu accepts combined eyes" (Show-Menu) $true
+$script:menuForm.Dispose()
+Check "Menu saves combined eyes" (Setting "desktop_view") "combined"
+Check "Menu saves crop" (Setting "desktop_crop") "1"
+$script:menuAction = "cancel"
+Check "Menu cancellation does not start game" (Show-Menu) $false
+$script:menuForm.Dispose()
+Read-Settings
+Check "Cancel preserves combined eyes" (Get-DesktopView) "combined"
+Check "Cancel preserves crop" (Setting "desktop_crop") "1"
+$script:menuAction = "restore"
+Check "Menu accepts stereo again" (Show-Menu) $true
+$script:menuForm.Dispose()
+Check "Menu saves stereo again" (Get-DesktopView) "stereo"
+Check "Menu saves uncropped image again" (Setting "desktop_crop") "0"
 
 [System.IO.Directory]::Delete($base, $true)
 "failed: $failed"

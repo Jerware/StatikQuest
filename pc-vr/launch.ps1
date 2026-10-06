@@ -83,6 +83,12 @@ function Get-VrInstructions([string]$runtime) {
     )
 }
 
+function Get-DesktopView {
+    if ((Setting "desktop_view" "stereo") -eq "combined") { return "combined" }
+    if ((Setting "desktop_view" "stereo") -eq "spectator") { return "spectator" }
+    return "stereo"
+}
+
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
@@ -548,7 +554,7 @@ function Show-Menu {
 
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "Astro Bot VR"
-    $form.ClientSize = New-Object System.Drawing.Size(560, 452)
+    $form.ClientSize = New-Object System.Drawing.Size(560, 514)
     $form.StartPosition = "CenterScreen"
     $form.FormBorderStyle = "FixedDialog"
     $form.MaximizeBox = $false
@@ -654,6 +660,30 @@ function Show-Menu {
     & $updateFov
     $y += 46
 
+    $label = New-Object System.Windows.Forms.Label
+    $label.Text = "Desktop view"
+    $label.Font = New-Object System.Drawing.Font("Segoe UI", 9.5, [System.Drawing.FontStyle]::Bold)
+    $label.SetBounds(16, $y, 520, 20)
+    $form.Controls.Add($label)
+    $y += 22
+    $desktopView = New-Object System.Windows.Forms.ComboBox
+    $desktopView.Name = "desktopView"
+    $desktopView.DropDownStyle = "DropDownList"
+    $desktopModes = @("stereo", "spectator", "combined")
+    $desktopView.Items.AddRange(@("Stereo (both eyes)", "Single eye (spectator)", "Combined eyes (spectator)"))
+    $desktopView.SelectedIndex = [array]::IndexOf($desktopModes, (Get-DesktopView))
+    $desktopView.SetBounds(16, $y, 248, 26)
+    $form.Controls.Add($desktopView)
+    $desktopCrop = New-Object System.Windows.Forms.CheckBox
+    $desktopCrop.Name = "desktopCrop"
+    $desktopCrop.Text = "Crop top/bottom to fill"
+    $desktopCrop.Checked = (Setting "desktop_crop" "0") -eq "1"
+    $desktopCrop.SetBounds(284, $y, 250, 26)
+    $desktopCrop.Enabled = $desktopView.SelectedIndex -ne 0
+    $desktopView.Add_SelectedIndexChanged({ $desktopCrop.Enabled = $desktopView.SelectedIndex -ne 0 })
+    $form.Controls.Add($desktopCrop)
+    $y += 40
+
     $again = New-Object System.Windows.Forms.CheckBox
     $again.Text = "Show this window at every start"
     $again.Checked = (Setting "menu" "1") -ne "0"
@@ -679,6 +709,8 @@ function Show-Menu {
     Save-Setting "fps" ($caps[$fps.SelectedIndex])
     Save-Setting "fov" ($fov.Value * 5)
     Save-Setting "menu" ($(if ($again.Checked) { "1" } else { "0" }))
+    Save-Setting "desktop_view" ($desktopModes[$desktopView.SelectedIndex])
+    Save-Setting "desktop_crop" ($(if ($desktopCrop.Checked) { "1" } else { "0" }))
     Read-Settings
     return $true
 }
@@ -733,6 +765,8 @@ if ($resolution -eq "game") {
     }
 }
 $env:SHADPS4_VR_SHARPEN = Setting "sharpen" "0.3"
+$env:SHADPS4_VR_DESKTOP_VIEW = Get-DesktopView
+$env:SHADPS4_VR_DESKTOP_CROP = $(if ((Setting "desktop_crop" "0") -eq "1") { "1" } else { "0" })
 if ((Setting "msaa") -ne "") { $env:SHADPS4_MAX_MSAA = Setting "msaa" }
 if ((Setting "antialias" "1") -eq "0") { $env:SHADPS4_RESOLVE_AA = "0" }
 if ((Setting "hands" "1") -eq "0") { $env:SHADPS4_XR_HANDS = "0" }
