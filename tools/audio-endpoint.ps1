@@ -5,6 +5,10 @@
 #   audio-endpoint.ps1 hide <name>
 #   audio-endpoint.ps1 show <name>
 #   audio-endpoint.ps1 peak <name> [seconds]     highest level played in that time, 0..1
+#   audio-endpoint.ps1 default                   the name of the device Windows plays on
+#   audio-endpoint.ps1 default <name>            makes that one the device Windows plays on
+#                                                (what a program that streams to a headset
+#                                                does when the headset connects)
 param([Parameter(Mandatory = $true)][string]$Action, [string]$Name, [double]$Seconds = 2)
 
 Add-Type -TypeDefinition @'
@@ -52,6 +56,8 @@ interface IMMDeviceCollection {
  InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 interface IMMDeviceEnumerator {
     int EnumAudioEndpoints(int flow, int states, out IMMDeviceCollection devices);
+    [PreserveSig]
+    int GetDefaultAudioEndpoint(int flow, int role, out IMMDevice device);
 }
 
 [ComImport, Guid("C02216F6-8C67-4B5B-9D00-D008E73E0064"),
@@ -73,7 +79,8 @@ interface IPolicyConfig {
     int SetShareMode();
     int GetPropertyValue();
     int SetPropertyValue();
-    int SetDefaultEndpoint();
+    [PreserveSig]
+    int SetDefaultEndpoint([MarshalAs(UnmanagedType.LPWStr)] string id, int role);
     [PreserveSig]
     int SetEndpointVisibility([MarshalAs(UnmanagedType.LPWStr)] string id, int visible);
 }
@@ -154,6 +161,27 @@ public static class Endpoints {
         Marshal.ThrowExceptionForHR(policy.SetEndpointVisibility(found.Id, visible ? 1 : 0));
     }
 
+    public static string Default() {
+        IMMDevice device;
+        if (Enumerator().GetDefaultAudioEndpoint(0, 0, out device) != 0 || device == null) {
+            return "";
+        }
+        return Describe(device).Name;
+    }
+
+    public static void SetDefault(string name) {
+        Device found;
+        if (Find(name, out found) == null) {
+            throw new Exception("no playback device named " + name);
+        }
+        IPolicyConfig policy =
+            (IPolicyConfig)Activator.CreateInstance(Type.GetTypeFromCLSID(PolicyClass));
+        // For everything it can be the default of: console, multimedia, communications.
+        for (int role = 0; role < 3; ++role) {
+            Marshal.ThrowExceptionForHR(policy.SetDefaultEndpoint(found.Id, role));
+        }
+    }
+
     public static float Peak(string name, double seconds) {
         Device found;
         IMMDevice device = Find(name, out found);
@@ -187,5 +215,9 @@ switch ($Action) {
     'hide' { [AudioEndpoint.Endpoints]::SetVisible($Name, $false) }
     'show' { [AudioEndpoint.Endpoints]::SetVisible($Name, $true) }
     'peak' { '{0:0.0000}' -f [AudioEndpoint.Endpoints]::Peak($Name, $Seconds) }
+    'default' {
+        if ($Name) { [AudioEndpoint.Endpoints]::SetDefault($Name) }
+        [AudioEndpoint.Endpoints]::Default()
+    }
     default { throw "unknown action $Action" }
 }

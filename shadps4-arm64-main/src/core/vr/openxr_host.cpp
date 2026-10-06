@@ -272,6 +272,10 @@ struct OpenXrHost::Impl {
     std::vector<std::string> device_extensions;
     std::string audio_output;
     std::string audio_input;
+    bool audio_names_known{};
+    // When the runtime is to be asked for the headset's sound devices again (the frame
+    // thread's clock, 0: not at all).
+    std::atomic<s64> audio_ask_at{0};
 
     // The session, all of it the frame thread's.
     Graphics graphics{};
@@ -619,12 +623,29 @@ struct OpenXrHost::Impl {
         if (input != nullptr && XR_SUCCEEDED(input(instance, buffer))) {
             input_name = AudioDeviceName(buffer, eCapture);
         }
+        std::scoped_lock lock{names_mutex};
+        if (audio_names_known && output_name == audio_output && input_name == audio_input) {
+            return;
+        }
         LOG_INFO(Core_Vr, "The headset's sound: output \"{}\", microphone \"{}\"",
                  output_name.empty() ? "the system's default" : output_name,
                  input_name.empty() ? "the system's default" : input_name);
-        std::scoped_lock lock{names_mutex};
+        audio_names_known = true;
         audio_output = std::move(output_name);
         audio_input = std::move(input_name);
+    }
+
+    /// FindAudioDevices again, a moment after sound devices came or went (on the frame
+    /// thread: the instance is its to use).
+    void AskAudioDevicesIfDue() {
+        const s64 due = audio_ask_at.load(std::memory_order_relaxed);
+        if (due == 0 || Clock::now().time_since_epoch().count() < due) {
+            return;
+        }
+        audio_ask_at.store(0, std::memory_order_relaxed);
+        if (instance != XR_NULL_HANDLE) {
+            FindAudioDevices();
+        }
     }
 
     // --- the frame thread ---------------------------------------------------------------------
@@ -633,6 +654,7 @@ struct OpenXrHost::Impl {
         Common::SetCurrentThreadName("shadPS4:XrHost");
         Common::SetCurrentThreadPriority(Common::ThreadPriority::VeryHigh);
         while (!stop.stop_requested() && !device_mismatch && !exit_requested) {
+            AskAudioDevicesIfDue();
             if (!EnsureSession()) {
                 Common::StoppableTimedWait(stop, std::chrono::milliseconds{1500});
                 continue;
@@ -1652,6 +1674,7 @@ struct OpenXrHost::Impl {
                 static_cast<XrTime>(std::clamp(predict_ms, 0.0f, 80.0f) * 1e6f);
             UpdateHead(pose_time);
             UpdateControllers(pose_time);
+            AskAudioDevicesIfDue();
             UpdatePad(pose_time);
 
             if (const s32 index = TakeFrame(); index >= 0) {
@@ -2720,6 +2743,13 @@ std::string OpenXrHost::AudioOutputName() const {
 std::string OpenXrHost::AudioInputName() const {
     std::scoped_lock lock{impl->names_mutex};
     return impl->audio_input;
+}
+
+void OpenXrHost::AudioDevicesChanged() {
+    // (A moment later: the system is still settling when it says so.)
+    impl->audio_ask_at.store(
+        (Clock::now() + std::chrono::milliseconds{700}).time_since_epoch().count(),
+        std::memory_order_relaxed);
 }
 
 } // namespace Core::Vr

@@ -462,7 +462,11 @@ Things that had to be right, for whoever works on this again:
   own), and the game's 7.1 mix is rendered for two speakers at the ears as on the Quest; the
   microphone is the one the runtime names. Both fall back to Windows' default devices.
   The sound follows its device: when that goes away the sound moves to Windows' default
-  device, and back when it is there again (see "Fixed in 0.13").
+  device, and back when it is there again (see "Fixed in 0.13"). Which device is the
+  headset's is asked of the runtime again whenever a sound device comes or goes: Virtual
+  Desktop has its own only while it streams to the headset, and names the PC's until then.
+  Every port plays on a device of its own, never on "the default device" as such (see
+  "Fixed and added in 0.19").
 
 ## Fixed and added in 0.19 (2026-10-06), from what players wrote elsewhere
 
@@ -485,6 +489,32 @@ Reports from the project's thread on Reddit and from the comments under the vide
   controllers".
 - **Turning the view by steps**, asked for by a player who sits where they cannot turn
   round: L1 (the left grip) held, the right stick flicked to a side. See "In the game".
+- **The game stopped with "Unhandled Exception code 0xc0000005" some time after the headset
+  was connected, and until then its sound came from the PC's speakers**, when the game was
+  started before Virtual Desktop streamed to the headset. Two things, one leading to the
+  other:
+  - Virtual Desktop's sound device only exists while it streams. Asked for the headset's
+    sound device before that, its runtime names what Windows plays on, the PC's speakers,
+    and the emulator asked once, at the start. It then held on to the speakers by name, and
+    took the sound back to them a few seconds after Windows had moved it to the headset. The
+    runtime is asked again now whenever a sound device comes or goes, and the sound goes
+    where it then says.
+  - That taking back is what stopped the game. Ports opened on "the default device" are
+    moved by SDL, the sound library, when Windows changes its default; SDL 3.5.0 puts each
+    moved port at the front of the new device's list without telling the port behind it
+    (`SDL_DefaultAudioDeviceChanged` leaves that one's back link as it was), and closing
+    one of them afterwards leaves the list pointing at freed memory, which the device's
+    playback thread reads next (`SDL_GetAudioStreamDataAdjustGain`). The emulator's ports
+    no longer play on "the default device": each is opened on the device Windows plays on
+    at that moment, as the device it is, and moved by the emulator itself, three seconds
+    after Windows chose another.
+
+  Tried by making another device Windows' default while the game plays and the first one
+  again after (`tools/pc-audio-default-test.sh`): the build before stops, this one plays on,
+  on the right device each time; by taking the default device out of Windows and putting
+  it back (`tools/pc-audio-device-test.sh`, levels measured on both devices); and against a
+  simulated headset whose runtime names another device after one went away. Virtual
+  Desktop's own device coming and going needs the headset: not tried yet.
 - **A question in a box behind the game's window at the very first start** ("Save
   Migration": whether to move saves over from where an older shadPS4 kept them), which held
   the game up until somebody saw and answered it. The packages avoided it by bringing the
@@ -576,6 +606,8 @@ or the headset's session timed out; that box no longer comes.
   good.) The log says which devices come and go ("Audio output added", "removed", "went
   away", "is there"). Tested by taking a playback device out of Windows and putting it back
   while the game plays, and measuring what each device plays: `tools/pc-audio-device-test.sh`.
+  (`tools/pc-audio-default-test.sh` changes which device Windows plays on instead, as a
+  program that streams to a headset does when the headset connects.)
   Not changed: the microphone.
 - An emulator crash now leaves its call stack in the log (module and place in it).
 
