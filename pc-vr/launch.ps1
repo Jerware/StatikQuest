@@ -54,6 +54,35 @@ $widths = @(1440, 1800, 2160, 2520, 2880, 3240, 3600)
 function EyeHeight([int]$width) { return [int]([math]::Round(1536.0 * $width / 1440 / 8) * 8) }
 $caps = @(120, 90, 72, 60, 45, 40, 36, 30)
 
+function Get-VrInstructions([string]$runtime) {
+    if ($runtime -match 'steamvr|steamxr') {
+        return @(
+            "Start SteamVR and check that the Index and base stations are ready. Virtual Desktop is not needed."
+            "Set the Index to 120 Hz in SteamVR Video settings for the game's default 60 frames a second."
+            "The DualSense: connect it to THIS PC by USB or Bluetooth. It keeps its motion sensors, touchpad and rumble."
+            "If launching through a Steam shortcut, disable Steam Input for that shortcut so the emulator can read the DualSense."
+            "The Index does not track bare hands: without controller-position tracking, the gamepad stays in front of you and turns with its gyro."
+            "Use the Index speakers and microphone in SteamVR Audio settings; the game uses the microphone for blowing."
+            "No gamepad: Index controllers play (right A jump, right B punch, left A back, left B triangle, left trackpad press = OPTIONS)."
+        )
+    }
+    if ($runtime -match 'virtualdesktop') {
+        return @(
+            "In the headset: connect Virtual Desktop to this PC. The game moves into the headset by itself."
+            "The DualSense: connect it to THIS PC (USB cable, or Bluetooth paired with the PC). Paired with"
+            "the headset, it reaches the PC through Virtual Desktop without motion sensors or touchpad."
+            "Where it is in the game comes from your hands: hand tracking on in the headset, and in"
+            "Virtual Desktop's settings hand tracking forwarded to the PC."
+            "No gamepad: Touch controllers play (A jump, B punch, X back, Y triangle, left menu = OPTIONS)."
+        )
+    }
+    return @(
+        "Start your headset's OpenXR runtime and check that the headset is ready."
+        "The DualSense: connect it to THIS PC by USB or Bluetooth, with Steam Input disabled for any Steam shortcut."
+        "Without hand tracking, the gamepad stays in front of you and turns with its gyro."
+    )
+}
+
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
@@ -589,7 +618,7 @@ function Show-Menu {
     $form.Controls.Add($fps)
     $y += 32
     $fpsText = New-Object System.Windows.Forms.Label
-    $fpsText.Text = "A frame lasts a whole number of the headset's refreshes, so the headset's refresh rate decides what is possible: at 120 Hz 120, 60, 40 or 30 frames a second, at 90 Hz 90, 45 or 30, at 72 Hz 72 or 36. Virtual Desktop sets the refresh rate (Settings > Streaming > Frame rate): choose 120 for 60 frames a second."
+    $fpsText.Text = "A frame lasts a whole number of the headset's refreshes: at 120 Hz, 120, 60, 40 or 30 frames a second; at 90 Hz, 90, 45 or 30; at 80 Hz, 80 or 40. Choose 120 Hz for 60 frames a second. Set it in SteamVR Video settings for an Index, or Virtual Desktop Streaming settings for a Quest."
     $fpsText.SetBounds(16, $y, 530, 84)
     $form.Controls.Add($fpsText)
     $y += 88
@@ -744,7 +773,8 @@ if ($env:XR_RUNTIME_JSON) {
 }
 if ($runtime -eq "") {
     Say "No OpenXR runtime is set up on this PC: the game will only show on the monitor." "Yellow"
-    Say "Virtual Desktop Streamer installs one (Options > OpenXR Runtime: VDXR)."
+    Say "For an Index, use SteamVR Settings > OpenXR > Set SteamVR as OpenXR Runtime."
+    Say "For Virtual Desktop, use Streamer Options > OpenXR Runtime: VDXR."
 } else {
     Say "OpenXR runtime: $runtime"
     if ($runtime -match "virtualdesktop") {
@@ -761,17 +791,12 @@ if ($runtime -eq "") {
     }
 }
 Say ""
-Say "In the headset: connect Virtual Desktop to this PC. The game moves into the headset by itself."
+Get-VrInstructions $runtime | ForEach-Object { Say $_ }
 if ($env:SHADPS4_OPENXR -ne "0" -and [int]$env:SHADPS4_XR_WAIT -gt 0) {
     Say ("The game waits up to " + $env:SHADPS4_XR_WAIT + " seconds for the headset before it starts on the monitor.")
 }
-Say "The DualSense: connect it to THIS PC (USB cable, or Bluetooth paired with the PC). Paired with"
-Say "the headset, it reaches the PC through Virtual Desktop without motion sensors or touchpad."
-Say "Where it is in the game comes from your hands: hand tracking on in the headset, and in"
-Say "Virtual Desktop's settings hand tracking forwarded to the PC."
 Say "Hold OPTIONS for a second (or press the PS button) to reset the view."
-Say "No gamepad: the headset's own controllers play (A jump, B punch, right stick = touchpad,"
-Say "press both sticks in to reset the view)."
+Say "With VR controllers: right stick = touchpad, press both sticks in to reset the view."
 Say "Close the game's window to quit."
 Say ""
 # The emulator asks Windows for about 14 GB at once (the console's memory, and what the larger

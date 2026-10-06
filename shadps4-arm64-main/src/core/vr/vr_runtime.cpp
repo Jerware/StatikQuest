@@ -13,6 +13,7 @@
 #include "common/logging/log.h"
 #include "common/path_util.h"
 #include "core/libraries/system/systemservice.h"
+#include "core/vr/headset_fov_cache.h"
 #include "core/vr/vr_host_link.h"
 #include "core/vr/vr_runtime.h"
 #ifdef ENABLE_OPENXR_HOST
@@ -32,29 +33,6 @@ Quat Multiply(const Quat& a, const Quat& b) {
 
 Quat Conjugate(const Quat& q) {
     return {-q.x, -q.y, -q.z, q.w};
-}
-
-Quat Normalize(const Quat& q) {
-    const float length = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
-    if (length < 1e-6f) {
-        return {};
-    }
-    return {q.x / length, q.y / length, q.z / length, q.w / length};
-}
-
-Vec3 Rotate(const Quat& q, const Vec3& v) {
-    // v' = v + 2 * cross(q.xyz, cross(q.xyz, v) + q.w * v)
-    const Vec3 u{q.x, q.y, q.z};
-    const Vec3 t{
-        u.y * v.z - u.z * v.y + q.w * v.x,
-        u.z * v.x - u.x * v.z + q.w * v.y,
-        u.x * v.y - u.y * v.x + q.w * v.z,
-    };
-    return {
-        v.x + 2.0f * (u.y * t.z - u.z * t.y),
-        v.y + 2.0f * (u.z * t.x - u.x * t.z),
-        v.z + 2.0f * (u.x * t.y - u.y * t.x),
-    };
 }
 
 Quat FromYawPitch(float yaw, float pitch) {
@@ -630,6 +608,14 @@ void Runtime::UpdateOptics(const Fov& fov, float ipd) {
     config.ipd = ipd;
 }
 
+void Runtime::SetHeadsetIdentity(const HeadsetIdentity& identity) {
+    std::scoped_lock lock{mutex};
+    if (headset_identity != identity) {
+        headset_identity = identity;
+        has_headset_fov = false;
+    }
+}
+
 namespace {
 
 std::filesystem::path HeadsetFovPath() {
@@ -644,6 +630,7 @@ float Degrees(float tangent) {
 
 void Runtime::NoteHeadsetFov(const Fov& fov) {
     bool changed;
+    HeadsetIdentity identity;
     {
         std::scoped_lock lock{mutex};
         const auto differs = [](float a, float b) { return std::abs(Degrees(a) - Degrees(b)) > 0.5f; };
@@ -653,6 +640,7 @@ void Runtime::NoteHeadsetFov(const Fov& fov) {
                   differs(fov.tan_bottom, headset_fov.tan_bottom);
         headset_fov = fov;
         has_headset_fov = true;
+        identity = headset_identity;
     }
     headset_fov_known.notify_all();
     if (!changed) {
@@ -664,9 +652,14 @@ void Runtime::NoteHeadsetFov(const Fov& fov) {
              Degrees(fov.tan_out), Degrees(fov.tan_in), Degrees(fov.tan_top),
              Degrees(fov.tan_bottom), Degrees(fov.tan_out) + Degrees(fov.tan_in),
              Degrees(fov.tan_top) + Degrees(fov.tan_bottom));
-    // For the next start, when the title asks before the headset has said.
+    if (identity.runtime.empty() || identity.system.empty()) {
+        return;
+    }
     std::ofstream file{HeadsetFovPath()};
-    file << nlohmann::json{{"fov_tan", {fov.tan_out, fov.tan_in, fov.tan_top, fov.tan_bottom}}}
+    file << nlohmann::json{{"runtime", identity.runtime},
+                          {"system", identity.system},
+                          {"vendor_id", identity.vendor_id},
+                          {"fov_tan", {fov.tan_out, fov.tan_in, fov.tan_top, fov.tan_bottom}}}
                 .dump()
          << "\n";
 }
@@ -695,24 +688,14 @@ Fov Runtime::TitleFov() {
         }
     }
     if (from == nullptr) {
-        // As the headset showed it the last time.
         std::ifstream file{HeadsetFovPath()};
         const auto json = file ? nlohmann::json::parse(file, nullptr, false) : nlohmann::json{};
-        const auto usable = [](const nlohmann::json& tangents) {
-            if (!tangents.is_array() || tangents.size() != 4) {
-                return false;
-            }
-            for (const auto& tangent : tangents) {
-                if (!tangent.is_number() || tangent.get<float>() < 0.1f ||
-                    tangent.get<float>() > 10.0f) {
-                    return false;
-                }
-            }
-            return true;
-        };
-        if (json.is_object() && json.contains("fov_tan") && usable(json["fov_tan"])) {
-            base = {json["fov_tan"][0].get<float>(), json["fov_tan"][1].get<float>(),
-                    json["fov_tan"][2].get<float>(), json["fov_tan"][3].get<float>()};
+        std::scoped_lock lock{mutex};
+        if (has_headset_fov) {
+            base = headset_fov;
+            from = "the headset's own";
+        } else if (const auto cached = CachedHeadsetFov(json, headset_identity)) {
+            base = *cached;
             from = "the headset's, as it was the last time (it has not said yet)";
         } else {
             from = "a PlayStation VR's (the headset has not said what it shows)";

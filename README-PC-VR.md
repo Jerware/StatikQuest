@@ -1,4 +1,47 @@
-# Astro Bot Rescue Mission on the PC, shown in the headset through Virtual Desktop
+# Astro Bot Rescue Mission on PC VR
+
+## Valve Index through SteamVR
+
+Use the same Windows PC build and **Play Astro Bot VR.bat** with a Valve Index. You do
+not need Virtual Desktop. Headset playback with a PC-connected DualSense was reported
+working on 2026-10-05. The Index-controller fallback and Quest/VDXR regression still need
+physical headset tests.
+
+1. Start SteamVR with the Index and base stations connected. In **Settings > OpenXR**,
+   select **Set SteamVR as OpenXR Runtime**. The launcher uses the active runtime without
+   changing it. An `XR_RUNTIME_JSON` environment variable overrides that selection; remove
+   a Virtual Desktop or simulator override before launching with SteamVR.
+2. Set the Index refresh rate to **120 Hz** in SteamVR's Video settings. Keep `fps=60`
+   in `pc-vr\settings.txt` for the console's frame rate. At 90 Hz the default runs at 45
+   frames a second, at 80 Hz at 40, and at 144 Hz at 48.
+3. Connect the **DualSense to the PC** by USB or Bluetooth. Buttons, touchpad, gyro,
+   rumble and light bar use the existing gamepad path. If you add a Steam shortcut, disable
+   **Steam Input for that shortcut** so Steam does not replace it with a virtual Xbox pad.
+4. Select the Index speakers and microphone in SteamVR's Audio settings, or make them
+   Windows' default output and input devices. The game needs the microphone for blowing.
+5. Put your own game dump in `games`, or choose it when the launcher asks. Start
+   **Play Astro Bot VR.bat**, choose the graphics settings, and press Play. Hold OPTIONS
+   for a second or press the PS button to recenter after sitting down.
+
+The Index tracks your head in six degrees of freedom, but does not track bare hands or the
+DualSense's position. Without a tracked position, the virtual gamepad rests in front of you
+and follows your seating position; the DualSense gyro controls its rotation. Moving the
+physical gamepad alone does not move its virtual position. The initial controller-alignment
+screen uses the existing untracked-gamepad fallback. Set `hands=0` if parked VR controllers
+cause an incorrect gamepad position.
+
+Without a gamepad connected, Index controllers can use the existing VR-controller fallback:
+right A is cross, right B is square, left A is circle, left B is triangle, and pressing the
+left trackpad is OPTIONS. Sticks, triggers, grips, rumble and recentering follow the Touch
+layout below. The connected DualSense takes priority over VR controllers.
+
+The renderer covers the Index's canted eye views with parallel projections, as required by
+the emulated PSVR game. SteamVR handles the final reprojection into the headset's eye views.
+The saved headset FOV is reused only when the OpenXR runtime (including its version), headset
+name and vendor match. With no confirmed headset identity or matching cache, the title uses
+the PSVR default until the next game start; legacy caches without an identity are ignored.
+
+## Quest through Virtual Desktop
 
 The second way to play (the first, the app that runs on the headset itself, is in
 `README-QUEST-VR.md`): the emulator runs on this PC, and the picture goes to the Quest 3 the
@@ -337,6 +380,18 @@ No picture in the headset although the session is focused: look for `failed:` li
 calls the runtime refused are counted and logged).
 
 ## Testing without the headset
+
+The launcher checks run with `powershell -NoProfile -ExecutionPolicy Bypass -File tools/tests/launcher-test.ps1`.
+To check the OpenXR quaternion conversion, parallel and opposite-canted stereo bounds, and
+headset FOV cache validation, run these commands from the repository root in a developer shell
+with `clang-cl` and the Windows SDK available (the `build` directory must exist):
+
+```powershell
+clang-cl /std:c++latest /EHsc /Ishadps4-arm64-main/src /Ishadps4-arm64-main/externals/openxr-sdk/include tools/tests/openxr_view_test.cpp /Fobuild/openxr_view_test.obj /Febuild/openxr_view_test.exe
+./build/openxr_view_test.exe
+clang-cl /std:c++latest /EHsc /Ishadps4-arm64-main/src /Ishadps4-arm64-main/externals/json/include tools/tests/headset_fov_cache_test.cpp /Fobuild/headset_fov_cache_test.obj /Febuild/headset_fov_cache_test.exe
+./build/headset_fov_cache_test.exe
+```
 
 Virtual Desktop's runtime has no headset to offer unless one is connected, so the OpenXR path
 is tested against the **Meta XR Simulator** (installed on this PC), which is a full OpenXR

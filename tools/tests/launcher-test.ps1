@@ -83,6 +83,17 @@ Check "g  a folder" (Use-Path "$base\a") "$g\CUSA12392\eboot.bin"
 Check "g  an eboot.bin" (Use-Path "$g\CUSA12392\eboot.bin") "$g\CUSA12392\eboot.bin"
 Check "g  nothing there" (Use-Path "$base\a\nothing.bin") ""
 
+$steam = (Get-VrInstructions 'F:\steam\steamapps\common\SteamVR\steamxr_win64.json') -join "`n"
+Check "SteamVR instructions name the Index" ($steam -match 'Index') $true
+Check "SteamVR instructions require no Virtual Desktop" ($steam -match 'Virtual Desktop is not needed') $true
+Check "SteamVR instructions preserve native DualSense input" ($steam -match 'disable Steam Input') $true
+Check "SteamVR instructions explain the tracking limit" ($steam -match 'does not track bare hands') $true
+$vd = (Get-VrInstructions 'C:\Program Files\Virtual Desktop Streamer\OpenXR\virtualdesktop-openxr.json') -join "`n"
+Check "VDXR instructions still forward hand tracking" ($vd -match 'hand tracking forwarded') $true
+Check "VDXR instructions do not describe an Index" ($vd -match 'Index') $false
+$unknown = (Get-VrInstructions '') -join "`n"
+Check "Unknown runtime instructions do not assume Virtual Desktop" ($unknown -match 'Virtual Desktop') $false
+
 [System.IO.Directory]::Delete($base, $true)
 "failed: $failed"
 if ($failed -gt 0) { exit 1 }
