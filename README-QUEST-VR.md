@@ -119,11 +119,13 @@ it has the field-of-view menu and the fixes of 0.14 to 0.17 above, and
     other axes, triggers that are only buttons, a Back button the system would take for its
     own "back" and close the app with.
 
-  Tried on the headset without wearing it: the runtime accepts the controllers' bindings,
-  the app starts and plays with a made-up gamepad, and the self-test reports a controller
-  the way a session does and shows it in the game's picture where and how it should be (see
-  "Testing on the headset without wearing it"). **Not tried: any of it worn**, and no
-  gamepad other than a DualSense.
+  Played in the headset: the headset's own controllers, from the start-up menu into a level
+  (seen all of the time, the game played with them). The buttons for the touchpad came after
+  that session, which ended at the catapult; they have been played with on the PC, where
+  they are the same code, and the catapult goes off there. On the headset they were checked
+  without wearing it: what the game is given of a pull, a swipe and a press, read by read
+  (see "Testing on the headset without wearing it"). **Not tried: a gamepad other than a
+  DualSense**, and with it hands that turn a gamepad without motion sensors.
 
 What else is new is for the PC (`README-PC-VR.md`): SteamVR and other PC headsets, a view
 for spectators on the monitor, a gamepad in the game that can be moved where nothing tracks
