@@ -19,7 +19,6 @@
 #include "core/emulator_settings.h"
 #include "core/known_title.h"
 #include "core/known_title_builds.h"
-#include "core/known_title_memory.h"
 #include "core/vr/vr_runtime.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 
@@ -29,21 +28,36 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
+// Astro Bot Rescue Mission, CUSA12392. Where things are in each build of it that is known from
+// inside, and how a build is told from the others, is in known_title_builds.h; what follows is
+// the same in all of them.
 using Builds::Build;
 using Builds::ConsoleSizes;
 using Builds::FirstHeadsetLevel;
 using Builds::LastHeadsetLevel;
 
+// The tracking manager, a singleton: the point it counts positions from, and for the headset
+// the position counted from it.
 constexpr u64 ManagerOrigin = 0x6210;
 constexpr u64 ManagerHeadState = 0x6848;
 constexpr u64 StatePosition = 0x10;
 constexpr u64 StatePositionValid = 0x54;
-constexpr u64 ResolutionBase = 0x0;
-constexpr u64 ResolutionLevel = 0x4;
-constexpr u64 ResolutionOffset = 0x20;
-constexpr u64 ResolutionHighest = 0x28;
-constexpr u64 ResolutionLowest = 0x2c;
 
+// What sets the size the scene is drawn at, a singleton made when first asked for: the size is
+// one of a list (ConsoleSizes, the first three are for a television), a base (4 on the
+// console, 6 on its Pro model) plus an offset that the game moves between a lowest and a
+// highest one by how long it finds the GPU to take over its drawing. It reads that off
+// timestamps which, emulated, tell how long the emulator took to pass the drawing on, not how
+// long the GPU takes over it: left to itself, the game draws large where the GPU is busiest.
+constexpr u64 ResolutionBase = 0x0;     // s32
+constexpr u64 ResolutionLevel = 0x4;    // s32
+constexpr u64 ResolutionOffset = 0x20;  // s32
+constexpr u64 ResolutionHighest = 0x28; // s32, an offset
+constexpr u64 ResolutionLowest = 0x2c;  // s32, an offset
+
+/// The build of the title that runs, and where its image starts, from the moment its image is
+/// loaded and found to be one of those known (OnGameLoaded); nullptr for every other title and
+/// every other build.
 std::atomic<const Build*> known_build{nullptr};
 VAddr known_base{};
 
@@ -235,8 +249,8 @@ public:
         s32 fastest_now = refresh > SlowDisplay ? 1 : fastest_pace;
         if (fps_cap > 0.0) {
             // The fewest refreshes that keep frames to the cap.
-            fastest_now =
-                std::max<s32>(1, static_cast<s32>(std::ceil(1.0 / (refresh * fps_cap) - 0.01)));
+            fastest_now = std::max<s32>(
+                1, static_cast<s32>(std::ceil(1.0 / (refresh * fps_cap) - 0.01)));
         }
         if (fixed_pace == 0 && (fastest_now != fastest || pace < fastest_now)) {
             // The display turned out to be another kind than was thought (its rate is only
@@ -308,8 +322,7 @@ private:
         const auto since_change = now - changed;
         const auto cost_at = [&](s32 other) { return gpu * cost[other] / cost[level]; };
         // The slowest pace frames are ever held to, and the smallest size wanted at a pace.
-        const s32 slowest =
-            std::max(std::max(2, fastest), static_cast<s32>(SlowestWanted / refresh));
+        const s32 slowest = std::max(std::max(2, fastest), static_cast<s32>(SlowestWanted / refresh));
         const auto smallest_at = [&](s32 refreshes_given) {
             return !paced || refreshes_given >= slowest ? FirstHeadsetLevel : UsualLevel;
         };
@@ -404,8 +417,8 @@ private:
         // (A frame for every refresh is not tried again for long where the title's own work was
         // seen not to fit one, as on a display that refreshes faster than the title can draw
         // whatever its size: every try is a few seconds of frames that come unevenly.)
-        const bool own_fits = pace != 2 || own_time == 0.0 || own_time * (1.0 + Over) <= refresh ||
-                              now - last_pace_regret > Forget;
+        const bool own_fits = pace != 2 || own_time == 0.0 ||
+                              own_time * (1.0 + Over) <= refresh || now - last_pace_regret > Forget;
         if (paced && pace > fastest && now > faster_allowed && own_fits) {
             const s32 smallest = sized ? smallest_at(pace - 1) : level;
             if (cost_at(smallest) * (1.0 + PaceMargin) <= (pace - 1) * refresh) {
@@ -527,12 +540,13 @@ private:
 /// it has not got that far. Holds it to `wanted` on the way unless that is 0.
 s32 TendResolution(VAddr base, const Build& build, s32 wanted) {
     const u64 control = Read<u64>(base + build.resolution_pointer);
-    if (!Accessible(control, ResolutionLowest + sizeof(s32), true)) {
+    if (control == 0) {
         return -1;
     }
     const s32 level = Read<s32>(control + ResolutionLevel);
     const s32 base_level = Read<s32>(control + ResolutionBase);
     if (level < 0 || level > LastHeadsetLevel || base_level < 0 || base_level > LastHeadsetLevel) {
+        // Not what is known of it: looked at, never written to.
         return -1;
     }
     if (wanted != 0 && level >= FirstHeadsetLevel) {
@@ -665,7 +679,8 @@ void OnFrameSubmitted() {
                  "left to itself); it draws the scene at {} an eye and is given {} refreshes a "
                  "frame ({:.1f} ms), the GPU busy {:.0f}% of the time",
                  report_real / report_frames * 1e3, step * 1e3, 100.0 * stepped / report_real,
-                 report_real, 100.0 * Nominal * report_frames / report_real, SizeName(resolution),
+                 report_real, 100.0 * Nominal * report_frames / report_real,
+                 SizeName(resolution),
                  summary.pace, summary.slot * 1e3, summary.load * 100.0);
         report_time = now;
         report_real = 0.0;
@@ -693,37 +708,45 @@ void Prepare() {
 }
 
 void OnGameLoaded(VAddr base, u64 size) {
-    known_build.store(nullptr, std::memory_order_release);
-    const auto image = std::span{reinterpret_cast<u8*>(base), static_cast<size_t>(size)};
-    const Build* const build = RecognizeBuild(base, size);
-    if (build == nullptr) {
-        if (Common::ElfInfo::Instance().GameSerial() == "CUSA12392") {
-            LOG_WARNING(Core, "Unrecognized or modified CUSA12392 layout: title resolution and "
-                              "time-step patches disabled (no game memory changed)");
-        }
+    if (Common::ElfInfo::Instance().GameSerial() != "CUSA12392") {
         return;
     }
+    // Asked here and nowhere else: this is the one moment at which the image is as its build
+    // has it. Its sizes may be other ones from here on, and its clock is once it runs.
+    const std::span<u8> image{reinterpret_cast<u8*>(base), static_cast<size_t>(size)};
+    const Build* const build = Builds::Recognise(image);
+    if (build == nullptr) {
+        LOG_WARNING(Core,
+                    "This build of CUSA12392 is none of those known from inside (its versions "
+                    "1.00 and 1.04 are): it is left to itself. It then counts time in frames, "
+                    "which is slow motion wherever a frame takes longer than a sixtieth of a "
+                    "second, and draws at the console's sizes");
+        return;
+    }
+    LOG_INFO(Core, "CUSA12392 in a build known from inside: {}", build->name);
+
     const Larger& larger = GetLarger();
     if (larger.factor != 1.0) {
+        // Every place is checked for what the console's build has there before anything is
+        // written: a title that turns out to be other than thought is left as it is.
         const auto changes = Builds::SizeChanges(*build, larger);
-        if (const auto* unexpected = Builds::Apply(image, changes); unexpected != nullptr) {
-            LOG_WARNING(Core, "Title patch rejected at {:#x}: no title patches enabled",
-                        unexpected->at);
-            return;
+        if (const Builds::Change* unexpected = Builds::Apply(image, changes);
+            unexpected != nullptr) {
+            LOG_WARNING(Core,
+                        "The title does not have {:#x} at {:#x} as expected: it draws at the "
+                        "console's sizes",
+                        unexpected->was, unexpected->at);
+        } else {
+            LOG_INFO(Core,
+                     "The title draws at up to {} an eye instead of 1440x1536 ({:.2f} times as "
+                     "wide), the smallest {}; its render targets have {} MB, its graphics memory "
+                     "{} MB",
+                     SizeName(LastHeadsetLevel), larger.factor, SizeName(FirstHeadsetLevel),
+                     larger.target_pool >> 20, larger.graphics_heap >> 20);
         }
     }
     known_base = base;
     known_build.store(build, std::memory_order_release);
-    LOG_INFO(Core, "Verified title profile {}: resolution and time-step support enabled",
-             build->name);
-    if (larger.factor == 1.0) {
-        return;
-    }
-    LOG_INFO(Core,
-             "The title draws at up to {} an eye instead of 1440x1536 ({:.2f} times as wide), "
-             "the smallest {}; its render targets have {} MB, its graphics memory {} MB",
-             SizeName(LastHeadsetLevel), larger.factor, SizeName(FirstHeadsetLevel),
-             larger.target_pool >> 20, larger.graphics_heap >> 20);
 }
 
 void NoteView(const Vr::Vec3& tracker_head) {
@@ -744,13 +767,12 @@ void NoteView(const Vr::Vec3& tracker_head) {
         return;
     }
     const u64 manager = Read<u64>(base + build->manager_pointer);
-    if (!Accessible(manager, ManagerHeadState + sizeof(u64))) {
+    if (manager == 0) {
         return;
     }
     const auto origin = Read<Vr::Vec3>(manager + ManagerOrigin);
     const u64 state = Read<u64>(manager + ManagerHeadState);
-    if (!Accessible(state, StatePositionValid + sizeof(u8)) ||
-        Read<u8>(state + StatePositionValid) == 0) {
+    if (state == 0 || Read<u8>(state + StatePositionValid) == 0) {
         return;
     }
     const auto head = Read<Vr::Vec3>(state + StatePosition);

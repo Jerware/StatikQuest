@@ -71,18 +71,6 @@ struct Build {
     u64 graphics_heap; // u64
 };
 
-struct CodeCheck {
-    u64 at;
-    std::array<u8, 11> bytes;
-    u32 size;
-};
-
-inline constexpr std::array<CodeCheck, 3> AlternateCode{{
-    {0x40d7, {0x48, 0x8d, 0x1d, 0x82, 0xbd, 0xec, 0x02}, 7},
-    {0xcc613b, {0x4c, 0x8d, 0x3d, 0xa6, 0xc9, 0x20, 0x02}, 7},
-    {0xecc560, {0x48, 0x8d, 0x05, 0x61, 0x43, 0x85, 0x00, 0x48, 0x8b, 0x00, 0xc3}, 11},
-}};
-
 inline constexpr std::array<Build, 2> Known{{
     {
         .name = "1.00, as on the disc",
@@ -213,18 +201,9 @@ inline bool Is(const Build& build, std::span<const u8> image) {
         return false;
     }
     for (u32 level = 0; level < ConsoleSizes.size(); ++level) {
-        const u64 pixels = u64{ConsoleSizes[level][0]} * ConsoleSizes[level][1];
         if (!holds(build.size_widths + 4 * level, &ConsoleSizes[level][0], sizeof(u32)) ||
-            !holds(build.size_heights + 4 * level, &ConsoleSizes[level][1], sizeof(u32)) ||
-            !holds(build.size_pixels + 32 * level, &pixels, sizeof(pixels))) {
+            !holds(build.size_heights + 4 * level, &ConsoleSizes[level][1], sizeof(u32))) {
             return false;
-        }
-    }
-    if (build.set_recentre == Known[1].set_recentre) {
-        for (const auto& check : AlternateCode) {
-            if (!holds(check.at, check.bytes.data(), check.size)) {
-                return false;
-            }
         }
     }
     // Every place a larger picture is written to, as the console has it.

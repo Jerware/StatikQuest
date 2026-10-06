@@ -57,109 +57,6 @@ multisampling, and draws far larger than the console ever did: 2880x3072 an eye 
 four times the pixels of its largest size (1440x1536, what a PlayStation 4 Pro uses), chosen
 in a small window at every start.
 
-## Game versions
-
-The PC emulator supports the verified European **CUSA12392 1.00 and 1.04 executable
-layouts** in one build. There is no version selector: choose your game's `eboot.bin` or
-complete package. The emulator checks the executable's signatures, offsets and original
-values before applying resolution, allocation or timing patches. A package filename,
-`APP_VER` or `VERSION` does not determine compatibility.
-
-### A complete 1.04 game in one package
-
-Put your dumped, unencrypted full-game `.pkg` in `games`, or select it when the launcher
-asks where the game is. Let the launcher unpack it, then press Play. A complete 1.04
-package already includes the base assets; you do not need to install 1.00 first.
-
-For an already unpacked complete 1.04 game, select its `eboot.bin` or put its folder in
-`games`. Keep `sce_sys\param.sfo`, `sce_module` and the other game assets with it. Do not
-copy just the updated executable into an otherwise incomplete folder.
-
-We tested a base game with a separate update, not a merged 1.04 package. A complete
-package with the same verified executable layout uses the same profile; modified or
-unknown layouts do not receive title patches.
-
-### A base game plus a separate 1.04 update
-
-An update-only package lacks the base assets. The launcher's base-game installer rejects
-packages marked as updates, so they cannot overwrite your base installation. Use shadPS4's
-native update overlay instead:
-
-1. Unpack the base game into `games\CUSA12392` with the launcher.
-2. Extract your dumped update into a staging folder with PkgTool (included in the PC
-   distribution) or another compatible extractor. For example, from the AstroQuest folder
-   in PowerShell:
-
-   ```powershell
-   $tool = ".\pc-vr\pkgtool\PkgTool.exe"
-   $update = "C:\Games\astrobot-update-1.04.pkg"
-   & $tool pkg_extract --passcode ("0" * 32) $update ".\update-unpacked"
-   ```
-
-3. PkgTool puts the game files under `update-unpacked\uroot`. Rename that folder to
-   `CUSA12392-UPDATE` and place it beside the base folder in `games`. If your extractor
-   writes the files directly into its output folder, use that folder instead.
-4. Check that the update has `sce_sys\param.sfo`. PkgTool stores this metadata outside
-   `uroot`, so extract it separately. Run `pkg_listentries` and use the **Index** shown on
-   the `PARAM_SFO` row; the example below uses `10`, which may differ in your package:
-
-   ```powershell
-   & $tool pkg_listentries $update
-   New-Item -ItemType Directory -Force ".\games\CUSA12392-UPDATE\sce_sys" | Out-Null
-   & $tool pkg_extractentry --passcode ("0" * 32) $update 10 ".\games\CUSA12392-UPDATE\sce_sys\param.sfo"
-   ```
-
-The resulting layout is:
-
-```text
-games\CUSA12392\eboot.bin
-games\CUSA12392\sce_sys\param.sfo
-games\CUSA12392-UPDATE\eboot.bin
-games\CUSA12392-UPDATE\sce_sys\param.sfo
-```
-
-Leave the base assets and all the extracted update files in those folders. Launch the
-**base** `games\CUSA12392\eboot.bin`; shadPS4 loads the update executable and overlays
-the update's files where present. The launcher reports the selected path and package
-metadata, then prints the emulator's verified executable profile:
-
-- `Verified title profile 1.00, as on the disc`: the supported 1.00 layout.
-- `Verified title profile 1.04, the last update`: the supported 1.04 layout.
-- `Unrecognized or modified CUSA12392 layout`: no title resolution or time-step patches
-  were applied. Check your complete dump; do not rename a package or edit its metadata
-  to force a profile.
-
-### Saves and rollback
-
-For an independent 1.04 test, use a second AstroQuest folder with its own `pc-vr\user`
-directory, fresh saves and caches, and copies of the required configuration and system
-modules. Keep your working 1.00 installation unchanged. Both versions otherwise use the
-same title ID and save location; back up `pc-vr\user` before switching game files in one
-installation. Do not assume a save written by 1.04 can be loaded by 1.00.
-
-With a base-plus-update installation, move the `CUSA12392-UPDATE` folder outside `games`
-to return to the base version, then restore the matching save backup. Keep the folder
-for later; do not merge update files into the base folder.
-
-Before the merge with main, ODevStudio built and linked PR #15 both on its own and with
-the Index and spectator changes from PRs #6 and #11. On a Valve Index through SteamVR/OpenXR
-with a PC-connected DualSense and fresh 1.04 saves, the tester completed controller
-calibration and played the first level using the combined build. Combined-eye spectator
-crop also passed. Tests checked both actual executable layouts, 2880x3072 output and
-timing at 60 and 40 FPS, and timing at the original 1440x1536 resolution.
-
-Upstream also tested both versions on the PC and, without wearing it, on the Quest 3
-(title, controller screen, world map and entry into a level). Those runs used upstream's
-calibration implementation. The merged pose-based calibration still needs headset
-regression tests. Other regions and additional executable variants remain untested.
-
-The 1.04 resolution offsets build on
-[Clodo76's investigation in issue #1](https://github.com/bigmak94/AstroQuest/issues/1).
-Reports in issues [#3](https://github.com/bigmak94/AstroQuest/issues/3),
-[#5](https://github.com/bigmak94/AstroQuest/issues/5) and
-[#7](https://github.com/bigmak94/AstroQuest/issues/7) describe related 1.04 symptoms;
-they are not separate tested configurations.
-
 ## Playing
 
 1. **The controller goes to the PC**, not to the headset: a USB-C cable, or Bluetooth (hold
@@ -290,6 +187,50 @@ place as far as hand tracking sees the hands around it). At the first screen, ho
 controller into the outline; gadgets shoot where it points. `controller_hand=left` in the
 settings makes it the left one. The game's rumble goes to both controllers. A gamepad that
 is connected to the PC takes over at once, and gives the controllers back when it goes.
+
+## The game's versions
+
+The emulator knows two builds of the game's executable from inside: the one on the disc
+(1.00) and the last update (1.04). It tells them apart by what the executable holds when it
+is loaded, not by what a package's name or `param.sfo` says, and the console window names
+the one it found (`CUSA12392 in a build known from inside: ...`). Any other build is left to
+itself: it plays at the console's sizes, and in slow motion where frames take long.
+
+- **A copy of the game that has the update in it** (one package, or one folder): put it in
+  `games` as it is. Keep the whole folder together: an updated `eboot.bin` alone in an
+  otherwise incomplete folder is not the game.
+- **The game and its update as two packages**: the launcher unpacks the game's own package
+  and leaves the update alone (an update holds only the files it changed, and is turned down
+  if it is offered as the game). The game then plays as on its disc. To play it updated, the
+  update gets a folder of its own next to the game's, named `CUSA12392-UPDATE`, which the
+  emulator lays over the game's files as shadPS4 does; the game's own folder is not changed.
+  With PkgTool, which is in the `pc-vr\pkgtool` folder, from the AstroQuest folder in
+  PowerShell:
+
+  ```powershell
+  $tool = ".\pc-vr\pkgtool\PkgTool.exe"
+  $update = "C:\Games\astrobot-update-1.04.pkg"
+  & $tool pkg_extract --passcode ("0" * 32) $update ".\update-unpacked"
+  Move-Item ".\update-unpacked\uroot" ".\games\CUSA12392-UPDATE"
+  # The update's description of itself is kept apart in the package: its number is on the
+  # PARAM_SFO line of the list (10 in the 1.04 update tried here).
+  & $tool pkg_listentries $update
+  New-Item -ItemType Directory -Force ".\games\CUSA12392-UPDATE\sce_sys" | Out-Null
+  & $tool pkg_extractentry --passcode ("0" * 32) $update 10 ".\games\CUSA12392-UPDATE\sce_sys\param.sfo"
+  ```
+
+  Start the game as always: the launcher still names `games\CUSA12392\eboot.bin`, and the
+  emulator runs the update's.
+- **Saves** are in the same place for both versions (`pc-vr\user\home\1000\savedata\CUSA12392`).
+  A save made by 1.00 loads in 1.04; whether one written by 1.04 loads in 1.00 has not been
+  tried, so copy that folder before changing versions. To go back to 1.00, move
+  `CUSA12392-UPDATE` out of `games`.
+
+Tried here: both versions on the PC and, without wearing it, on the Quest 3 (title, the
+controller's screen, world map, into a level; 1.04 at 2880x3072 an eye on the PC).
+ODevStudio played 1.04 through its first level on a Valve Index with a fix of their own for
+the same thing (pull request #15), whose write-up of the folders this section follows. 1.00
+is the version played the most.
 
 ## Desktop Spectator View
 
@@ -502,7 +443,7 @@ Things that had to be right, for whoever works on this again:
   executable is also laid out differently, so the emulator did not know it and gave it
   neither the larger pictures nor the game's own speed ("resolution stuck at the lowest"):
   both builds are known now, 1.00 and 1.04, told apart by what the executable holds when it
-  is loaded (the console window says "Verified title profile ..."). The
+  is loaded (the console window says "CUSA12392 in a build known from inside: ..."). The
   addresses for 1.04 are Clodo76's. Any other version still plays as before: at the
   console's sizes, and in slow motion where frames take long.
 - **A package that is only the game's update** was unpacked as if it were the game. The
@@ -641,7 +582,7 @@ it; the system's runtime stays Virtual Desktop's.
 | `tools/xrsim-keys.ps1 <key>:<ms> ...` | works the simulator's window: `B` is A and X, `N` is B and Y, `Y G H J` the sticks, `I` the sticks pressed in, `Comma` the menu button (hold keys for a second: short presses are not always seen); `Look:<dx>,<dy>` turns the simulated head, `Click:<x>,<y>` clicks |
 | `tools/pc-rate-compare.sh <name> "<NAME=value ...>"` | the same scripted level walk at 60 frames a second and with the given settings, a picture every two seconds from each |
 | `tools/xr-probe-win` (`build/xr-probe-win/xr_probe_win.exe`) | what a runtime offers: extensions, system, Vulkan requirements |
-| `tools/tests/launcher-test.ps1` | checks game discovery, update-only installer rejection, cancellation and profile log messages. Supply `-PkgTool <path>` for package-header tests; `-BasePackage <path>` and `-UpdatePackage <path>` also check your local dumps without extracting them |
+| `tools/tests/launcher-test.ps1` | tries the launcher's search for the game (unpacked games and packages, names with brackets, leftovers of an unpacking) on made-up folders |
 | `tools/ui-drive.ps1 -Steps "text\|picture.png\|button\|seconds", ...` | works the launcher's own windows and message boxes from outside: waits for one that shows a text, saves a picture of it, presses a button. With a release unzipped somewhere and a package put in its `games` folder, that is the whole first start, from the question about unpacking to Play |
 
 Settings for tests: `SHADPS4_XR_HEAD=0` (the head is a script's to move, the host only
@@ -687,16 +628,3 @@ bash tools/make-pc-vr.sh                                                   # cop
 
 The OpenXR loader (Khronos OpenXR-SDK 1.1.63, `externals/openxr-sdk`) is built with the
 emulator; `ENABLE_OPENXR` (on for Windows) switches the whole of it.
-
-The compatibility checks need a C++23 compiler and no headset or game files:
-
-```sh
-clang++ -std=c++23 -Ishadps4-arm64-main/src tools/tests/known_title_builds_test.cpp -o build/profile-test.exe
-clang++ -std=c++23 -Ishadps4-arm64-main/src tools/tests/vr_tracker_calibration_test.cpp -o build/calibration-test.exe
-build/profile-test.exe
-build/calibration-test.exe
-```
-
-The profile test also accepts local plain ELF executables to check real layouts. Use
-`tools/ps4elf.mjs unwrap` to convert a SELF executable first, and keep extracted game files
-outside Git.

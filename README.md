@@ -53,8 +53,7 @@ over Virtual Desktop and fixed since. Expect rough edges, and please report what
   that is only the game's update is not the game: unpacked into a folder named
   `CUSA12392-UPDATE` next to the game's `CUSA12392`, it is played over it.) Other regions and
   the versions in between are untested, and the fixes for the game's timing and resolution
-  only apply to these two. See [Game versions](README-PC-VR.md#game-versions) for complete
-  packages, separate updates, saves and rollback.
+  only apply to these two.
 - To install on the headset: a computer with
   [adb](https://developer.android.com/tools/releases/platform-tools) (or
   [SideQuest](https://sidequestvr.com/)) and the headset in

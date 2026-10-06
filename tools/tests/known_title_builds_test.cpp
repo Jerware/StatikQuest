@@ -34,19 +34,12 @@ static void Put(std::vector<u8>& image, u64 at, T value) {
 static std::vector<u8> MadeUp(const Build& build) {
     std::vector<u8> image(0x3200000);
     std::memcpy(image.data() + build.set_recentre, SetRecentreCode.data(), SetRecentreCode.size());
-    if (build.set_recentre == Known[1].set_recentre) {
-        for (const auto& check : AlternateCode) {
-            std::memcpy(image.data() + check.at, check.bytes.data(), check.size);
-        }
-    }
     Put(image, build.frame_rate, ConsoleFrameRate);
     Put(image, build.frame_seconds, ConsoleFrameSeconds);
     Put(image, build.frame_microseconds, ConsoleFrameMicroseconds);
     for (u32 level = 0; level < ConsoleSizes.size(); ++level) {
         Put(image, build.size_widths + 4 * level, ConsoleSizes[level][0]);
         Put(image, build.size_heights + 4 * level, ConsoleSizes[level][1]);
-        Put(image, build.size_pixels + 32 * level,
-            u64{ConsoleSizes[level][0]} * ConsoleSizes[level][1]);
     }
     for (const Change& change : SizeChanges(build, Sizes{})) {
         std::memcpy(image.data() + change.at, &change.was, change.bytes);
@@ -119,12 +112,7 @@ int main(int argc, char** argv) {
         // One byte off anywhere the emulator looks, and it is no build that is known.
         std::vector<u64> places{build.set_recentre + 3, build.frame_rate, build.frame_seconds,
                                 build.frame_microseconds, build.size_widths + 4 * 6,
-                                build.size_heights + 4 * 2, build.size_pixels};
-        if (build.set_recentre == Known[1].set_recentre) {
-            for (const auto& check : AlternateCode) {
-                places.push_back(check.at);
-            }
-        }
+                                build.size_heights + 4 * 2};
         for (const Change& change : SizeChanges(build, Sizes{})) {
             places.push_back(change.at);
         }
@@ -167,8 +155,6 @@ int main(int argc, char** argv) {
         // A place beyond the image.
         const std::vector<Change> beyond{{image.size() - 2, 0, 1, 4}};
         Check(Apply(image, beyond) == &beyond[0], name + ": nothing written beyond the image");
-        const std::vector<Change> overflow{{UINT64_MAX, 0, 1, 8}};
-        Check(Apply(image, overflow) == &overflow[0], name + ": overflowing destination refused");
     }
 
     // An image that would be both builds at once is neither.

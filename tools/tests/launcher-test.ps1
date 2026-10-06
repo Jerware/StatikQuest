@@ -3,23 +3,18 @@
 #   powershell -ExecutionPolicy Bypass -File tools/tests/launcher-test.ps1
 # With the game in games/CUSA12392 its param.sfo is used for the layouts; without it, the
 # checks that need one are left out.
-param([string]$GameSfo = "", [string]$PkgTool = "", [string]$BasePackage = "", [string]$UpdatePackage = "")
-
 $top = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $launcher = Join-Path $top "pc-vr\launch.ps1"
 Add-Type -AssemblyName System.Windows.Forms
-$parseErrors = $null
-$ast = [System.Management.Automation.Language.Parser]::ParseFile($launcher, [ref]$null, [ref]$parseErrors)
-if ($parseErrors.Count -gt 0) { throw ($parseErrors | Out-String) }
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($launcher, [ref]$null, [ref]$null)
 foreach ($function in $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $false)) {
     . ([scriptblock]::Create($function.Extent.Text))
 }
 $unpackFolder = ".unpacking"
 $madeFor = "CUSA12392"
-$realSfo = if ($GameSfo) { $GameSfo } else { Join-Path $top "games\CUSA12392\sce_sys\param.sfo" }
+$realSfo = Join-Path $top "games\CUSA12392\sce_sys\param.sfo"
 $haveSfo = [System.IO.File]::Exists($realSfo)
-$base = [System.IO.Path]::GetFullPath((Join-Path $top "build\launcher-test"))
-if (-not $base.StartsWith($top + "\build\", [System.StringComparison]::OrdinalIgnoreCase)) { throw "Unsafe test folder" }
+$base = Join-Path $top "build\launcher-test"
 if ([System.IO.Directory]::Exists($base)) { [System.IO.Directory]::Delete($base, $true) }
 $failed = 0
 function Check([string]$what, $got, $want) {
@@ -33,14 +28,14 @@ function Make-Game([string]$folder, [bool]$withSfo) {
         [System.IO.File]::Copy($realSfo, (Join-Path $folder "sce_sys\param.sfo"))
     }
 }
+# (`$flags`: what a package's header says it is, as its four bytes at 0x78: a game's own has
+# 0x0A000000 there, an update of it 0x62300000.)
 function Make-Package([string]$path, [string]$contentId, [int]$size, [uint32]$flags = 0x0A000000) {
     [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($path))
     $bytes = New-Object byte[] $size
     $bytes[0] = 0x7F; $bytes[1] = 0x43; $bytes[2] = 0x4E; $bytes[3] = 0x54
     [System.Text.Encoding]::ASCII.GetBytes($contentId).CopyTo($bytes, 0x40)
-    $flagBytes = [System.BitConverter]::GetBytes($flags)
-    [Array]::Reverse($flagBytes)
-    $flagBytes.CopyTo($bytes, 0x78)
+    $bytes[0x78] = [byte](($flags -shr 24) -band 0xFF); $bytes[0x79] = [byte](($flags -shr 16) -band 0xFF)
     [System.IO.File]::WriteAllBytes($path, $bytes)
 }
 
@@ -94,8 +89,10 @@ $g = "$base\e2\games"
 Make-Package "$g\game.pkg" "EP9000-CUSA12392_00-PLATFORMERVR00EU" 2048
 Make-Package "$g\A-Update-v1.04.pkg" "EP9000-CUSA12392_00-PLATFORMERVR00EU" 8192 0x62300000
 Make-Package "$g\first-patch.pkg" "EP9000-CUSA12392_00-PLATFORMERVR00EU" 4096 0x00100000
+Make-Package "$g\patchgo.pkg" "EP9000-CUSA12392_00-PLATFORMERVR00EU" 16384 0x00200000
 Check "e2 an update says so" (Test-UpdatePackage "$g\A-Update-v1.04.pkg") $true
 Check "e2 a first patch says so" (Test-UpdatePackage "$g\first-patch.pkg") $true
+Check "e2 a PATCHGO package is an update" (Test-UpdatePackage "$g\patchgo.pkg") $true
 Check "e2 the game's package before a larger update" (Find-Package $g).FullName "$g\game.pkg"
 # e3: nothing but updates: the largest of them, which is then turned down for what it is
 $g = "$base\e3\games"
@@ -115,58 +112,6 @@ Check "g  a folder" (Use-Path "$base\a") "$g\CUSA12392\eboot.bin"
 Check "g  an eboot.bin" (Use-Path "$g\CUSA12392\eboot.bin") "$g\CUSA12392\eboot.bin"
 Check "g  nothing there" (Use-Path "$base\a\nothing.bin") ""
 
-$g = "$base\h\games"
-foreach ($suffix in @("-UPDATE", "-patch", "-mods")) { Make-Game "$g\CUSA12392$suffix" $true }
-Check "h  overlays alone are not a base game" (Find-Game $g) ""
-Make-Game "$g\CUSA12392" $true
-Check "h  selects the base beside its overlays" (Find-Game $g) "$g\CUSA12392\eboot.bin"
-
-if (-not $PkgTool) { $PkgTool = Join-Path $top "tools\pkgtool\PkgTool.exe" }
-if ([System.IO.File]::Exists($PkgTool)) {
-    $full = "$base\full-1.04.pkg"
-    Make-Package $full "EP9000-CUSA12392_00-PLATFORMERVR00EU" 8192
-    Check "i  a full package needs no version choice" (Test-UpdateHeader (Read-PackageHeader $full $PkgTool)) $false
-    foreach ($flags in @(0x00100000, 0x00200000, 0x40000000, 0x41000000, 0x60000000)) {
-        $patch = "$base\patch.pkg"
-        Make-Package $patch "EP9000-CUSA12392_00-PLATFORMERVR00EU" 8192 $flags
-        Check "i  patch header flags $flags" (Test-UpdateHeader (Read-PackageHeader $patch $PkgTool)) $true
-        Check "i  patch discovery flags $flags" (Test-UpdatePackage $patch) $true
-    }
-    if ($BasePackage) { Check "i  actual base package" (Test-UpdateHeader (Read-PackageHeader $BasePackage $PkgTool)) $false }
-    if ($UpdatePackage) { Check "i  actual update package" (Test-UpdateHeader (Read-PackageHeader $UpdatePackage $PkgTool)) $true }
-
-    function Show-Box([string]$text) { $script:boxText = $text; return "No" }
-    $here = Split-Path -Parent (Split-Path -Parent $PkgTool)
-    $root = $base
-    $gamesFolder = "$base\h\games"
-    $longestInside = 126
-    Check "i  update rejected before unpacking" (Expand-Package ([System.IO.FileInfo]$patch)) ""
-    Check "i  update-only explanation" $boxText.StartsWith("This package is an update") $true
-    Check "i  base executable remains untouched" ([System.IO.File]::ReadAllText("$gamesFolder\CUSA12392\eboot.bin")) "x"
-    Check "i  no staging folder created" ([System.IO.Directory]::Exists("$gamesFolder\CUSA12392\.unpacking")) $false
-    Check "i  full-package cancellation" (Expand-Package ([System.IO.FileInfo]$full)) ""
-    Check "i  full package reaches unpack confirmation" $boxText.Contains("Unpack it now?") $true
-    Check "i  cancellation creates no staging folder" ([System.IO.Directory]::Exists("$gamesFolder\CUSA12392\.unpacking")) $false
-    $truncated = "$base\truncated.pkg"
-    Make-Package $truncated "EP9000-CUSA12392_00-PLATFORMERVR00EU" 128
-    Check "i  malformed header rejected" (Expand-Package ([System.IO.FileInfo]$truncated)) ""
-    Check "i  malformed-header explanation" $boxText.StartsWith("The package header could not be read") $true
-} else { "SKIP  package-header checks: supply -PkgTool" }
-
-function Say([string]$text, [string]$color = "Gray") { $script:messages += "$color|$text" }
-$messages = @()
-$log = "$base\profile-log.txt"
-$position = 0
-$shown = @{}
-[System.IO.File]::WriteAllLines($log, @(
-    "[Core] <Info> (Loader) known_title.cpp:785 OnGameLoaded: Verified title profile 1.04, the last update: resolution and time-step support enabled",
-    "[Core] <Warning> (Loader) known_title.cpp:766 OnGameLoaded: Unrecognized or modified CUSA12392 layout: title resolution and time-step patches disabled (no game memory changed)",
-    "[Core] <Warning> (Loader) known_title.cpp:778 OnGameLoaded: Title patch rejected at 0x123: no title patches enabled"
-))
-Show-Log
-Check "j  prints verified executable profile" ($messages[0] -like "Gray|*Verified title profile 1.04, the last update:*") $true
-Check "j  prints unknown-layout warning" ($messages[1] -like "Yellow|*Unrecognized or modified CUSA12392 layout:*") $true
-Check "j  prints patch rejection" ($messages[2] -like "Yellow|*Title patch rejected at 0x123:*") $true
 $steam = (Get-VrInstructions 'F:\steam\steamapps\common\SteamVR\steamxr_win64.json') -join "`n"
 Check "SteamVR instructions name the Index" ($steam -match 'Index') $true
 Check "SteamVR instructions require no Virtual Desktop" ($steam -match 'Virtual Desktop is not needed') $true

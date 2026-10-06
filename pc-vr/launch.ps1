@@ -192,7 +192,7 @@ function Get-GameInfo([string]$eboot) {
 function Find-Game([string]$top) {
     $first = $null
     foreach ($folder in (Get-Folders $top)) {
-        if ([System.IO.Path]::GetFileName($folder) -match '-(UPDATE|patch|mods)$') { continue }
+        if ($folder -match '-(UPDATE|patch|mods)$') { continue }
         $eboot = [System.IO.Path]::Combine($folder, "eboot.bin")
         if (-not [System.IO.File]::Exists($eboot)) { continue }
         if ((Get-GameInfo $eboot)["TITLE_ID"] -eq $madeFor) { return $eboot }
@@ -250,23 +250,6 @@ function Read-PackageId([string]$path) {
         }
         return [System.Text.Encoding]::ASCII.GetString($head, 0x40, 36).Trim([char]0)
     } catch { return $null }
-}
-
-function Read-PackageHeader([string]$path, [string]$tool) {
-    $library = Join-Path ([System.IO.Path]::GetDirectoryName($tool)) "LibOrbisPkg.dll"
-    [void][System.Reflection.Assembly]::LoadFrom($library)
-    $stream = [System.IO.File]::OpenRead($path)
-    try {
-        if ($stream.Length -lt 0x490) { throw "Truncated package header" }
-        return ([LibOrbisPkg.PKG.PkgReader]::new($stream)).ReadHeader()
-    } finally { $stream.Dispose() }
-}
-
-function Test-UpdateHeader($header) {
-    $patchFlags = [LibOrbisPkg.PKG.ContentFlags]::FIRST_PATCH -bor
-                  [LibOrbisPkg.PKG.ContentFlags]::PATCHGO -bor
-                  [LibOrbisPkg.PKG.ContentFlags]::SUBSEQUENT_PATCH
-    return ($header.content_flags -band $patchFlags) -ne 0
 }
 
 # The window shown while a package is unpacked. True when the unpacking ran to its end, false
@@ -353,16 +336,6 @@ function Expand-Package($package) {
     }
     if ($null -eq $tool) {
         [void](Show-Box ("The game is here as a package:`n" + $package.FullName + "`n`nbut PkgTool, which unpacks packages, is missing from`n" + (Join-Path $here "pkgtool") + "`n`nUnzip the whole AstroQuest package again.") "OK" "Warning")
-        return $null
-    }
-    try {
-        $header = Read-PackageHeader $package.FullName $tool
-    } catch {
-        [void](Show-Box ("The package header could not be read. Nothing was unpacked.`n`n" + $package.FullName + "`n`n" + $_.Exception.Message) "OK" "Warning")
-        return $null
-    }
-    if (Test-UpdateHeader $header) {
-        [void](Show-Box ("This package is an update, not a complete game. It needs the base game's files and must not replace them.`n`nExtract it into a separate CUSA12392-UPDATE folder beside CUSA12392, then launch the base game's eboot.bin. See README-PC-VR.md, Game versions.`n`n" + $package.FullName) "OK" "Warning")
         return $null
     }
     $serial = "game"
@@ -794,13 +767,13 @@ Say ("The game: " + $game)
 $info = Get-GameInfo $game
 if ($info.Count -eq 0) {
     Say "sce_sys\param.sfo is missing next to it: this is not a complete copy of the game, and the emulator may not know it." "Yellow"
-} else {
-    Say ("Package metadata: " + $info["TITLE"] + ", " + $info["TITLE_ID"] + ", APP_VER=" + $info["APP_VER"] + ", VERSION=" + $info["VERSION"])
-    if ($info["TITLE_ID"] -ne $madeFor) {
-        Say ("AstroQuest's title patches support the European release " + $madeFor + ". This title may not run.") "Yellow"
-    }
+} elseif ($info["TITLE_ID"] -ne $madeFor) {
+    Say ("This is " + $info["TITLE"] + ", " + $info["TITLE_ID"] + ". AstroQuest is made for ASTRO BOT Rescue Mission in its European release, " + $madeFor + ": its fixes for the game's speed and picture do not apply to another, and it may not run.") "Yellow"
+} elseif (@("01.00", "01.04") -notcontains $info["APP_VER"]) {
+    # (What decides is the executable itself, which the emulator looks at as it loads it and
+    # names below; what the game says its version is can be wrong.)
+    Say ("This copy of the game says it is version " + $info["APP_VER"] + ". AstroQuest knows versions 01.00 and 01.04 from inside: another plays in slow motion where frames take long, and at the console's resolution.") "Yellow"
 }
-Say "The emulator recognizes the 1.00 and 1.04 executable layouts by their contents, not package metadata. Its verified profile or rejection appears below."
 $gameFolder = [System.IO.Path]::GetDirectoryName($game)
 if ($info["TITLE_ID"] -eq $madeFor -and -not [System.IO.File]::Exists([System.IO.Path]::Combine($gameFolder, "sce_module", "libc.prx"))) {
     [void](Show-Box ("This is not a complete copy of the game:`n" + $gameFolder + "`n`nParts that every copy has are missing (sce_module\libc.prx for one). A folder with only an update of the game in it looks like this: an update holds the files it changed and no more. Put the update's files over a copy of the whole game, or use the game without its update.") "OK" "Warning")
@@ -966,8 +939,10 @@ function Show-Log {
                 Say ("  " + $Matches[1])
             } elseif ($line -match '^\[Input\] <Warning> \([^)]*\) \S+ (?:\w+: )?(Controller .*)$') {
                 Say ("  " + $Matches[1]) "Yellow"
-            } elseif ($line -match '^\[Core\] <(Info|Warning)> \([^)]*\) \S+ (?:\w+: )?(Verified title profile .*|Unrecognized or modified CUSA12392 layout:.*|Title patch rejected at .*|The title draws at up to .*|The scene is drawn at .*|Frames are given .*)$') {
-                if ($Matches[1] -eq "Warning") { Say ("  " + $Matches[2]) "Yellow" } else { Say ("  " + $Matches[2]) }
+            } elseif ($line -match '^\[Core\] <Info> \([^)]*\) \S+ (?:\w+: )?(CUSA12392 in a build .*|The title draws at up to .*|The scene is drawn at .*|Frames are given .*)$') {
+                Say ("  " + $Matches[1])
+            } elseif ($line -match '^\[Core\] <Warning> \([^)]*\) \S+ (?:\w+: )?(This build of CUSA12392 .*)$') {
+                Say ("  " + $Matches[1]) "Yellow"
             } elseif ($line -match '^\[Lib\.AudioIn\] <(Info|Warning)> \([^)]*\) \S+ (?:\w+: )?(Microphone: .*)$') {
                 if ($Matches[1] -eq "Warning") { Say ("  " + $Matches[2]) "Yellow" } else { Say ("  " + $Matches[2]) }
             } elseif ($line -match '<Critical>.*?: (.*)$') {
