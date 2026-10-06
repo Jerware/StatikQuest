@@ -188,6 +188,50 @@ controller into the outline; gadgets shoot where it points. `controller_hand=lef
 settings makes it the left one. The game's rumble goes to both controllers. A gamepad that
 is connected to the PC takes over at once, and gives the controllers back when it goes.
 
+## The game's versions
+
+The emulator knows two builds of the game's executable from inside: the one on the disc
+(1.00) and the last update (1.04). It tells them apart by what the executable holds when it
+is loaded, not by what a package's name or `param.sfo` says, and the console window names
+the one it found (`CUSA12392 in a build known from inside: ...`). Any other build is left to
+itself: it plays at the console's sizes, and in slow motion where frames take long.
+
+- **A copy of the game that has the update in it** (one package, or one folder): put it in
+  `games` as it is. Keep the whole folder together: an updated `eboot.bin` alone in an
+  otherwise incomplete folder is not the game.
+- **The game and its update as two packages**: the launcher unpacks the game's own package
+  and leaves the update alone (an update holds only the files it changed, and is turned down
+  if it is offered as the game). The game then plays as on its disc. To play it updated, the
+  update gets a folder of its own next to the game's, named `CUSA12392-UPDATE`, which the
+  emulator lays over the game's files as shadPS4 does; the game's own folder is not changed.
+  With PkgTool, which is in the `pc-vr\pkgtool` folder, from the AstroQuest folder in
+  PowerShell:
+
+  ```powershell
+  $tool = ".\pc-vr\pkgtool\PkgTool.exe"
+  $update = "C:\Games\astrobot-update-1.04.pkg"
+  & $tool pkg_extract --passcode ("0" * 32) $update ".\update-unpacked"
+  Move-Item ".\update-unpacked\uroot" ".\games\CUSA12392-UPDATE"
+  # The update's description of itself is kept apart in the package: its number is on the
+  # PARAM_SFO line of the list (10 in the 1.04 update tried here).
+  & $tool pkg_listentries $update
+  New-Item -ItemType Directory -Force ".\games\CUSA12392-UPDATE\sce_sys" | Out-Null
+  & $tool pkg_extractentry --passcode ("0" * 32) $update 10 ".\games\CUSA12392-UPDATE\sce_sys\param.sfo"
+  ```
+
+  Start the game as always: the launcher still names `games\CUSA12392\eboot.bin`, and the
+  emulator runs the update's.
+- **Saves** are in the same place for both versions (`pc-vr\user\home\1000\savedata\CUSA12392`).
+  A save made by 1.00 loads in 1.04; whether one written by 1.04 loads in 1.00 has not been
+  tried, so copy that folder before changing versions. To go back to 1.00, move
+  `CUSA12392-UPDATE` out of `games`.
+
+Tried here: both versions on the PC and, without wearing it, on the Quest 3 (title, the
+controller's screen, world map, into a level; 1.04 at 2880x3072 an eye on the PC).
+ODevStudio played 1.04 through its first level on a Valve Index with a fix of their own for
+the same thing (pull request #15), whose write-up of the folders this section follows. 1.00
+is the version played the most.
+
 ## Desktop Spectator View
 
 The launcher offers **Stereo**, **Single eye** and **Combined eyes**. Single eye shows the
