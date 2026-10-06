@@ -117,6 +117,9 @@ struct Config {
     /// The field of view the title is told of is the headset's own (as the host found it), not
     /// a PlayStation VR's; fov_scale applies to either.
     bool fov_from_headset{false};
+    /// Use matching render bounds for both eyes, enclosing the detected headset frusta.
+    /// This preserves binocular coverage when a standalone host narrows the view.
+    bool fov_symmetric{false};
     float fov_scale{1.0f};
     /// Where the player's resting head position sits in tracker space. The PS Camera is the
     /// origin, so the player is placed a comfortable distance in front of it.

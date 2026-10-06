@@ -148,6 +148,30 @@ JNIEXPORT void JNICALL Java_com_astrobotquest_vrhost_MainActivity_nativeStop(JNI
     g_app.reset();
 }
 
+JNIEXPORT void JNICALL Java_com_astrobotquest_vrhost_MainActivity_nativeSetFieldOfView(
+    JNIEnv*, jobject, jint percent) {
+    if (g_app) {
+        g_app->xr_status.reduced_fov = percent < 100;
+    }
+}
+
+JNIEXPORT jfloatArray JNICALL Java_com_astrobotquest_vrhost_MainActivity_nativeHeadsetFov(
+    JNIEnv* env, jobject) {
+    if (!g_app) {
+        return nullptr;
+    }
+    std::scoped_lock lock{g_app->xr_status.optics_mutex};
+    const auto& fov = g_app->xr_status.headset_fov;
+    if (fov[0] <= 0.0f) {
+        return nullptr;
+    }
+    const jfloatArray result = env->NewFloatArray(4);
+    if (result != nullptr) {
+        env->SetFloatArrayRegion(result, 0, 4, fov.data());
+    }
+    return result;
+}
+
 JNIEXPORT jint JNICALL Java_com_astrobotquest_vrhost_MainActivity_nativeCoreState(JNIEnv*,
                                                                                   jobject) {
     return g_app ? static_cast<jint>(g_app->core.GetState()) : 0;

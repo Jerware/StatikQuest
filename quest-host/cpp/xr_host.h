@@ -2,6 +2,7 @@
 #pragma once
 
 #include <atomic>
+#include <array>
 #include <cstdint>
 #include <mutex>
 #include <vector>
@@ -79,6 +80,12 @@ struct XrHostStatus {
     std::atomic<bool> session_running{};
     std::atomic<bool> hands_tracked{};
     std::atomic<float> refresh_rate{};
+    /// Set when the startup choice is confirmed, before the game can deliver any frames.
+    std::atomic<bool> reduced_fov{};
+    /// Full projection tangents reported by this headset: out, in, up, down.
+    /// The startup menu snapshots them before the emulator is launched.
+    std::mutex optics_mutex;
+    std::array<float, 4> headset_fov{};
 };
 
 /// Owns the OpenXR session: feeds the head pose to the core and shows the stereo frames it

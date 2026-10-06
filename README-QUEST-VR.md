@@ -38,6 +38,42 @@ finds none (`README-PC-VR.md`). The folder it unpacks is also what the headset n
 longer stays silent after Virtual Desktop took its sound device away and brought it back
 (`README-PC-VR.md`).
 
+**App 0.14 (2026-10-04): startup field-of-view menu.** Each normal launch now shows a popup in the
+headset before starting the game. Choose 50–120% with Left / Right on the gamepad's D-pad or
+left stick, then press X / A to play. The last choice is remembered; `fov=` in `vrhost.txt`,
+when present, supplies the initial choice instead. The popup explains how a narrower render
+projection improves pixels per degree at the same resolution and shows the approximate
+horizontal angle and average density gain. Below 100%, each eye gets a feathered squircle
+(pillowed rectangle) border in the host's existing frame-copy pass. The compositor still
+handles lens distortion. At 100% and above there is no added mask. Headless dry-start tests
+use the configured FOV without waiting for input.
+
+**App 0.15 (2026-10-04): FOV is relative to the user's headset.** The slider now runs from
+50–100%, with 100% filling the headset's own field of view. The host reads its projection
+from OpenXR before allowing Play, and passes those full-size optics to the emulator before
+the game starts. The angle and PPD estimate use that detected FOV. Reduced settings retain
+the soft squircle border; the initial default is still 85%.
+
+**App 0.16 (2026-10-04): align the reduced-FOV apertures with the eyes.** The squircle now
+uses the submitted frame's projection to locate straight ahead in each eye texture, instead
+of assuming both optical axes sit at the texture midpoint. The detected Quest projection is
+asymmetric, so the old masks pointed outward and curved inward over different parts of the
+binocular scene. The corrected masks follow the optical axes while preserving the game's
+stereo projections and the headset-relative slider. Invalid eye-separation measurements are
+also ignored. Validation includes asymmetric shader checks at 50%, 85% and 95%, and a
+captured 50% stereo scene whose distant features match the reported projection to within
+one pixel.
+
+**App 0.17 (2026-10-04): restore matching binocular coverage at reduced FOV.** Centering the
+masks in 0.16 did not fix the unequal inward and outward render bounds introduced in 0.15.
+The Quest host now opts into a symmetric render envelope enclosing the detected headset
+projection, then scales that envelope for the chosen FOV. Both eyes have the same angular
+aperture and squircle boundary. At 100% the envelope covers both full native frusta; OpenXR
+clips the excess to the actual headset view. The popup reports visible coverage after that
+clipping and the pixel-density gain at the center. Raw headset detection remains unchanged.
+Regression checks compare the same angular directions in both eyes, including directions
+that were visible in one eye and black in the other at 50% in 0.15 and 0.16.
+
 **App 0.8 (2026-10-03)**, after the fourth session (levels 1-1 to 1-3 played, the game stopped
 on entering 1-4 twice):
 
@@ -154,7 +190,7 @@ Optional settings go in `/sdcard/Android/data/com.astrobotquest.vrhost/files/vrh
 | `predict_ms=25` | how far beyond the next refresh the head pose given to the game is predicted (0–80). More if the picture's edges show when turning the head, less if the world wobbles |
 | `dynamic_resolution=0` | do not ask the system what size it recommends for the picture (which may cost the GPU its fastest clock). `2`: also show the picture at that size, as up to version 0.6. Default: ask, and show the picture at full size, see "The picture" |
 | `cpu_boost=0` | do not ask for the processor's "boost" level (its fastest clock, which the system grants for the first 45 seconds and up to a fifth of the time after) |
-| `fov=100` | how much of PlayStation VR's field of view the game draws, in percent (50–120). **Default 85 since app 0.9**: about 91 by 94 degrees an eye instead of 100 by 103, the same pixels over fewer degrees, so 18% more of them to the degree, with a black border where the rest was (it costs the GPU nothing). `100` is what the game draws on a PlayStation VR (50.4°/49.8° out/in, 51.6° up and down an eye); `80` or `75` sharper still and narrower. host.log says what was used ("the game draws 85% of PlayStation VR's field of view") |
+| `fov=100` | Initial choice in the startup FOV menu, from 50–100% of the user's headset projection tangents. The last menu choice is used when this setting is absent; the first-launch default is 85. `100` fills the runtime-reported headset FOV and adds no mask. Lower values render the same pixels over fewer degrees, with a soft squircle border around each eye. The menu's angles and average PPD gain are calculated from this headset's detected optics; the chosen FOV is logged in host.log and core.log. |
 | `mic=0` | the game does not get to hear the headset's microphone (see "Microphone") |
 | `mic_gain=2` | make what the game hears that many times louder (0.1–30) |
 | `arg=...`, `env=NAME=value` | extra emulator argument / environment variable |

@@ -287,8 +287,13 @@ std::string RunSelfTest(const CoreLaunch& launch, const std::string& out_dir, in
     note("frames are copied %s", blitter.WritesUnencoded() ? "as they are" : "through a decoder");
 
     Interrupter interrupter;
+    bool fov_mask = false;
     for (const auto& [name, value] : launch.extra_env) {
-        if (name == "HOST_INTERRUPTS") {
+        if (name == "HOST_FOV_MASK") {
+            // Exercise the session's optical-axis mask in the isolated test and its captures.
+            fov_mask = value == "1";
+            note("optical-axis FOV mask: %s", fov_mask ? "on" : "off");
+        } else if (name == "HOST_INTERRUPTS") {
             interrupter.Start(gl, std::atoi(value.c_str()), 1, 0.0f);
             note("taking the GPU away from the emulator %s times a second", value.c_str());
         } else if (name == "HOST_COMPOSITOR") {
@@ -439,7 +444,7 @@ std::string RunSelfTest(const CoreLaunch& launch, const std::string& out_dir, in
                 const auto begun = Clock::now();
                 glBindFramebuffer(GL_FRAMEBUFFER, display_framebuffer);
                 blitter.Draw(frames.Texture(frame->buffer), width, height,
-                             frame->swap_red_blue != 0, true);
+                             frame->swap_red_blue != 0, true, fov_mask, frame->fov);
                 const GLsync done = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
                 glClientWaitSync(done, GL_SYNC_FLUSH_COMMANDS_BIT, 2'000'000'000);
                 glDeleteSync(done);
@@ -452,7 +457,7 @@ std::string RunSelfTest(const CoreLaunch& launch, const std::string& out_dir, in
             if (frames.IsValid(frame->buffer) && now >= next_save_at && saved < 24) {
                 glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
                 blitter.Draw(frames.Texture(frame->buffer), width, height,
-                             frame->swap_red_blue != 0, false);
+                             frame->swap_red_blue != 0, false, fov_mask, frame->fov);
                 glReadPixels(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height),
                              GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
                 char name[64];

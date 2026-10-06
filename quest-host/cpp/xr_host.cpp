@@ -850,7 +850,7 @@ private:
         // Into the lower left corner when the picture is to be smaller than the image.
         glBindFramebuffer(GL_FRAMEBUFFER, game_swapchain.framebuffers[index]);
         blitter.Draw(frames.Texture(frame.buffer), layer_width, layer_height,
-                     frame.swap_red_blue != 0, decode_srgb);
+                     frame.swap_red_blue != 0, decode_srgb, host_status.reduced_fov, frame.fov);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         shown_width = layer_width;
         shown_height = layer_height;
@@ -1122,7 +1122,8 @@ private:
             ++head_tracked_frames;
         }
 
-        // The distance between the eyes follows the headset's lens adjustment.
+        // The real headset supplies both the projection and the lens adjustment. Learn its
+        // full FOV while the startup menu is shown, before the title asks for its optics.
         XrViewLocateInfo locate{XR_TYPE_VIEW_LOCATE_INFO};
         locate.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
         locate.displayTime = display_time;
@@ -1131,12 +1132,35 @@ private:
         XrView eye_views[2]{{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
         uint32_t view_count = 0;
         if (XR_SUCCEEDED(xrLocateViews(session, &locate, &view_state, 2, &view_count, eye_views)) &&
-            view_count == 2 &&
-            (view_state.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT) != 0) {
+            view_count == 2) {
+            // The emulated headset has mirrored optics. Enclose both eyes' runtime frusta
+            // so 100% never clips either eye if the reported projections differ slightly.
+            const std::array<float, 4> fov{
+                std::max(-std::tan(eye_views[0].fov.angleLeft),
+                         std::tan(eye_views[1].fov.angleRight)),
+                std::max(std::tan(eye_views[0].fov.angleRight),
+                         -std::tan(eye_views[1].fov.angleLeft)),
+                std::max(std::tan(eye_views[0].fov.angleUp),
+                         std::tan(eye_views[1].fov.angleUp)),
+                std::max(-std::tan(eye_views[0].fov.angleDown),
+                         -std::tan(eye_views[1].fov.angleDown)),
+            };
+            if (std::all_of(fov.begin(), fov.end(), [](float value) {
+                    return std::isfinite(value) && value > 0.1f && value < 10.0f;
+                })) {
+                std::scoped_lock lock{host_status.optics_mutex};
+                host_status.headset_fov = fov;
+            }
+            if ((view_state.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT) == 0) {
+                return;
+            }
             const float dx = eye_views[1].pose.position.x - eye_views[0].pose.position.x;
             const float dy = eye_views[1].pose.position.y - eye_views[0].pose.position.y;
             const float dz = eye_views[1].pose.position.z - eye_views[0].pose.position.z;
             const float measured = std::sqrt(dx * dx + dy * dy + dz * dz);
+            if (!std::isfinite(measured) || measured < 0.04f || measured > 0.09f) {
+                return;
+            }
             if (std::abs(measured - ipd) > 0.0002f || ++frames_since_optics > 300) {
                 ipd = measured;
                 frames_since_optics = 0;

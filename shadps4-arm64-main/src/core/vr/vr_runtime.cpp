@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <string>
@@ -164,6 +165,9 @@ FileConfig LoadFileConfig() {
     if (const char* of = std::getenv("SHADPS4_VR_FOV_OF"); of != nullptr) {
         result.config.fov_from_headset = std::string_view{of} == "headset";
     }
+    if (const char* symmetric = std::getenv("SHADPS4_VR_FOV_SYMMETRIC"); symmetric != nullptr) {
+        result.config.fov_symmetric = std::string_view{symmetric} == "1";
+    }
     if (const char* fov = std::getenv("SHADPS4_VR_FOV"); fov != nullptr && *fov != '\0') {
         result.config.fov_scale =
             std::clamp(static_cast<float>(std::atof(fov)) / 100.0f, 0.5f, 1.2f);
@@ -195,6 +199,24 @@ void Runtime::Configure(bool psvr_supported, bool psvr_required) {
             (*it)[1].is_number() && (*it)[2].is_number()) {
             own_pad_offset = WithinReach(
                 {(*it)[0].get<float>(), (*it)[1].get<float>(), (*it)[2].get<float>()});
+        }
+    }
+    // An external host can measure its headset before starting this process. Seed the same
+    // optics path the PC OpenXR host uses, so the title's first FOV query cannot race IPC or
+    // accidentally fall back to a PlayStation VR's projection on the first launch.
+    if (const char* optics = std::getenv("SHADPS4_VR_HEADSET_FOV_TAN"); optics != nullptr) {
+        Fov fov{};
+        char trailing{};
+        const int count = std::sscanf(optics, "%f,%f,%f,%f %c", &fov.tan_out, &fov.tan_in,
+                                      &fov.tan_top, &fov.tan_bottom, &trailing);
+        const auto usable = [](float value) {
+            return std::isfinite(value) && value > 0.1f && value < 10.0f;
+        };
+        if (count == 4 && usable(fov.tan_out) && usable(fov.tan_in) && usable(fov.tan_top) &&
+            usable(fov.tan_bottom)) {
+            NoteHeadsetFov(fov);
+        } else {
+            LOG_WARNING(Core_Vr, "Ignoring invalid SHADPS4_VR_HEADSET_FOV_TAN");
         }
     }
     switch (file_config.mode) {
@@ -753,6 +775,14 @@ Fov Runtime::TitleFov() {
         }
     }
     const float scale = config.fov_scale;
+    if (config.fov_symmetric) {
+        // Scaling asymmetric per-eye bounds also shrinks the binocular overlap: directions
+        // visible on one eye's temple side become black on the other's nose side. Render an
+        // encompassing, centred frustum in both eyes instead. At 100% it covers the entire
+        // real headset; the compositor clips the extra area to the actual lens bounds.
+        base.tan_out = base.tan_in = std::max(base.tan_out, base.tan_in);
+        base.tan_top = base.tan_bottom = std::max(base.tan_top, base.tan_bottom);
+    }
     const Fov fov{base.tan_out * scale, base.tan_in * scale, base.tan_top * scale,
                   base.tan_bottom * scale};
     {
@@ -760,9 +790,10 @@ Fov Runtime::TitleFov() {
         config.fov = fov;
     }
     LOG_INFO(Core_Vr,
-             "The title draws {:.0f}% of {}: {:.1f}/{:.1f}/{:.1f}/{:.1f} degrees an eye (out, in, "
+             "The title draws {:.0f}% of {}{}: {:.1f}/{:.1f}/{:.1f}/{:.1f} degrees an eye (out, in, "
              "up, down)",
-             scale * 100.0f, from, Degrees(fov.tan_out), Degrees(fov.tan_in), Degrees(fov.tan_top),
+             scale * 100.0f, config.fov_symmetric ? "the symmetric render envelope of " : "", from,
+             Degrees(fov.tan_out), Degrees(fov.tan_in), Degrees(fov.tan_top),
              Degrees(fov.tan_bottom));
     return fov;
 }

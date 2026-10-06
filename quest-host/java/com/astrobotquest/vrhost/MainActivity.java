@@ -41,6 +41,7 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 
@@ -127,6 +128,10 @@ public class MainActivity extends Activity
 
     private native void nativeSetMicrophone(boolean enabled, float gain);
 
+    private native void nativeSetFieldOfView(int percent);
+
+    private native float[] nativeHeadsetFov();
+
     private static native void nativeSetLogFile(String path);
 
     private static native void nativeLog(int priority, String message);
@@ -172,10 +177,15 @@ public class MainActivity extends Activity
     private int dynamicResolution = 1;
     private boolean cpuBoost = true;
     /**
-     * How much of the PlayStation VR's field of view the game draws, in percent: less than all
+     * How much of the user's headset projection the game draws, in percent: less than all
      * of it for more pixels to the degree, which is what the player asked for.
      */
     private int fieldOfView = 85;
+    private boolean choosingFov;
+    private int fovConfirmKey = KeyEvent.KEYCODE_UNKNOWN;
+    private long nextFovMoveAt;
+    private float[] headsetFov;
+    private static final int FOV_MIN = 50, FOV_MAX = 100, FOV_STEP = 5;
     /**
      * Set by the test that runs the activity without showing it (SandboxShell "drystart"):
      * nothing is asked of the user or of the system's window manager then.
@@ -224,24 +234,23 @@ public class MainActivity extends Activity
         logInfo("Astro VR Host " + versionName() + " on " + Build.MODEL + ", system "
                 + Build.DISPLAY);
 
+        // vrhost.txt takes precedence over the last choice, and seeds the menu each launch.
+        if (!dryRun) {
+            fieldOfView = Math.max(FOV_MIN, Math.min(FOV_MAX,
+                    getPreferences(MODE_PRIVATE).getInt("fov", fieldOfView)));
+        }
         readSettings();
+        choosingFov = !dryRun;
         nativeStartXr(refreshRate, 1440, 1536, trackHands, sharpen, cubic, showStats, predictMs,
                 dynamicResolution, cpuBoost);
-        nativeSetMicrophone(microphone, microphoneGain);
-        if (microphone && !dryRun && checkSelfPermission(Manifest.permission.RECORD_AUDIO)
-                != PackageManager.PERMISSION_GRANTED) {
-            // The game listens to the headset's microphone, as it did to PlayStation VR's:
-            // blowing at things is one of the ways to play with its world.
-            logInfo("asking for the microphone");
-            requestPermissions(new String[] {Manifest.permission.RECORD_AUDIO},
-                    REQUEST_MICROPHONE);
-        }
 
         InputManager inputManager = getSystemService(InputManager.class);
         inputManager.registerInputDeviceListener(this, handler);
         findGamepad();
 
-        new Thread(this::setUpAndStart, "setup").start();
+        if (dryRun) {
+            startGame();
+        }
         handler.post(this::refreshStatus);
         handler.post(this::applyFeedback);
     }
@@ -302,7 +311,7 @@ public class MainActivity extends Activity
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
         logInfo(hasFocus ? "input focus gained" : "input focus lost");
-        if (hasFocus) {
+        if (hasFocus && !choosingFov) {
             // Gives the controller's touchpad to the game instead of a mouse pointer.
             inputView.requestPointerCapture();
         }
@@ -368,11 +377,11 @@ public class MainActivity extends Activity
      *                          picture at the recommended size, as up to version 0.6
      *   cpu_boost=0            do not ask for the processor's fastest clock, which the system
      *                          otherwise grants for the first 45 seconds and now and then
-     *   fov=100                have the game draw that many percent of the field of view it
-     *                          draws on a PlayStation VR (100 by 103 degrees an eye), and show
-     *                          it over that much: the same pixels over fewer degrees is a sharper
-     *                          picture, with a black border where the rest was. Default 85 (18%
-     *                          more pixels to the degree); 100 is the console's own, 50 to 120
+     *   fov=100                have the game draw that many percent of this headset's full
+     *                          projection: 100 fills its field of view. Showing the same
+     *                          pixels over fewer degrees is a sharper
+     *                          picture, with a soft squircle border below 100. Default 85;
+     *                          100 is the headset's own, 50 to 100. Seeds the startup menu
      *   mic=0                  the game does not get to hear the headset's microphone
      *   mic_gain=2             make what it hears that many times louder (0.1 to 30), if
      *                          blowing does too little or everything counts as blowing
@@ -467,7 +476,7 @@ public class MainActivity extends Activity
                         cpuBoost = !value.equals("0");
                         break;
                     case "fov":
-                        fieldOfView = Math.max(50, Math.min(120, Integer.parseInt(value)));
+                        fieldOfView = Math.max(FOV_MIN, Math.min(FOV_MAX, Integer.parseInt(value)));
                         break;
                     case "mic":
                         microphone = !value.equals("0");
@@ -493,6 +502,31 @@ public class MainActivity extends Activity
     }
 
     // --- runtime and game -----------------------------------------------------------------------
+
+    /** The emulator must see the chosen optics before the game opens its emulated headset. */
+    private void startGame() {
+        if (!dryRun && headsetFov == null) {
+            return;
+        }
+        choosingFov = false;
+        shownStatus = "";
+        nativeSetFieldOfView(fieldOfView);
+        if (!dryRun) {
+            getPreferences(MODE_PRIVATE).edit().putInt("fov", fieldOfView).apply();
+            logInfo("startup FOV chosen: " + fieldOfView + "%");
+            if (inputView.hasWindowFocus()) {
+                inputView.requestPointerCapture();
+            }
+        }
+        nativeSetMicrophone(microphone, microphoneGain);
+        if (microphone && !dryRun && checkSelfPermission(Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED) {
+            logInfo("asking for the microphone");
+            requestPermissions(new String[] {Manifest.permission.RECORD_AUDIO},
+                    REQUEST_MICROPHONE);
+        }
+        new Thread(this::setUpAndStart, "setup").start();
+    }
 
     private void setUpAndStart() {
         try {
@@ -522,7 +556,7 @@ public class MainActivity extends Activity
 
             File storage = new File(getFilesDir(), "core");
             storage.mkdirs();
-            // Settings from vrhost.txt come last: they replace what is set here.
+            // Extra settings replace the defaults; the menu's FOV remains authoritative.
             List<String> env = new ArrayList<>();
             // Saves, firmware modules and logs go where the user can reach them over USB.
             env.add("XDG_DATA_HOME=" + new File(external, "data"));
@@ -568,15 +602,15 @@ public class MainActivity extends Activity
             if (pace >= 2) {
                 env.add("SHADPS4_VR_PACE=" + pace);
             }
-            if (fieldOfView != 100) {
-                env.add("SHADPS4_VR_FOV=" + fieldOfView);
+            if (headsetFov != null) {
+                double angle = horizontalFov(fieldOfView);
+                logInfo("the game draws " + fieldOfView + "% of this headset's field of view: "
+                        + Math.round(angle) + " visible degrees across an eye, "
+                        + Math.round(centerPixelsPerDegree(fieldOfView) * 10) / 10.0
+                        + " pixels per degree at the center"
+                        + " (100 fills the headset; "
+                        + (fieldOfView < 100 ? "soft squircle border" : "no added border") + ")");
             }
-            double angle = Math.toDegrees(Math.atan(1.2074 * fieldOfView / 100.0)
-                    + Math.atan(1.1813 * fieldOfView / 100.0));
-            logInfo("the game draws " + fieldOfView + "% of PlayStation VR's field of view: "
-                    + Math.round(angle) + " degrees across an eye, "
-                    + Math.round(1440 / angle * 10) / 10.0 + " pixels to the degree at most"
-                    + " (fov= in vrhost.txt; 100 is the console's own)");
             if (!antialias) {
                 env.add("SHADPS4_RESOLVE_AA=0");
             }
@@ -586,6 +620,14 @@ public class MainActivity extends Activity
                 env.add("SHADPS4_VR_SHARPEN=0.6");
             }
             env.addAll(extraEnv);
+            // Explicit even at 100, so an inherited environment cannot change the choice.
+            env.add("SHADPS4_VR_FOV=" + fieldOfView);
+            env.add("SHADPS4_VR_FOV_OF=headset");
+            env.add("SHADPS4_VR_FOV_SYMMETRIC=1");
+            if (headsetFov != null) {
+                env.add("SHADPS4_VR_HEADSET_FOV_TAN=" + headsetFov[0] + "," + headsetFov[1]
+                        + "," + headsetFov[2] + "," + headsetFov[3]);
+            }
 
             setupStatus = "Starting the emulator...";
             keepPrevious(new File(external, "core.log"), new File(external, "core.prev.log"));
@@ -627,6 +669,17 @@ public class MainActivity extends Activity
     // --- status panel ---------------------------------------------------------------------------
 
     private void refreshStatus() {
+        if (choosingFov) {
+            headsetFov = nativeHeadsetFov();
+            String status = "fov:" + fieldOfView + ":" + (gamepad != null)
+                    + ":" + Arrays.toString(headsetFov);
+            if (!status.equals(shownStatus)) {
+                shownStatus = status;
+                drawFovMenu();
+            }
+            handler.postDelayed(this::refreshStatus, 500);
+            return;
+        }
         String status = setupStatus;
         if (!setupFailed) {
             switch (nativeCoreState()) {
@@ -700,6 +753,87 @@ public class MainActivity extends Activity
                 + "Hands holding the controller: " + ((xr & 2) != 0 ? "seen" : "not seen");
     }
 
+    /** Visible coverage is the symmetric render envelope clipped by the actual headset. */
+    private double horizontalFov(int percent) {
+        double renderTan = Math.max(headsetFov[0], headsetFov[1]) * percent / 100.0;
+        return Math.toDegrees(Math.atan(Math.min(headsetFov[0], renderTan))
+                + Math.atan(Math.min(headsetFov[1], renderTan)));
+    }
+
+    private double centerPixelsPerDegree(int percent) {
+        double renderTan = Math.max(headsetFov[0], headsetFov[1]) * percent / 100.0;
+        return 1440 * Math.PI / 180 / (2 * renderTan);
+    }
+
+    /** A popup drawn into the OpenXR panel: visible in both eyes while the core is still idle. */
+    private void drawFovMenu() {
+        Bitmap bitmap = Bitmap.createBitmap(STATUS_WIDTH, STATUS_HEIGHT, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(bitmap);
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        paint.setColor(Color.rgb(16, 20, 32));
+        canvas.drawRoundRect(new RectF(0, 0, STATUS_WIDTH, STATUS_HEIGHT), 40, 40, paint);
+
+        paint.setColor(Color.rgb(90, 170, 255));
+        paint.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
+        paint.setTextSize(44);
+        canvas.drawText("Choose your field of view", 48, 78, paint);
+        paint.setColor(Color.WHITE);
+        paint.setTypeface(Typeface.DEFAULT);
+        paint.setTextSize(27);
+        canvas.drawText("100% uses the full field of view of your headset.", 48, 126, paint);
+        canvas.drawText("A narrower view improves pixels per degree (PPD) and clarity.", 48, 162, paint);
+
+        paint.setTextAlign(Paint.Align.CENTER);
+        paint.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
+        paint.setTextSize(40);
+        canvas.drawText(headsetFov == null ? fieldOfView + "% of your headset FOV"
+                : fieldOfView + "%  /  about " + Math.round(horizontalFov(fieldOfView))
+                        + " degrees per eye", STATUS_WIDTH / 2.0f, 226, paint);
+        paint.setTypeface(Typeface.DEFAULT);
+        paint.setTextSize(25);
+        String density = "Detecting your headset's field of view...";
+        if (headsetFov != null) {
+            int gain = (int) Math.round((100.0 / fieldOfView - 1) * 100);
+            density = gain == 0 ? "Full headset FOV / original pixel density"
+                    : "About " + gain + "% more pixels per degree at the center than at 100%";
+        }
+        canvas.drawText(density, STATUS_WIDTH / 2.0f, 266, paint);
+
+        paint.setColor(Color.rgb(48, 56, 76));
+        canvas.drawRoundRect(new RectF(120, 302, 904, 314), 6, 6, paint);
+        float sliderX = 120 + (fieldOfView - FOV_MIN) * 784.0f / (FOV_MAX - FOV_MIN);
+        paint.setColor(Color.rgb(90, 170, 255));
+        canvas.drawRoundRect(new RectF(120, 302, sliderX, 314), 6, 6, paint);
+        canvas.drawCircle(sliderX, 308, 13, paint);
+        paint.setColor(Color.LTGRAY);
+        paint.setTextSize(23);
+        paint.setTextAlign(Paint.Align.LEFT);
+        canvas.drawText("50%: sharper", 120, 350, paint);
+        paint.setTextAlign(Paint.Align.RIGHT);
+        canvas.drawText("100%: full headset FOV", 904, 350, paint);
+        paint.setTextAlign(Paint.Align.CENTER);
+        canvas.drawText(fieldOfView < 100 ? "Soft squircle border  /  Default: 85%"
+                : "No added border  /  Default: 85%", STATUS_WIDTH / 2.0f, 385, paint);
+        paint.setColor(gamepad != null ? Color.WHITE : Color.rgb(255, 200, 110));
+        paint.setTextSize(25);
+        canvas.drawText(gamepad != null ? "Left / Right on D-pad or left stick: choose"
+                : "Connect your gamepad to choose and start", STATUS_WIDTH / 2.0f, 422, paint);
+
+        paint.setColor(headsetFov != null ? Color.rgb(45, 104, 182) : Color.rgb(48, 56, 76));
+        canvas.drawRoundRect(new RectF(372, 443, 652, 495), 18, 18, paint);
+        paint.setColor(Color.WHITE);
+        paint.setTextSize(28);
+        paint.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
+        canvas.drawText(headsetFov != null ? "X / A: Play" : "Detecting FOV...",
+                STATUS_WIDTH / 2.0f, 478, paint);
+        publishStatusBitmap(bitmap);
+    }
+
+    private void adjustFov(int direction) {
+        fieldOfView = Math.max(FOV_MIN, Math.min(FOV_MAX, fieldOfView + direction * FOV_STEP));
+        drawFovMenu();
+    }
+
     private void drawStatus(String status) {
         Bitmap bitmap = Bitmap.createBitmap(STATUS_WIDTH, STATUS_HEIGHT, Bitmap.Config.ARGB_8888);
         Canvas canvas = new Canvas(bitmap);
@@ -734,6 +868,10 @@ public class MainActivity extends Activity
             } while (!rest.isEmpty());
         }
 
+        publishStatusBitmap(bitmap);
+    }
+
+    private void publishStatusBitmap(Bitmap bitmap) {
         if (dryRun && statusPictures < 8) {
             // Nobody sees the panel in a test: its pictures are kept for looking at, in the
             // folder the test has made for them.
@@ -797,6 +935,41 @@ public class MainActivity extends Activity
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
+        // Consume the entire confirming press, including repeats and its release. It must
+        // not press X in the game, or move the player's seat before they have settled in.
+        if (fovConfirmKey != KeyEvent.KEYCODE_UNKNOWN && event.getKeyCode() == fovConfirmKey) {
+            if (event.getAction() == KeyEvent.ACTION_UP) {
+                fovConfirmKey = KeyEvent.KEYCODE_UNKNOWN;
+            }
+            return true;
+        }
+        if (choosingFov) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                noteInputFrom(event.getDevice());
+                switch (event.getKeyCode()) {
+                    case KeyEvent.KEYCODE_DPAD_LEFT:
+                        adjustFov(-1);
+                        break;
+                    case KeyEvent.KEYCODE_DPAD_RIGHT:
+                        adjustFov(1);
+                        break;
+                    case KeyEvent.KEYCODE_BUTTON_A:
+                    case KeyEvent.KEYCODE_DPAD_CENTER:
+                    case KeyEvent.KEYCODE_ENTER:
+                        if (headsetFov != null) {
+                            fovConfirmKey = event.getKeyCode();
+                            startGame();
+                        }
+                        break;
+                    case KeyEvent.KEYCODE_BACK:
+                        finish();
+                        break;
+                    default:
+                        break;
+                }
+            }
+            return true;
+        }
         if (event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_MODE) {
             // The PS button resets the view: where the head is now is where the player sits,
             // the way they face is straight ahead, and so is the way the controller points
@@ -848,6 +1021,24 @@ public class MainActivity extends Activity
 
     @Override
     public boolean dispatchGenericMotionEvent(MotionEvent event) {
+        if (choosingFov) {
+            if (event.isFromSource(InputDevice.SOURCE_JOYSTICK)
+                    && event.getAction() == MotionEvent.ACTION_MOVE) {
+                noteInputFrom(event.getDevice());
+                float x = axis(event, MotionEvent.AXIS_X);
+                float hatX = event.getAxisValue(MotionEvent.AXIS_HAT_X);
+                int direction = x < -0.55f || hatX < -0.5f ? -1
+                        : x > 0.55f || hatX > 0.5f ? 1 : 0;
+                long now = SystemClock.uptimeMillis();
+                if (direction == 0) {
+                    nextFovMoveAt = 0;
+                } else if (now >= nextFovMoveAt) {
+                    adjustFov(direction);
+                    nextFovMoveAt = now + 250;
+                }
+            }
+            return true;
+        }
         if (event.isFromSource(InputDevice.SOURCE_JOYSTICK)
                 && event.getAction() == MotionEvent.ACTION_MOVE) {
             leftX = axis(event, MotionEvent.AXIS_X);
@@ -910,6 +1101,9 @@ public class MainActivity extends Activity
     }
 
     private void sendInput() {
+        if (choosingFov) {
+            return;
+        }
         int buttons = keyButtons | hatButtons | triggerButtons | (padTouchClick ? TOUCHPAD : 0);
 
         boolean touchDown = padTouchDown;
