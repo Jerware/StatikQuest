@@ -13,7 +13,8 @@ from your own copy of the game through a PS4 emulator. Ways to play:
 - **On a Windows PC with a Valve Index through SteamVR**: the same PC build uses SteamVR's
   OpenXR runtime and a DualSense connected to the PC. Headset playback has been reported working; see
   [the Index setup](README-PC-VR.md#valve-index-through-steamvr), including controller
-  positional-tracking limits.
+  positional-tracking limits. Other PC headsets go the same way, through SteamVR or an OpenXR
+  runtime of their own: a Bigscreen Beyond and a Pimax Dream Air have been reported working.
 
 The emulator is [shadPS4](https://github.com/shadps4-emu/shadPS4) (its ARM64 build,
 [zenithblue-oss/shadps4-arm64](https://github.com/zenithblue-oss/shadps4-arm64), on the
@@ -44,12 +45,13 @@ over Virtual Desktop and fixed since. Expect rough edges, and please report what
 - **A PS5 DualSense controller.** It stands in for the PS4 controller the game expects:
   buttons, sticks, touchpad, motion sensors, rumble and light bar. (A DualShock 4 may work
   too; untested.) On the PC the Quest's own Touch controllers can stand in for it.
-- **ASTRO BOT Rescue Mission, European release CUSA12392, version 1.00**, dumped from your own
-  console and game: either as the game's folder (the one with `eboot.bin`, `sce_sys`,
-  `sce_module` in it, about 13 GB) or as the `.pkg` package made from the dump, which the PC
-  launcher unpacks by itself. (A package downloaded from the PlayStation Store is encrypted
-  and cannot be used.) Other regions and versions are untested, and the fixes for the game's
-  timing and resolution only apply to this one.
+- **ASTRO BOT Rescue Mission, European release CUSA12392, version 1.00 or 1.04** (the game
+  as on its disc, or with its last update), dumped from your own console and game: either as
+  the game's folder (the one with `eboot.bin`, `sce_sys`, `sce_module` in it, about 13 GB) or
+  as the `.pkg` package made from the dump, which the PC launcher unpacks by itself. (A
+  package downloaded from the PlayStation Store is encrypted and cannot be used; a package
+  that is only the game's update is not the game.) Other regions and the versions in between
+  are untested, and the fixes for the game's timing and resolution only apply to these two.
 - To install on the headset: a computer with
   [adb](https://developer.android.com/tools/releases/platform-tools) (or
   [SideQuest](https://sidequestvr.com/)) and the headset in
@@ -228,6 +230,11 @@ use it only with software you own and have dumped yourself.
   comes from [Vauzi-17/mesa-tu8](https://github.com/Vauzi-17/mesa-tu8)).
 - [LibOrbisPkg](https://github.com/maxton/LibOrbisPkg), whose PkgTool unpacks game packages
   for the PC launcher.
+- Everyone who reported what went wrong, and those who sent the fix along:
+  [ODevStudio](https://github.com/ODevStudio) for SteamVR and Valve Index support and the
+  desktop's spectator views, [Clodo76](https://github.com/Clodo76) for finding the game's
+  1.04 executable from inside, [evertec82](https://github.com/evertec82) for what stopped the
+  game under SteamVR.
 - [The Khronos Group](https://www.khronos.org/) for OpenXR and Vulkan,
   [vgmstream](https://github.com/vgmstream/vgmstream) for documenting Sony's audio formats,
   and [Virtual Desktop](https://www.vrdesktop.net/) for the PC streaming path.
