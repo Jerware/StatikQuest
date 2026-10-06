@@ -42,9 +42,12 @@ over Virtual Desktop and fixed since. Expect rough edges, and please report what
 
 - **A Meta Quest 3, or a Valve Index connected to a Windows PC running SteamVR.**
   (The Quest 3S has the same chip and should work, but nobody has tried.)
-- **A PS5 DualSense controller.** It stands in for the PS4 controller the game expects:
-  buttons, sticks, touchpad, motion sensors, rumble and light bar. (A DualShock 4 may work
-  too; untested.) On the PC the Quest's own Touch controllers can stand in for it.
+- **Something to play with.** A PS5 DualSense controller is best: it stands in for the PS4
+  controller the game expects with everything that one has (buttons, sticks, touchpad, motion
+  sensors, rumble and light bar; a DualShock 4 should do the same, untested). Without one,
+  **the Quest's own Touch controllers play the game**, on the headset alone as on the PC.
+  Other gamepads play too (Xbox, 8BitDo and the like): what they lack of a PS4 controller,
+  the touchpad and the motion sensors, is made up for, see "Playing" below.
 - **ASTRO BOT Rescue Mission, European release CUSA12392, version 1.00 or 1.04** (the game
   as on its disc, or with its last update), dumped from your own console and game: either as
   the game's folder (the one with `eboot.bin`, `sce_sys`, `sce_module` in it, about 13 GB) or
@@ -106,21 +109,36 @@ Download `AstroQuest-<version>-Quest3.apk` from the
 
    Either way, only a package made from a dump of the game can be unpacked; one downloaded
    from the PlayStation Store is encrypted.
-3. **Pair the DualSense with the headset**: Settings > Bluetooth > Pair, and on the
-   controller hold Create and the PS button until the light bar flashes.
+3. **If you play with a gamepad, pair it with the headset**: Settings > Bluetooth > Pair (on
+   a DualSense, hold Create and the PS button until the light bar flashes). The Touch
+   controllers need nothing.
 4. **Start "Astro VR Host"** from the App Library, under *Unknown Sources*. The first start
    takes a few seconds longer (it unpacks the emulator) and asks for the microphone: the game
    listens to it for blowing at things, as it did with PlayStation VR's.
 
 Playing:
 
-- Put the Touch controllers aside and hold the DualSense: the headset tracks your hands around
-  it, and that is where the controller is in the game.
+- The app begins with a menu for the field of view: a stick to a side chooses, ✕ / A or a
+  trigger starts the game.
+- **With a gamepad**: put the Touch controllers aside and hold it. The headset tracks your
+  hands around it, and that is where the controller is in the game. A gamepad without a
+  touchpad has its right stick for the finger (for the catapult at the end of a level, pull
+  the stick towards you and let go) and its Create / Back / View button to press the pad. A
+  gamepad without motion sensors, which is every one that is not a PlayStation's, is turned
+  and tilted in the game by your hands, as far as the headset sees them.
+- **With the Touch controllers**: the right one is the controller in the game, where it is
+  and the way it points. Left stick to move; A is ✕, B is □, X is ○, Y is △; the grips are L1
+  and R1, the triggers L2 and R2; the right stick is the finger on the touchpad, and pressed
+  in it presses the pad; the left controller's menu button is OPTIONS. X and Y together
+  blow, where the game wants you to blow into the microphone.
+- With both at hand, the game is played with the one you used last: a button on the other
+  changes over.
 - The first screen asks to move the controller into a floating outline: hold it up in front
   of you where the outline is.
 - On the world map, **look** at a planet and press ✕.
-- **Reset the view** by holding OPTIONS for a second (or pressing the PS button) whenever you
-  sit differently and things are too close, too far or off to one side.
+- **Reset the view** by holding OPTIONS for a second (or pressing the PS button; with the
+  Touch controllers, hold the left menu button for a second or press both sticks in)
+  whenever you sit differently and things are too close, too far or off to one side.
 - Taking the headset off pauses the game.
 - Settings (refresh rate, resolution, field of view, sharpening, microphone gain...) go in
   `/sdcard/Android/data/com.astrobotquest.vrhost/files/vrhost.txt`; all of them are explained in

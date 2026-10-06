@@ -186,6 +186,9 @@ public:
     /// For hosts that only know how the controller is turned (from its motion sensors) and not
     /// where it is. The runtime then places it with Config::pad_offset.
     void UpdatePadOrientation(const Quat& orientation, const Vec3& angular_velocity);
+    /// The same for a host that works out how the controller is turned from what it sees of
+    /// it (the hands holding a controller without motion sensors), in its own space.
+    void UpdatePadHeldOrientation(const Quat& host_orientation);
     /// The controller's own motion sensors, for hosts that have nothing better. Readings are in
     /// the controller's frame (+X right, +Y out of the face buttons, +Z towards the player), in
     /// rad/s and m/s² with gravity included, as SDL reports them. The runtime works out how the

@@ -91,6 +91,30 @@ it has the field-of-view menu and the fixes of 0.14 to 0.17 above, and
   headset no longer shows the question, allow it in the headset's Settings, under the app
   permissions for the microphone, for "Astro VR Host". core.log says what the game hears
   ("Microphone: the loudest of the last 10 seconds was ...").
+- **more controllers than the DualSense.** The app was made for a DualSense and took
+  everything else for a lesser one. Now (all of it under "Controllers" below):
+  - **the headset's own controllers play the game**, for whoever has no gamepad. The app
+    reads them through the headset's runtime, with where they are and how they point; the
+    right one is the controller in the game.
+  - with a gamepad and the headset's controllers both at hand, **the game is played with the
+    one used last**.
+  - **the start-up menu takes whatever is in the player's hands**: a stick to a side chooses,
+    ✕ / A or a trigger starts the game.
+  - **a gamepad without motion sensors is turned and tilted in the game by the hands that
+    hold it.** Before, it followed the hands to where they were and kept pointing straight
+    ahead, which left the game's gadgets nothing to aim with.
+  - **the right stick as the touchpad's finger lifts where the stick is let go**, as on the
+    PC, which is what the catapult at the end of a level needs: pull the stick towards you
+    and let go. A button that presses the touchpad touches it as well.
+  - smaller things for gamepads that are not PlayStation's: a right stick that reports on
+    other axes, triggers that are only buttons, a Back button the system would take for its
+    own "back" and close the app with.
+
+  Tried on the headset without wearing it: the runtime accepts the controllers' bindings,
+  the app starts and plays with a made-up gamepad, and the self-test reports a controller
+  the way a session does and shows it in the game's picture where and how it should be (see
+  "Testing on the headset without wearing it"). **Not tried: any of it worn**, and no
+  gamepad other than a DualSense.
 
 What else is new is for the PC (`README-PC-VR.md`): SteamVR and other PC headsets, a view
 for spectators on the monitor, a gamepad in the game that can be moved where nothing tracks
@@ -125,10 +149,12 @@ Quest 3
    ├─ shows the stereo frames as a projection layer; the compositor reprojects them to the
    │  current head pose every refresh, like PSVR's own reprojection did
    ├─ sends the head pose (and lens distance) to the core every display refresh
-   ├─ maps a Bluetooth DualSense to the DualShock 4 the game expects: buttons, sticks,
-   │  triggers, touchpad and motion sensors in; rumble and light bar colour out
-   ├─ places that controller in the game: from the hands the headset sees holding it when it
-   │  can, otherwise at a fixed spot in front of the player, turned by its motion sensors
+   ├─ makes the DualShock 4 the game expects of what the player holds: a gamepad paired with
+   │  the headset (of a DualSense everything: buttons, sticks, triggers, touchpad and motion
+   │  sensors in; rumble and light bar colour out) or the headset's own controllers
+   ├─ places that controller in the game: one of the headset's own is where it is; a gamepad
+   │  is where the hands are that the headset sees holding it (otherwise at a fixed spot in
+   │  front of the player), turned by its motion sensors or, where it has none, by the hands
    ├─ plays the sound (one audio stream per port the game uses)
    └─ starts the emulator core as a child process ──► shadps4 (aarch64 Linux, glibc)
                                                        ├─ FEX runs the game's x86-64 code
@@ -162,15 +188,13 @@ adb install -r build/quest/astro-vr-host.apk
 adb push games/CUSA12392 /data/local/tmp/astro/games/        # 13 GB, a few minutes
 ```
 
-Pair the DualSense with the headset (Settings ▸ Bluetooth; hold Create + PS until the light bar
-flashes), then start **Astro VR Host** from the app library (Unknown Sources). A floating panel
-reports what the app is doing, and which controller it found, until the game's first frame arrives.
-(The headset's own controllers count as gamepads too, and were what the app took for the
-controller in the third session: the game then gets buttons and sticks from the DualSense but
-neither its motion sensors nor rumble or light bar. From 0.7 on a controller of Sony's make goes
-first whenever it shows up, and the controller is the one input actually comes from.)
-Put the Touch controllers aside: with them out of the way the headset tracks your hands, which is
-what places the DualSense in the game.
+To play with a gamepad, pair it with the headset (Settings ▸ Bluetooth; on a DualSense, hold
+Create + PS until the light bar flashes); the headset's own controllers need nothing. Then start
+**Astro VR Host** from the app library (Unknown Sources). A floating panel reports what the app
+is doing, and what the game will be played with, until the game's first frame arrives.
+With a gamepad, put the Touch controllers aside: with them out of the way the headset tracks
+your hands, which is what places the gamepad in the game. See "Controllers" below for what
+plays how.
 
 In the game:
 
@@ -178,15 +202,16 @@ In the game:
   front of you, where the outline is. (If the headset does not see your hands, the controller is
   assumed to be there and the screen passes on its own.)
 - The world map is selected by **looking** at a planet and pressing ✕.
-- Touchpad: the DualSense's own. If the system does not hand it over, the right stick stands in
-  for the finger (flick it) and Create for the click.
+- Touchpad: the DualSense's own. Without one, the right stick is the finger and Create / Back /
+  View the press (see "Controllers").
 - **Resetting the view**: hold OPTIONS for a second (as on a PlayStation VR), or press the PS
-  button. Where your head is then is where you sit as far as the game goes, and the way you face
-  is straight ahead; the controller's heading is taken anew as well. The app does it by itself
-  when ✕ is pressed for the first time, and when the headset's own "reset view" is used (hold the
-  Meta button). Do it again whenever you have settled differently and things are too close, too
-  far or off to a side: the game takes its bearings only when it is told to (see "Where the
-  player sits").
+  button; with the headset's own controllers, hold the left one's menu button for a second or
+  press both sticks in. Where your head is then is where you sit as far as the game goes, and
+  the way you face is straight ahead; the controller's heading is taken anew as well. The app
+  does it by itself when ✕ is pressed for the first time, and when the headset's own "reset
+  view" is used (hold the Meta button). Do it again whenever you have settled differently and
+  things are too close, too far or off to a side: the game takes its bearings only when it is
+  told to (see "Where the player sits").
 - Taking the headset off pauses the game; putting it back on resumes it.
 - If the headset's boundary lights up, you are near its edge: besides being in the way, the
   boundary costs the GPU time the game needs. A boundary with more room around the seat avoids
@@ -202,11 +227,14 @@ Optional settings go in `/sdcard/Android/data/com.astrobotquest.vrhost/files/vrh
 | `resolution=960` | the size the game draws its scene at, per eye: `816` (x870), `960` (x1080), `1200` (x1280), `1440` (x1536), or `game` for the game's own choice. Default: the emulator chooses, as large as the GPU manages at the pace, see "Speed" |
 | `antialias=0` | leave edges as jagged as the game draws them without multisampling. Default: the emulator smooths them, see "The picture" |
 | `real_time=0` | let the game count time in frames as on the console: slow motion whenever a frame takes longer than 1/60 s. Default: the emulator has it run by the clock, see "Speed" |
-| `hands=0` | do not use hand tracking; the controller stays at its fixed spot |
+| `hands=0` | do not use hand tracking; a gamepad stays at its fixed spot |
+| `own_controllers=0` | never play with the headset's own controllers, whoever holds them |
+| `pad_hand=left` | with the headset's own controllers, the left one is the controller in the game instead of the right one |
+| `pad_tilt=-15` | for a gamepad without motion sensors, which the hands holding it turn and tilt in the game: how many degrees higher (lower, if negative) its front points than the hands do (-60 to 60). For a gamepad that points too high or too low in the game |
 | `sharpen=0` | no sharpening of the picture. Default 1: the emulator sharpens every frame of the game once. 2: the headset's Super Resolution filter on every refresh instead (finer; about a twentieth of the GPU's time). 3: that filter whenever the system finds the GPU has time for it (in a level: hardly ever). 4: the headset's plainer filter. See "The picture" |
 | `cubic=1` | have the headset enlarge the picture with a cubic filter instead of a linear one (sharper, for some GPU time on every refresh) |
 | `stick_touchpad=0` | right stick no longer doubles as a finger on the touchpad |
-| `motion=0`, `rumble=0` | ignore the motion sensors / no vibration |
+| `motion=0`, `rumble=0` | ignore the gamepad's motion sensors (the hands holding it then say how it is turned, as for a gamepad that has none) / no vibration |
 | `msaa=4` | let the game multisample as on the console (default 1 = off, much faster) |
 | `stats=1` | keep a small panel in view with the game's frame rate, the display's refresh rate and whether the hands holding the controller are seen |
 | `predict_ms=25` | how far beyond the next refresh the head pose given to the game is predicted (0–80). More if the picture's edges show when turning the head, less if the world wobbles |
@@ -228,6 +256,62 @@ What a session leaves behind, in the same folder as `vrhost.txt`:
 `adb pull /sdcard/Android/data/com.astrobotquest.vrhost/files/host.log` fetches one; they are
 what to look at (or send along) when something did not work. `adb logcat -s AstroVR` shows the
 host's log live. The emulator's own folder (saves, `sys_modules`) is `.../files/data/shadPS4/`.
+
+## Controllers
+
+The game is played with one DualShock 4, which the app makes of what the player holds.
+
+**A DualSense** (or a DualShock 4, which the headset's system knows the same way; untested) has
+everything the game uses: its touchpad, its motion sensors for how it is turned, rumble and
+light bar. Where it is in the game is where the headset sees the hands that hold it.
+
+**Other gamepads** (the headset's system has drivers and key layouts for Xbox controllers,
+8BitDo, Logitech, Razer, PDP, Hori and others; nothing but a DualSense has been tried) lack
+two things the game is built around, which are made up for:
+
+- *the touchpad.* The right stick, for which this game has no use, moves a finger over it: the
+  finger comes down in the middle of the pad, goes where the stick goes, and lifts where the
+  stick is let go (not back in the middle, where a stick flies to). That is what the catapult
+  at the end of a level needs: pull the stick towards you and let go. The Create / Back / View
+  button presses the pad. (`stick_touchpad=0` leaves the stick a stick.)
+- *the motion sensors*, by which the game knows how the controller is turned: its gadgets aim
+  with it. The hands holding the gamepad stand in: the line from one palm to the other is the
+  gamepad's sideways axis, which gives how it is turned and how far it is rolled, and the way
+  the hands point is how far its front is tilted up or down. That is as steady as the
+  headset's view of two hands around a gamepad, and off by however a gamepad's shape has the
+  hands point: `pad_tilt=` moves it if it points too high or too low in the game. Motion
+  sensors of gamepads that are not PlayStation's are not used even where the system offers
+  them: which way is up for a motion sensor is each maker's own affair. (`motion=0` has a
+  DualSense go by the hands as well. For a gamepad that has both, `host.log` says every ten
+  seconds how far the two are apart: "hands against the gamepad's motion sensors".)
+
+**The headset's own controllers**, for whoever has no gamepad. The app reads them through the
+headset's runtime, which says where they are and whether anybody holds them (the gamepad the
+system makes of them for other apps says neither, and is ignored):
+
+| On the controllers | In the game |
+| --- | --- |
+| the right controller, where it is and the way it points (`pad_hand=left`: the left one) | the controller |
+| left stick, pressed in | left stick, L3 |
+| A, B (right) | ✕, □ |
+| X, Y (left) | ○, △ |
+| X and Y together | blowing into the microphone, for as long as they are held |
+| grips | L1, R1 |
+| triggers | L2, R2 |
+| right stick | the finger on the touchpad, as on a gamepad without one |
+| right stick pressed in | the touchpad pressed |
+| menu button (left) | OPTIONS; held for a second, it resets the view |
+| both sticks pressed in | resets the view |
+
+Both controllers shake with the game's rumble, the left one more with the heavy motor and
+the right one more with the light one.
+
+**With a gamepad and the headset's controllers both at hand, the game is played with the one
+that was used last**: a button on the other takes over, and `host.log` says so. From a
+gamepad, only what a hand cannot do without a controller in it takes over (a button under a
+thumb, a stick): while a gamepad is held it is the hands the headset sees, and their pinching
+must never count. The start-up menu takes either: a stick to a side chooses, ✕ / A or a
+trigger starts the game, and what started it is not pressed in the game.
 
 ## Where the player sits
 
@@ -604,6 +688,8 @@ Settings of `quest-selftest.sh` that make it more like one (given like the core'
 | `HOST_COMPOSITOR=<Hz>[,<n>[,<Mpx>]]` | a stand-in for the compositor: so many times a second a pass the size of the compositor's own (9 megapixels) and n - 1 small ones (n = 5), on a GPU context that comes before the emulator's. With it the GPU is the limit as in a session |
 | `HOST_DISPLAY=<Hz>` | the test's loop goes round once per refresh of a display of that rate, tells the emulator of each as the app does, and counts for how many refreshes each frame of the game stayed the newest |
 | `HOST_LOOK="<s>:<left>,<up>;..."` | where the head looks from which second on (degrees); `8:85,22;110:0,-12` finds the first level from the world map and then looks along it |
+| `HOST_PAD="<s>:<kind>,<right>,<up>,<ahead>,<left>,<tilt>,<roll>;..."` | what the app says of the controller from which second on, the way a session does: `c` one of the headset's own controllers (it says everything of itself), `h` hands around a gamepad without motion sensors, `p` hands around one that has them (only where it is), `n` nothing seen; where it is in metres from the head, how it is turned in degrees. With `HOST_LOOK=0:0,-18` the controller is in the picture |
+| `HOST_SHOTS=<s>` | a picture every so many seconds instead of every ten |
 | `XDG_DATA_HOME=<folder>` | where the emulator keeps its data, saves among them. The self-test starts from nothing each time, so the game plays its prologue (four minutes); with a folder that holds a save it is in the first level after 75 seconds |
 | `SHADPS4_VR_FOLLOW_DISPLAY=0` | the emulated headset keeps to its own clock although the host tells of its display's refreshes |
 
@@ -640,7 +726,14 @@ it: everything the app does when it is launched runs (settings, log files, OpenX
 session, unpacking the runtime, the emulator with the game, sound), a controller that is not
 there presses ✕ now and then (through the same code a real one's events go through), and the
 `host.log` and `core.log` the app writes are pulled to `build/quest/drystart/` together with
-pictures of what its status panel showed.
+pictures of what its status panel showed and of the start-up menu.
+
+`quest-host/build.sh --test-package` builds the same app under another name
+(`com.astrobotquest.vrhost.test`, "Astro VR Host (test)", `build/quest/astro-vr-host-test.apk`).
+It installs next to the app proper and touches neither it nor its saves: for trying a build on
+a headset whose owner plays with the other one. `ASTRO_PACKAGE=com.astrobotquest.vrhost.test`
+before `quest-xrprobe.sh`, `quest-drystart.sh`, `quest-selftest.sh` or `quest-sandbox-test.sh`
+runs them in it; `adb uninstall com.astrobotquest.vrhost.test` removes it again.
 
 ## Watching a real session
 

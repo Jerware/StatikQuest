@@ -405,6 +405,15 @@ void Runtime::UpdatePadOrientation(const Quat& orientation, const Vec3& angular_
     pad_position_tracked = false;
 }
 
+void Runtime::UpdatePadHeldOrientation(const Quat& host_orientation) {
+    std::scoped_lock lock{mutex};
+    pad.pose.orientation = Normalize(Multiply(Conjugate(seat_yaw), host_orientation));
+    pad.angular_velocity = {};
+    ++pad.sequence;
+    pad.tracked = true;
+    pad_position_tracked = false;
+}
+
 void Runtime::UpdatePadAcceleration(const Vec3& acceleration) {
     std::scoped_lock lock{mutex};
     pad_acceleration = acceleration;
