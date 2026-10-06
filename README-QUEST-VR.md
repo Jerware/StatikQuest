@@ -655,6 +655,20 @@ the headset's GPU has in it for this game (a frame of the first level is 4 to 8 
 vertices in 750 to 2500 draws, 20 to 30 ms of GPU time at the smallest size); the picture is
 now close to the console's at its smaller sizes.
 
+**One surface as two targets of a draw.** The glow of the lava around the octopus of world 2
+had squares in it, lit and dark, for as long as he moved. The game draws the rings that glow
+into a quarter-size buffer which it has bound twice for those draws: as target 0, where the
+colour is blended in, and as target 1, where alpha is written without blending. The console's
+GPU writes both to the same memory. Vulkan leaves undefined what an image holds that was two
+attachments of one render pass, and what it held was the draw in some blocks of 4x8 texels
+and not in others. The emulator now makes such a draw once for every target that shares a
+surface, with the others left out (`Rasterizer::SharedTargetPasses`). A scripted run gets to
+the same octopus through the challenge "10 - Second Date" (with a save that has world 2
+done): in the world select the challenge belt is chosen by looking 90 degrees to the right,
+the challenge is three steps of the stick to the right, and the gadget chest at its start
+takes the controller about 0.3 m below and 0.55 m ahead of the head;
+`tools/pc-dump-test.sh` then keeps every render target of a frame of the fight.
+
 ## Sound
 
 The game does all its sound through Sony's Ngs2 library, which the emulator only had as an empty
