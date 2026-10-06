@@ -22,6 +22,10 @@ namespace Input {
 ///    the stick has come to rest.
 ///  - A stick may be moved through its centre, from one side to the other, without the finger
 ///    lifting on the way: a drag over the whole pad.
+///  - The stick does not have to be pushed all the way for the finger to reach the pad's edge,
+///    and the finger stays down for a moment at least, however briefly the stick was pushed.
+///    (That catapult only shoots for a finger that was down for more than a quarter of a
+///    second and dragged over more than four tenths of the pad.)
 ///  - A stick that never comes to rest near its centre (a worn one that drifts) moves no
 ///    finger: it would touch the pad for good, and a real finger on a real touchpad would
 ///    count for nothing beside it.
@@ -49,6 +53,7 @@ public:
                 return Lifted();
             }
             down = true;
+            down_since = time;
             armed = false;
             held = false;
             finger_x = 0.0f;
@@ -75,7 +80,7 @@ public:
             finger_y = peak->y;
             held = true;
         }
-        if (inside && IsStill(time)) {
+        if (inside && IsStill(time) && time - down_since >= ShortestTouch) {
             down = false;
             armed = r <= Rest;
             return Lifted();
@@ -99,9 +104,11 @@ public:
     /// it is further out than that.
     static constexpr float Rest = 0.15f;
     static constexpr float Start = 0.25f;
-    /// How far from the pad's centre the stick pushed all the way puts the finger, of the
-    /// pad's size.
-    static constexpr float Reach = 0.45f;
+    /// How far from the pad's centre the stick would put the finger if the pad went on, of
+    /// the pad's size: the finger is at the pad's edge with the stick four fifths out.
+    static constexpr float Reach = 0.62f;
+    /// A touch lasts this long at least, in seconds.
+    static constexpr double ShortestTouch = 0.3;
 
 private:
     struct Sample {
@@ -163,6 +170,7 @@ private:
     size_t newest{};
     size_t count{};
     bool down{};
+    double down_since{};
     bool armed{};
     bool held{};
     float finger_x{};

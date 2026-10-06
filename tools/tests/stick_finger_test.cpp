@@ -24,6 +24,7 @@ static void Check(bool ok, const std::string& what) {
 struct Run {
     int touches{};
     bool down{};
+    double touched_at{-1.0};
     // Where the finger came down and where it lifted, the last time it did either.
     float first_x{}, first_y{}, last_x{}, last_y{};
     // The nearest and the furthest it got, and when it lifted.
@@ -42,6 +43,7 @@ static Run Play(double rate, double length,
         const StickFinger::Touch touch = finger.Update(time, x, y);
         if (touch.down && !run.down) {
             ++run.touches;
+            run.touched_at = time;
             run.first_x = touch.x;
             run.first_y = touch.y;
         }
@@ -85,7 +87,7 @@ int main() {
         });
         Check(run.touches == 1 && !run.down, "pulled and let go: one touch, lifted" + hz);
         Check(std::abs(run.first_y - 0.5f) < 0.01f, "it comes down in the middle of the pad" + hz);
-        Check(run.last_y > 0.93f, "it lifts where the stick was pulled to, not at the centre" + hz);
+        Check(run.last_y > 0.99f, "it lifts at the pad's near edge, not back at the centre" + hz);
         Check(run.lifted_at > 0.5 && run.lifted_at < 0.62, "it lifts within a moment" + hz);
 
         // Pulled and let go at once, without holding.
@@ -94,6 +96,15 @@ int main() {
             y = time < 0.2 ? Ramp(time, 0.1, 0.2, 0.0f, 1.0f) : LetGo(time, 0.2, 1.0f);
         });
         Check(run.touches == 1 && run.last_y > 0.9f, "pulled and let go at once" + hz);
+        Check(run.lifted_at - run.touched_at > 0.26, "and still down for a quarter of a second" + hz);
+
+        // Pulled four fifths of the way only: dragged far enough for the catapult all the same.
+        run = Play(rate, 1.2, [](double time, float& x, float& y) {
+            x = 0.0f;
+            y = time < 0.5 ? Ramp(time, 0.1, 0.25, 0.0f, 0.8f) : LetGo(time, 0.5, 0.8f);
+        });
+        Check(run.touches == 1 && run.last_y - run.first_y > 0.45f,
+              "four fifths of the way is the whole way" + hz);
 
         // Flicked away from the player.
         run = Play(rate, 1.0, [](double time, float& x, float& y) {
@@ -102,7 +113,7 @@ int main() {
         });
         // (Read seventy times a second, a flick is seen at four or five places: the furthest
         // of them is where the finger lifts.)
-        Check(run.touches == 1 && run.last_y < 0.15f, "flicked forward: lifts at the far edge" + hz);
+        Check(run.touches == 1 && run.last_y < 0.01f, "flicked forward: lifts at the far edge" + hz);
 
         // Pushed forward, then pulled back through the centre in one go, then let go.
         run = Play(rate, 1.5, [](double time, float& x, float& y) {
@@ -112,7 +123,7 @@ int main() {
                              : LetGo(time, 0.8, 1.0f);
         });
         Check(run.touches == 1, "through the centre without lifting" + hz);
-        Check(run.least_y < 0.07f && run.last_y > 0.93f, "dragged from the far edge to the near" + hz);
+        Check(run.least_y < 0.01f && run.last_y > 0.99f, "dragged from the far edge to the near" + hz);
 
         // The same, slowly: a third of a second from one side to the other.
         run = Play(rate, 2.0, [](double time, float& x, float& y) {
@@ -121,14 +132,14 @@ int main() {
                 : time < 1.2 ? Ramp(time, 0.4, 0.75, -1.0f, 1.0f)
                              : LetGo(time, 1.2, 1.0f);
         });
-        Check(run.touches == 1 && run.last_y > 0.93f, "slowly through the centre without lifting" + hz);
+        Check(run.touches == 1 && run.last_y > 0.99f, "slowly through the centre without lifting" + hz);
 
         // Brought back by hand, slowly: the finger comes back with it and lifts near the middle.
         run = Play(rate, 2.0, [](double time, float& x, float& y) {
             x = 0.0f;
             y = time < 0.5 ? Ramp(time, 0.1, 0.25, 0.0f, 1.0f) : Ramp(time, 0.5, 1.2, 1.0f, 0.0f);
         });
-        Check(run.touches == 1 && run.last_y < 0.68f && run.most_y > 0.93f,
+        Check(run.touches == 1 && run.last_y < 0.72f && run.most_y > 0.99f,
               "brought back by hand: the finger comes back with it" + hz);
 
         // Sideways, and round the rim: the finger follows.
@@ -138,7 +149,7 @@ int main() {
             x = out * std::cos(angle);
             y = out * std::sin(angle);
         });
-        Check(run.touches == 1 && std::abs(run.last_x - 0.5f) < 0.03f && run.last_y > 0.93f,
+        Check(run.touches == 1 && std::abs(run.last_x - 0.5f) < 0.03f && run.last_y > 0.99f,
               "round the rim from the right to the near edge" + hz);
 
         // A stick that drifts: it never rests, and never touches.
