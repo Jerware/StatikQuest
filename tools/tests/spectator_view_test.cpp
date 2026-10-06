@@ -80,6 +80,35 @@ int main() {
     ok &= Check(mirror[0].x == 25 && mirror[0].width == 75 && mirror[1].clip_x == 0 &&
                     mirror[1].clip_width == 25,
                 "reversed asymmetry keeps left peripheral strip");
+    const auto single_fit = SpectatorContentRect(1920, 1080, 0.9375f, false);
+    ok &= Check(single_fit.x == 454 && single_fit.y == 0 && single_fit.width == 1012 &&
+                    single_fit.height == 1080,
+                "uncropped single eye keeps side bars");
+    const auto single_crop = SpectatorContentRect(1920, 1080, 0.9375f, true);
+    ok &= Check(single_crop.x == 0 && single_crop.y == -484 && single_crop.width == 1920 &&
+                    single_crop.height == 2048,
+                "single eye fills width with centered vertical crop and no stretching");
+    for (const auto& fov : {simple, reversed, symmetric, invalid}) {
+        const float aspect = DesktopViewAspect(DesktopView::Combined, fov, 0.9375f);
+        const auto crop = SpectatorContentRect(1920, 1080, aspect, true);
+        ok &= Check(crop.x == 0 && crop.width == 1920 && crop.height >= 1080 && crop.y <= 0 &&
+                        Near(static_cast<float>(crop.width) / crop.height, aspect) &&
+                        CoversWidth(crop.width, fov),
+                    "combined crop preserves proportions and peripheral coverage");
+    }
+    const auto combined_crop = SpectatorContentRect(1920, 1080, 1.25f, true);
+    const auto combined_layout = CombinedEyeRegions(combined_crop.width, simple);
+    ok &= Check(combined_crop.y == -228 && combined_crop.height == 1536 &&
+                    Near(static_cast<float>(combined_layout[0].width) / combined_crop.height,
+                         0.9375f),
+                "combined crop keeps each eye's original proportions");
+    const auto portrait = SpectatorContentRect(720, 1280, 1.25f, true);
+    ok &= Check(portrait.x == 0 && portrait.y == 352 && portrait.width == 720 &&
+                    portrait.height == 576,
+                "portrait window preserves both sides");
+    const auto odd = SpectatorContentRect(1919, 1079, 0.9375f, true);
+    ok &= Check(odd.x == 0 && odd.width == 1919 && odd.height == 2046 && odd.y == -483,
+                "odd desktop size has centered crop within one pixel");
     std::puts(ok ? "spectator view checks passed" : "spectator view checks failed");
     return ok ? 0 : 1;
 }

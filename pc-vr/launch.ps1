@@ -643,8 +643,16 @@ function Show-Menu {
     $desktopModes = @("stereo", "spectator", "combined")
     $desktopView.Items.AddRange(@("Stereo (both eyes)", "Single eye (spectator)", "Combined eyes (spectator)"))
     $desktopView.SelectedIndex = [array]::IndexOf($desktopModes, (Get-DesktopView))
-    $desktopView.SetBounds(16, $y, 520, 26)
+    $desktopView.SetBounds(16, $y, 248, 26)
     $form.Controls.Add($desktopView)
+    $desktopCrop = New-Object System.Windows.Forms.CheckBox
+    $desktopCrop.Name = "desktopCrop"
+    $desktopCrop.Text = "Crop top/bottom to fill"
+    $desktopCrop.Checked = (Setting "desktop_crop" "0") -eq "1"
+    $desktopCrop.SetBounds(284, $y, 250, 26)
+    $desktopCrop.Enabled = $desktopView.SelectedIndex -ne 0
+    $desktopView.Add_SelectedIndexChanged({ $desktopCrop.Enabled = $desktopView.SelectedIndex -ne 0 })
+    $form.Controls.Add($desktopCrop)
     $y += 40
 
     $again = New-Object System.Windows.Forms.CheckBox
@@ -673,6 +681,7 @@ function Show-Menu {
     Save-Setting "fov" ($fov.Value * 5)
     Save-Setting "menu" ($(if ($again.Checked) { "1" } else { "0" }))
     Save-Setting "desktop_view" ($desktopModes[$desktopView.SelectedIndex])
+    Save-Setting "desktop_crop" ($(if ($desktopCrop.Checked) { "1" } else { "0" }))
     Read-Settings
     return $true
 }
@@ -728,6 +737,7 @@ if ($resolution -eq "game") {
 }
 $env:SHADPS4_VR_SHARPEN = Setting "sharpen" "0.3"
 $env:SHADPS4_VR_DESKTOP_VIEW = Get-DesktopView
+$env:SHADPS4_VR_DESKTOP_CROP = $(if ((Setting "desktop_crop" "0") -eq "1") { "1" } else { "0" })
 if ((Setting "msaa") -ne "") { $env:SHADPS4_MAX_MSAA = Setting "msaa" }
 if ((Setting "antialias" "1") -eq "0") { $env:SHADPS4_RESOLVE_AA = "0" }
 if ((Setting "hands" "1") -eq "0") { $env:SHADPS4_XR_HANDS = "0" }

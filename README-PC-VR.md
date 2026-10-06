@@ -118,15 +118,19 @@ desktop canvas by the extra peripheral coverage. With symmetric horizontal proje
 Combined eyes have the same aspect ratio as Single eye and add no peripheral view.
 These desktop choices leave the headset's stereo picture unchanged.
 
-The desktop preserves the complete image with black bars as needed, without stretching or
-cropping, including fullscreen on a 16:9 monitor. A 16:9 output resolution alone does not
-add scene coverage. Fullscreen follows shadPS4's native `GPU.full_screen` setting in
+By default, the desktop preserves the complete image with black bars as needed, without
+stretching or cropping. **Crop top/bottom to fill** scales Single eye or Combined eyes to
+the desktop width and crops the top and bottom equally on a wide monitor. It does not
+stretch the image, add scene coverage or change the headset. Narrow windows can still
+have bars above and below; the sides are never cropped. Stereo ignores this option.
+Fullscreen follows shadPS4's native `GPU.full_screen` setting in
 `pc-vr\user\config.json`; the launcher does not override it or save a separate preference.
 
 Sony describes the original PSVR's standard TV social screen as an undistorted, cropped
 right-eye image ([official FAQ](https://blog.playstation.com/archive/2016/10/03/playstation-vr-the-ultimate-faq/)).
 Games could also supply a separate TV image; Astro Bot-specific use of that path has not
-been confirmed here. Our complete-image spectator option deliberately does not crop.
+been confirmed here. Our default spectator option preserves the complete image; cropping
+is optional.
 
 ## Settings
 
@@ -141,6 +145,7 @@ been confirmed here. Our complete-image spectator option deliberately does not c
 | `fov_of=psvr` | `fov` is a percent of a PlayStation VR's field of view (100 by 103 degrees an eye, what the game was made for) instead of the headset's own (`fov_of=headset`, the default) |
 | `menu=0` | no window with the main settings at the start |
 | `desktop_view=spectator` | one complete eye on the monitor; `combined` adds the other eye's peripheral strip; default `stereo` keeps both eyes side by side. Does not change the headset view |
+| `desktop_crop=1` | scale Single eye or Combined eyes to the desktop width, cropping the top/bottom if needed; default `0` preserves the complete image. Stereo and headset output are unchanged |
 | `sharpen=0.3` | sharpening of the picture on its way out, 0 to 1. Virtual Desktop has its own on top |
 | `msaa=4` | the most samples a pixel gets; default as the console draws it. With `1` the emulator smooths edges itself (unless `antialias=0`) |
 | `hands=0` | do not use hand tracking to place the controller |

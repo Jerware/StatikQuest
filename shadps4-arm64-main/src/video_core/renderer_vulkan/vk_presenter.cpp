@@ -905,11 +905,16 @@ HmdFrames Presenter::PrepareHmdFrame(std::span<const AmdGpu::Image, 2> eye_textu
         return Core::Vr::ParseDesktopView(value != nullptr ? value : "");
     }();
     const bool spectator = desktop_view != Core::Vr::DesktopView::Stereo && !exported;
+    static const bool desktop_crop = [] {
+        const char* value = std::getenv("SHADPS4_VR_DESKTOP_CROP");
+        return value != nullptr && std::string_view{value} == "1";
+    }();
+    const bool crop = spectator && desktop_crop;
     const float desktop_aspect = Core::Vr::DesktopViewAspect(
         desktop_view, fov, static_cast<float>(eye_width) / eye_height);
     Frame* const local = exported ? nullptr : vr_exporter->AcquireLocal(eye_width * 2, eye_height);
     if (!exported) {
-        expected_ratio = desktop_aspect;
+        expected_ratio = crop ? std::nullopt : std::optional{desktop_aspect};
         frame = GetRenderFrame();
         if (!frame && !local) {
             return {};
@@ -982,9 +987,11 @@ HmdFrames Presenter::PrepareHmdFrame(std::span<const AmdGpu::Image, 2> eye_textu
     auto hmd_settings = pp_settings;
     hmd_settings.sharpen = sharpen;
     if (frame != nullptr) {
-        const auto content = FitImage(
-            std::max(1, static_cast<s32>(desktop_aspect * frame->height)), frame->height,
-            frame->width, frame->height);
+        const auto bounds = Core::Vr::SpectatorContentRect(frame->width, frame->height,
+                                                        desktop_aspect, crop);
+        const vk::Rect2D content{{bounds.x, bounds.y}, {bounds.width, bounds.height}};
+        const vk::Rect2D clip{{bounds.x, std::max(0, bounds.y)},
+                             {bounds.width, std::min(bounds.height, frame->height)}};
         if (spectator && desktop_view == Core::Vr::DesktopView::Combined) {
             const auto layout = Core::Vr::CombinedEyeRegions(content.extent.width, fov);
             const auto region_for = [&](u32 eye) {
@@ -998,8 +1005,8 @@ HmdFrames Presenter::PrepareHmdFrame(std::span<const AmdGpu::Image, 2> eye_textu
                     },
                     .clip = vk::Rect2D{
                         .offset{.x = content.offset.x + static_cast<s32>(region.clip_x),
-                                .y = content.offset.y},
-                        .extent{.width = region.clip_width, .height = content.extent.height},
+                                .y = clip.offset.y},
+                        .extent{.width = region.clip_width, .height = clip.extent.height},
                     },
                 };
             };
@@ -1008,7 +1015,8 @@ HmdFrames Presenter::PrepareHmdFrame(std::span<const AmdGpu::Image, 2> eye_textu
             pp_pass.Render(cmdbuf, std::span{regions}.first(count), *frame, hmd_settings);
         } else if (spectator) {
             const std::array regions{
-                HostPasses::PostProcessingPass::Region{.input = eye_views[0], .area = content},
+                HostPasses::PostProcessingPass::Region{
+                    .input = eye_views[0], .area = content, .clip = clip},
             };
             pp_pass.Render(cmdbuf, regions, *frame, hmd_settings);
         } else {
@@ -1854,10 +1862,12 @@ void Presenter::SetExpectedGameSize(s32 width, s32 height) {
 
     expected_frame_height = height;
     expected_frame_width = width;
-    if (ratio > expected_ratio) {
-        expected_frame_width = static_cast<s32>(height * expected_ratio);
-    } else {
-        expected_frame_height = static_cast<s32>(width / expected_ratio);
+    if (expected_ratio) {
+        if (ratio > *expected_ratio) {
+            expected_frame_width = static_cast<s32>(height * *expected_ratio);
+        } else {
+            expected_frame_height = static_cast<s32>(width / *expected_ratio);
+        }
     }
 }
 

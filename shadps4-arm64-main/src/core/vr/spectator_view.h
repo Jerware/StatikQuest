@@ -40,6 +40,26 @@ inline float DesktopViewAspect(DesktopView view, const Fov& fov, float eye_aspec
     return eye_aspect * 2.0f * std::max(fov.tan_out, fov.tan_in) / (fov.tan_out + fov.tan_in);
 }
 
+struct SpectatorRect {
+    s32 x;
+    s32 y;
+    u32 width;
+    u32 height;
+};
+
+inline SpectatorRect SpectatorContentRect(u32 width, u32 height, float aspect, bool crop) {
+    if (width == 0 || height == 0 || !std::isfinite(aspect) || aspect <= 0.0f) {
+        return {0, 0, width, height};
+    }
+    const bool fill_width = crop || aspect > static_cast<float>(width) / height;
+    const u32 content_width = fill_width ? width : std::max(1u, static_cast<u32>(height * aspect));
+    const u32 content_height =
+        fill_width ? std::max(1u, static_cast<u32>(width / aspect)) : height;
+    return {(static_cast<s32>(width) - static_cast<s32>(content_width)) / 2,
+            (static_cast<s32>(height) - static_cast<s32>(content_height)) / 2,
+            content_width, content_height};
+}
+
 struct HorizontalEyeRegion {
     u32 x;
     u32 width;
