@@ -55,15 +55,18 @@ function EyeHeight([int]$width) { return [int]([math]::Round(1536.0 * $width / 1
 $caps = @(120, 90, 72, 60, 45, 40, 36, 30)
 
 function Get-VrInstructions([string]$runtime) {
+    # How to move the gamepad in the game while nothing tracks where it is.
+    $placeHelp = "Hold the PS button and press the D-pad to move it (L1 nearer, R1 farther); PS + triangle switches between your place for it and the standard one."
     if ($runtime -match 'steamvr|steamxr') {
         return @(
-            "Start SteamVR and check that the Index and base stations are ready. Virtual Desktop is not needed."
-            "Set the Index to 120 Hz in SteamVR Video settings for the game's default 60 frames a second."
+            "Start SteamVR and check that the headset is ready (an Index: with its base stations). Virtual Desktop is not needed."
+            "Set the headset to 120 Hz in SteamVR's Video settings for the game's own 60 frames a second (90 Hz gives 45)."
             "The DualSense: connect it to THIS PC by USB or Bluetooth. It keeps its motion sensors, touchpad and rumble."
             "If launching through a Steam shortcut, disable Steam Input for that shortcut so the emulator can read the DualSense."
-            "The Index does not track bare hands: without controller-position tracking, the gamepad stays in front of you and turns with its gyro."
-            "Use the Index speakers and microphone in SteamVR Audio settings; the game uses the microphone for blowing."
-            "No gamepad: Index controllers play (right A jump, right B punch, left A back, left B triangle, left trackpad press = OPTIONS)."
+            "SteamVR does not track bare hands: the gamepad in the game stays in front of you and turns with its own sensors."
+            $placeHelp
+            "Sound and microphone: the ones chosen in SteamVR's Audio settings; the game uses the microphone for blowing."
+            "No gamepad: the headset's controllers play (right A jump, right B punch, left X or A back, left Y or B triangle, left menu or trackpad press = OPTIONS)."
         )
     }
     if ($runtime -match 'virtualdesktop') {
@@ -72,14 +75,17 @@ function Get-VrInstructions([string]$runtime) {
             "The DualSense: connect it to THIS PC (USB cable, or Bluetooth paired with the PC). Paired with"
             "the headset, it reaches the PC through Virtual Desktop without motion sensors or touchpad."
             "Where it is in the game comes from your hands: hand tracking on in the headset, and in"
-            "Virtual Desktop's settings hand tracking forwarded to the PC."
+            "Virtual Desktop's settings hand tracking forwarded to the PC. Without that it stays in front of you:"
+            $placeHelp
             "No gamepad: Touch controllers play (A jump, B punch, X back, Y triangle, left menu = OPTIONS)."
         )
     }
     return @(
         "Start your headset's OpenXR runtime and check that the headset is ready."
         "The DualSense: connect it to THIS PC by USB or Bluetooth, with Steam Input disabled for any Steam shortcut."
-        "Without hand tracking, the gamepad stays in front of you and turns with its gyro."
+        "Without hand tracking, the gamepad in the game stays in front of you and turns with its own sensors."
+        $placeHelp
+        "No gamepad: the headset's controllers play (right A jump, right B punch, left X or A back, left Y or B triangle)."
     )
 }
 
@@ -192,15 +198,37 @@ function Find-Game([string]$top) {
     return $first
 }
 
-# The package under a folder: the largest, if there are several (a game's is larger than its
-# updates').
+# Whether a package is an update of a game (a patch), which holds the files the update changed
+# and no more, rather than the game: its header says so.
+function Test-UpdatePackage([string]$path) {
+    try {
+        $head = New-Object byte[] 128
+        $stream = [System.IO.File]::OpenRead($path)
+        try { $read = $stream.Read($head, 0, $head.Length) } finally { $stream.Dispose() }
+        if ($read -lt $head.Length) { return $false }
+        if ($head[0] -ne 0x7F -or $head[1] -ne 0x43 -or $head[2] -ne 0x4E -or $head[3] -ne 0x54) {
+            return $false
+        }
+        # (First patch, later patch, cumulative patch: 0x00100000, 0x40000000, 0x20000000.)
+        return (($head[0x78] -band 0x60) -ne 0) -or (($head[0x79] -band 0x10) -ne 0)
+    } catch { return $false }
+}
+
+# The package under a folder: a game's own before any update of it, and the largest if there
+# are several.
 function Find-Package([string]$top) {
     $largest = $null
+    $largestIsUpdate = $true
     foreach ($folder in (Get-Folders $top)) {
         try { $files = [System.IO.Directory]::GetFiles($folder, "*.pkg") } catch { continue }
         foreach ($file in $files) {
             $info = New-Object System.IO.FileInfo($file)
-            if ($null -eq $largest -or $info.Length -gt $largest.Length) { $largest = $info }
+            $isUpdate = Test-UpdatePackage $file
+            if ($null -eq $largest -or ($largestIsUpdate -and -not $isUpdate) -or
+                ($largestIsUpdate -eq $isUpdate -and $info.Length -gt $largest.Length)) {
+                $largest = $info
+                $largestIsUpdate = $isUpdate
+            }
         }
     }
     return $largest
@@ -292,6 +320,10 @@ function Expand-Package($package) {
     $contentId = Read-PackageId $package.FullName
     if ($null -eq $contentId) {
         [void](Show-Box ($package.FullName + "`n`nis not a PlayStation 4 package.") "OK" "Warning")
+        return $null
+    }
+    if (Test-UpdatePackage $package.FullName) {
+        [void](Show-Box ("This package is an update of the game, not the game:`n`n" + $package.Name + "`n`nAn update holds only the files it changed. Put the package of the game itself (about 7 GB) in the games folder; the update is not needed, and is left alone when it is there as well. (A copy of the game that already has its update 1.04 in it plays too.)") "OK" "Warning")
         return $null
     }
     $tool = $null
@@ -732,10 +764,20 @@ Say ("The game: " + $game)
 $info = Get-GameInfo $game
 if ($info.Count -eq 0) {
     Say "sce_sys\param.sfo is missing next to it: this is not a complete copy of the game, and the emulator may not know it." "Yellow"
-} elseif ($info["TITLE_ID"] -ne $madeFor -or $info["APP_VER"] -ne "01.00") {
-    Say ("This is " + $info["TITLE"] + ", " + $info["TITLE_ID"] + " version " + $info["APP_VER"] + ". AstroQuest is made for the European release, " + $madeFor + " version 01.00: with another, its fixes for the game's speed and picture do not apply, and it may not run.") "Yellow"
-} elseif ([System.IO.Path]::GetDirectoryName($game).Length + 1 + $longestInside -gt 259) {
-    [void](Show-Box ("The game is in`n" + [System.IO.Path]::GetDirectoryName($game) + "`n`nThat path is too long: some of the game's files have a path of more than 259 characters there, which the emulator cannot open, and the game would stop when it needs them. Move the folder somewhere with a shorter path, for example C:\Games\AstroQuest, and start again.") "OK" "Warning")
+} elseif ($info["TITLE_ID"] -ne $madeFor) {
+    Say ("This is " + $info["TITLE"] + ", " + $info["TITLE_ID"] + ". AstroQuest is made for ASTRO BOT Rescue Mission in its European release, " + $madeFor + ": its fixes for the game's speed and picture do not apply to another, and it may not run.") "Yellow"
+} elseif (@("01.00", "01.04") -notcontains $info["APP_VER"]) {
+    # (What decides is the executable itself, which the emulator looks at as it loads it and
+    # names below; what the game says its version is can be wrong.)
+    Say ("This copy of the game says it is version " + $info["APP_VER"] + ". AstroQuest knows versions 01.00 and 01.04 from inside: another plays in slow motion where frames take long, and at the console's resolution.") "Yellow"
+}
+$gameFolder = [System.IO.Path]::GetDirectoryName($game)
+if ($info["TITLE_ID"] -eq $madeFor -and -not [System.IO.File]::Exists([System.IO.Path]::Combine($gameFolder, "sce_module", "libc.prx"))) {
+    [void](Show-Box ("This is not a complete copy of the game:`n" + $gameFolder + "`n`nParts that every copy has are missing (sce_module\libc.prx for one). A folder with only an update of the game in it looks like this: an update holds the files it changed and no more. Put the update's files over a copy of the whole game, or use the game without its update.") "OK" "Warning")
+    exit 1
+}
+if ($gameFolder.Length + 1 + $longestInside -gt 259) {
+    [void](Show-Box ("The game is in`n" + $gameFolder + "`n`nThat path is too long: some of the game's files have a path of more than 259 characters there, which the emulator cannot open, and the game would stop when it needs them. Move the folder somewhere with a shorter path, for example C:\Games\AstroQuest, and start again.") "OK" "Warning")
     exit 1
 }
 
@@ -830,7 +872,8 @@ if ($env:SHADPS4_OPENXR -ne "0" -and [int]$env:SHADPS4_XR_WAIT -gt 0) {
     Say ("The game waits up to " + $env:SHADPS4_XR_WAIT + " seconds for the headset before it starts on the monitor.")
 }
 Say "Hold OPTIONS for a second (or press the PS button) to reset the view."
-Say "With VR controllers: right stick = touchpad, press both sticks in to reset the view."
+Say "With VR controllers: the right stick is the touchpad (pull it back and let go to shoot at the end of a level),"
+Say "both sticks pressed in reset the view."
 Say "Close the game's window to quit."
 Say ""
 # The emulator asks Windows for about 14 GB at once (the console's memory, and what the larger
@@ -886,10 +929,14 @@ function Show-Log {
                     if (($script:reports % 6) -ne 1) { continue }
                 }
                 if ($warning) { Say ("  " + $text) "Yellow" } else { Say ("  " + $text) }
-            } elseif ($line -match '^\[Input\] <Info> \([^)]*\) \S+ (?:\w+: )?(Controller .*)$') {
+            } elseif ($line -match '^\[Input\] <Info> \([^)]*\) \S+ (?:\w+: )?(Controller .*|The controller.s touchpad .*)$') {
                 Say ("  " + $Matches[1])
-            } elseif ($line -match '^\[Core\] <Info> \([^)]*\) \S+ (?:\w+: )?(The title draws at up to .*|The scene is drawn at .*|Frames are given .*)$') {
+            } elseif ($line -match '^\[Input\] <Warning> \([^)]*\) \S+ (?:\w+: )?(Controller .*)$') {
+                Say ("  " + $Matches[1]) "Yellow"
+            } elseif ($line -match '^\[Core\] <Info> \([^)]*\) \S+ (?:\w+: )?(CUSA12392 in a build .*|The title draws at up to .*|The scene is drawn at .*|Frames are given .*)$') {
                 Say ("  " + $Matches[1])
+            } elseif ($line -match '^\[Core\] <Warning> \([^)]*\) \S+ (?:\w+: )?(This build of CUSA12392 .*)$') {
+                Say ("  " + $Matches[1]) "Yellow"
             } elseif ($line -match '<Critical>.*?: (.*)$') {
                 $text = $Matches[1]
                 if (-not $shown.ContainsKey($text)) { $shown[$text] = 1; Say ("  ! " + $text) "Red" }

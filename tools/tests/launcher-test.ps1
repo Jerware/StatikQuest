@@ -28,11 +28,14 @@ function Make-Game([string]$folder, [bool]$withSfo) {
         [System.IO.File]::Copy($realSfo, (Join-Path $folder "sce_sys\param.sfo"))
     }
 }
-function Make-Package([string]$path, [string]$contentId, [int]$size) {
+# (`$flags`: what a package's header says it is, as its four bytes at 0x78: a game's own has
+# 0x0A000000 there, an update of it 0x62300000.)
+function Make-Package([string]$path, [string]$contentId, [int]$size, [uint32]$flags = 0x0A000000) {
     [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($path))
     $bytes = New-Object byte[] $size
     $bytes[0] = 0x7F; $bytes[1] = 0x43; $bytes[2] = 0x4E; $bytes[3] = 0x54
     [System.Text.Encoding]::ASCII.GetBytes($contentId).CopyTo($bytes, 0x40)
+    $bytes[0x78] = [byte](($flags -shr 24) -band 0xFF); $bytes[0x79] = [byte](($flags -shr 16) -band 0xFF)
     [System.IO.File]::WriteAllBytes($path, $bytes)
 }
 
@@ -70,6 +73,22 @@ Check "e  no unpacked game" (Find-Game $g) ""
 Check "e  the largest package, brackets in its name" (Find-Package $g).FullName $package
 Check "e  content id" (Read-PackageId $package) "EP9000-CUSA12392_00-PLATFORMERVR00EU"
 Check "e  a file that is no package" (Read-PackageId "$g\notapackage.pkg") ""
+Check "e  a game's package is not an update" (Test-UpdatePackage $package) $false
+Check "e  a file that is no package is not an update" (Test-UpdatePackage "$g\notapackage.pkg") $false
+
+# e2: an update next to the game's package, and larger than it: the game's is taken
+$g = "$base\e2\games"
+Make-Package "$g\game.pkg" "EP9000-CUSA12392_00-PLATFORMERVR00EU" 2048
+Make-Package "$g\A-Update-v1.04.pkg" "EP9000-CUSA12392_00-PLATFORMERVR00EU" 8192 0x62300000
+Make-Package "$g\first-patch.pkg" "EP9000-CUSA12392_00-PLATFORMERVR00EU" 4096 0x00100000
+Check "e2 an update says so" (Test-UpdatePackage "$g\A-Update-v1.04.pkg") $true
+Check "e2 a first patch says so" (Test-UpdatePackage "$g\first-patch.pkg") $true
+Check "e2 the game's package before a larger update" (Find-Package $g).FullName "$g\game.pkg"
+# e3: nothing but updates: the largest of them, which is then turned down for what it is
+$g = "$base\e3\games"
+Make-Package "$g\small.pkg" "EP9000-CUSA12392_00-PLATFORMERVR00EU" 1024 0x62300000
+Make-Package "$g\large.pkg" "EP9000-CUSA12392_00-PLATFORMERVR00EU" 4096 0x62300000
+Check "e3 only updates: the largest" (Find-Package $g).FullName "$g\large.pkg"
 
 # f: too deep, and an empty or missing games folder
 $g = "$base\f\games"; Make-Game "$g\1\2\3\4" $true
@@ -88,11 +107,14 @@ Check "SteamVR instructions name the Index" ($steam -match 'Index') $true
 Check "SteamVR instructions require no Virtual Desktop" ($steam -match 'Virtual Desktop is not needed') $true
 Check "SteamVR instructions preserve native DualSense input" ($steam -match 'disable Steam Input') $true
 Check "SteamVR instructions explain the tracking limit" ($steam -match 'does not track bare hands') $true
+Check "SteamVR instructions say how to move the gamepad" ($steam -match 'Hold the PS button') $true
 $vd = (Get-VrInstructions 'C:\Program Files\Virtual Desktop Streamer\OpenXR\virtualdesktop-openxr.json') -join "`n"
 Check "VDXR instructions still forward hand tracking" ($vd -match 'hand tracking forwarded') $true
 Check "VDXR instructions do not describe an Index" ($vd -match 'Index') $false
 $unknown = (Get-VrInstructions '') -join "`n"
 Check "Unknown runtime instructions do not assume Virtual Desktop" ($unknown -match 'Virtual Desktop') $false
+Check "Unknown runtime instructions say how to move the gamepad" ($unknown -match 'Hold the PS button') $true
+Check "VDXR instructions say how to move the gamepad" ($vd -match 'Hold the PS button') $true
 $script:settings = [ordered]@{}
 Check "Desktop defaults to stereo" (Get-DesktopView) "stereo"
 $script:settings = [ordered]@{ desktop_view = "spectator" }
