@@ -5,9 +5,11 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <functional>
 #include <mutex>
+#include <string>
 
 #include "common/types.h"
 
@@ -33,8 +35,28 @@ struct Pose {
 
 Quat Multiply(const Quat& a, const Quat& b);
 Quat Conjugate(const Quat& q);
-Quat Normalize(const Quat& q);
-Vec3 Rotate(const Quat& q, const Vec3& v);
+inline Quat Normalize(const Quat& q) {
+    const float length = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+    if (length < 1e-6f) {
+        return {};
+    }
+    return {q.x / length, q.y / length, q.z / length, q.w / length};
+}
+
+inline Vec3 Rotate(const Quat& q, const Vec3& v) {
+    const Vec3 u{q.x, q.y, q.z};
+    const Vec3 t{
+        u.y * v.z - u.z * v.y + q.w * v.x,
+        u.z * v.x - u.x * v.z + q.w * v.y,
+        u.x * v.y - u.y * v.x + q.w * v.z,
+    };
+    return {
+        v.x + 2.0f * (u.y * t.z - u.z * t.y),
+        v.y + 2.0f * (u.z * t.x - u.x * t.z),
+        v.z + 2.0f * (u.x * t.y - u.y * t.x),
+    };
+}
+
 Quat FromYawPitch(float yaw, float pitch);
 /// Yaw about +Y, then pitch about +X, then roll about +Z, in radians.
 Quat FromYawPitchRoll(float yaw, float pitch, float roll);
@@ -48,6 +70,14 @@ struct Fov {
     float tan_in{1.181346f};
     float tan_top{1.262872f};
     float tan_bottom{1.262872f};
+};
+
+struct HeadsetIdentity {
+    std::string runtime;
+    std::string system;
+    u32 vendor_id{};
+
+    bool operator==(const HeadsetIdentity&) const = default;
 };
 
 /// A tracked device sample, expressed in PSVR tracker space: metres, +X right, +Y up and
@@ -185,6 +215,16 @@ public:
     void ClearPadPosition();
     /// Replaces Config::pad_offset, and forgets where the controller was last seen.
     void SetPadOffset(const Vec3& offset);
+    /// A controller that nothing locates is held to be at a fixed place before the player:
+    /// the standard one (Config::pad_offset, which is where the title looks for it when it
+    /// starts) or one of the player's own choosing, for wherever the standard one is in the
+    /// way of the view or out of reach of what the controller is to be held to. The player's
+    /// own place is kept in the user folder; every start begins at the standard one.
+    /// Moves the player's own place by so many metres (right, up, towards the player), and
+    /// puts the controller there.
+    void MoveOwnPadPlace(const Vec3& by);
+    /// From the standard place to the player's own, or back.
+    void SwitchPadPlace();
     /// What the host can tell about the controller's heading (0 = straight ahead, positive to
     /// the left). The attitude worked out from the motion sensors is pulled towards it, which
     /// takes out the drift a gyroscope has about the vertical.
@@ -195,6 +235,7 @@ public:
     void SetPadLight(u8 red, u8 green, u8 blue);
     void SetPadFeedbackListener(std::function<void(const PadFeedback&)> listener);
     void UpdateOptics(const Fov& fov, float ipd);
+    void SetHeadsetIdentity(const HeadsetIdentity& identity);
     /// What the host's headset shows of the world, both eyes together (the widest of the two to
     /// every side), as soon as it knows. Kept in the user folder for later starts.
     void NoteHeadsetFov(const Fov& fov);
@@ -268,6 +309,9 @@ private:
     // Smoothed point the untracked controller hangs off.
     Vec3 pad_anchor;
     bool pad_anchor_valid{};
+    // The player's own place for it, from that point, and whether it is there.
+    Vec3 own_pad_offset{0.0f, -0.30f, -0.45f};
+    bool own_pad_place{};
     std::chrono::steady_clock::time_point pad_anchor_time;
     // Attitude estimated from the controller's motion sensors.
     Quat pad_attitude;
@@ -293,6 +337,7 @@ private:
     DisplayRefresh display_refresh;
     // The host headset's field of view, once known.
     std::condition_variable headset_fov_known;
+    HeadsetIdentity headset_identity;
     Fov headset_fov;
     bool has_headset_fov{};
     PadFeedback pad_feedback;

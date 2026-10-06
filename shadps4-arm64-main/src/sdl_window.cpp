@@ -24,6 +24,7 @@
 #include "core/user_settings.h"
 #include "imgui/renderer/imgui_core.h"
 #include "input/controller.h"
+#include "input/scripted_input.h"
 #include "input/input_handler.h"
 #include "input/input_mouse.h"
 #include "core/vr/vr_runtime.h"
@@ -461,12 +462,75 @@ void WindowSDL::OnGamepadEvent(const SDL_Event* event) {
                       event->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN;
     Input::InputEvent input_event = Input::InputBinding::GetInputEventFromSDLEvent(*event);
 
-    // The PS button is nothing a title ever sees. In a headset it resets the view.
-    if ((event->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ||
-         event->type == SDL_EVENT_GAMEPAD_BUTTON_UP) &&
-        event->gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE) {
-        Core::Vr::Runtime::Instance().NotePadButton(Core::Vr::Runtime::PadButton::Home,
-                                                    event->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN);
+    // The PS button is nothing a title ever sees. In a headset, pressed and let go, it resets
+    // the view. Held, it has the D-pad move the place a controller that nothing locates is
+    // held to be at (up, down, left, right; L1 nearer, R1 farther; two centimetres a press),
+    // triangle switch between that place and the standard one, and square blow into the
+    // microphone for as long as it is held. None of that reaches the title.
+    if (event->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ||
+        event->type == SDL_EVENT_GAMEPAD_BUTTON_UP) {
+        static bool held = false;
+        static bool used = false;
+        static u32 kept_back = 0;
+        const bool down = event->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN;
+        const u8 button = event->gbutton.button;
+        auto& runtime = Core::Vr::Runtime::Instance();
+        if (button == SDL_GAMEPAD_BUTTON_GUIDE) {
+            if (down) {
+                held = true;
+                used = false;
+            } else {
+                if (held && !used) {
+                    runtime.NotePadButton(Core::Vr::Runtime::PadButton::Home, true);
+                    runtime.NotePadButton(Core::Vr::Runtime::PadButton::Home, false);
+                }
+                held = false;
+            }
+        } else if (button < 32 && !down && (kept_back & (1u << button)) != 0) {
+            // Let go of after it did something else than the title would have seen.
+            kept_back &= ~(1u << button);
+            if (button == SDL_GAMEPAD_BUTTON_WEST) {
+                Input::SetBlowing(false);
+            }
+            return;
+        } else if (held && down && button < 32) {
+            static constexpr float Step = 0.02f;
+            bool taken = true;
+            switch (button) {
+            case SDL_GAMEPAD_BUTTON_DPAD_UP:
+                runtime.MoveOwnPadPlace({0.0f, Step, 0.0f});
+                break;
+            case SDL_GAMEPAD_BUTTON_DPAD_DOWN:
+                runtime.MoveOwnPadPlace({0.0f, -Step, 0.0f});
+                break;
+            case SDL_GAMEPAD_BUTTON_DPAD_LEFT:
+                runtime.MoveOwnPadPlace({-Step, 0.0f, 0.0f});
+                break;
+            case SDL_GAMEPAD_BUTTON_DPAD_RIGHT:
+                runtime.MoveOwnPadPlace({Step, 0.0f, 0.0f});
+                break;
+            case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER:
+                runtime.MoveOwnPadPlace({0.0f, 0.0f, Step});
+                break;
+            case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER:
+                runtime.MoveOwnPadPlace({0.0f, 0.0f, -Step});
+                break;
+            case SDL_GAMEPAD_BUTTON_NORTH:
+                runtime.SwitchPadPlace();
+                break;
+            case SDL_GAMEPAD_BUTTON_WEST:
+                Input::SetBlowing(true);
+                break;
+            default:
+                taken = false;
+                break;
+            }
+            if (taken) {
+                used = true;
+                kept_back |= 1u << button;
+                return;
+            }
+        }
     }
 
     // the touchpad button shouldn't be rebound to anything else,

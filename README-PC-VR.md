@@ -1,4 +1,53 @@
-# Astro Bot Rescue Mission on the PC, shown in the headset through Virtual Desktop
+# Astro Bot Rescue Mission on PC VR
+
+## Valve Index through SteamVR
+
+Use the same Windows PC build and **Play Astro Bot VR.bat** with a Valve Index. You do
+not need Virtual Desktop. Headset playback with a PC-connected DualSense was reported
+working on 2026-10-05. The Index-controller fallback and Quest/VDXR regression still need
+physical headset tests.
+
+What is said here of an Index holds for the other headsets SteamVR drives, and for those
+with an OpenXR runtime of their own: players have reported a Bigscreen Beyond (SteamVR) and
+a Pimax Dream Air (Pimax's runtime, and SteamVR) working. The launcher uses whatever
+runtime is the PC's active one.
+
+1. Start SteamVR with the Index and base stations connected. In **Settings > OpenXR**,
+   select **Set SteamVR as OpenXR Runtime**. The launcher uses the active runtime without
+   changing it. An `XR_RUNTIME_JSON` environment variable overrides that selection; remove
+   a Virtual Desktop or simulator override before launching with SteamVR.
+2. Set the Index refresh rate to **120 Hz** in SteamVR's Video settings. Keep `fps=60`
+   in `pc-vr\settings.txt` for the console's frame rate. At 90 Hz the default runs at 45
+   frames a second, at 80 Hz at 40, and at 144 Hz at 48.
+3. Connect the **DualSense to the PC** by USB or Bluetooth. Buttons, touchpad, gyro,
+   rumble and light bar use the existing gamepad path. If you add a Steam shortcut, disable
+   **Steam Input for that shortcut** so Steam does not replace it with a virtual Xbox pad.
+4. Select the Index speakers and microphone in SteamVR's Audio settings, or make them
+   Windows' default output and input devices. The game needs the microphone for blowing.
+5. Put your own game dump in `games`, or choose it when the launcher asks. Start
+   **Play Astro Bot VR.bat**, choose the graphics settings, and press Play. Hold OPTIONS
+   for a second or press the PS button to recenter after sitting down.
+
+The Index tracks your head in six degrees of freedom, but does not track bare hands or the
+DualSense's position. Without a tracked position, the virtual gamepad rests in front of you
+and follows your seating position; the DualSense gyro controls its rotation. Moving the
+physical gamepad alone does not move its virtual position. The initial controller-alignment
+screen uses the existing untracked-gamepad fallback. Set `hands=0` if parked VR controllers
+cause an incorrect gamepad position. **You can put that gamepad where you want it**: see
+"The gamepad in the game, where nothing tracks it" below.
+
+Without a gamepad connected, Index controllers can use the existing VR-controller fallback:
+right A is cross, right B is square, left A is circle, left B is triangle, and pressing the
+left trackpad is OPTIONS. Sticks, triggers, grips, rumble and recentering follow the Touch
+layout below. The connected DualSense takes priority over VR controllers.
+
+The renderer covers the Index's canted eye views with parallel projections, as required by
+the emulated PSVR game. SteamVR handles the final reprojection into the headset's eye views.
+The saved headset FOV is reused only when the OpenXR runtime (including its version), headset
+name and vendor match. With no confirmed headset identity or matching cache, the title uses
+the PSVR default until the next game start; legacy caches without an identity are ignored.
+
+## Quest through Virtual Desktop
 
 The second way to play (the first, the app that runs on the headset itself, is in
 `README-QUEST-VR.md`): the emulator runs on this PC, and the picture goes to the Quest 3 the
@@ -74,8 +123,8 @@ Leave the base assets and all the extracted update files in those folders. Launc
 the update's files where present. The launcher reports the selected path and package
 metadata, then prints the emulator's verified executable profile:
 
-- `CUSA12392/c48320 (upstream)`: the supported 1.00 layout.
-- `CUSA12392/ccc0b0`: the supported 1.04 layout.
+- `Verified title profile 1.00, as on the disc`: the supported 1.00 layout.
+- `Verified title profile 1.04, the last update`: the supported 1.04 layout.
 - `Unrecognized or modified CUSA12392 layout`: no title resolution or time-step patches
   were applied. Check your complete dump; do not rename a package or edit its metadata
   to force a profile.
@@ -92,15 +141,17 @@ With a base-plus-update installation, move the `CUSA12392-UPDATE` folder outside
 to return to the base version, then restore the matching save backup. Keep the folder
 for later; do not merge update files into the base folder.
 
-We fully built and linked the compatibility changes in a local build that also includes
-the Index and spectator changes from PRs #6 and #11, and linked a separate Release/OpenXR
-build of the standalone compatibility branch. Headset gameplay testing used the combined
-local build. On a Valve Index through SteamVR/OpenXR
+Before the merge with main, ODevStudio built and linked PR #15 both on its own and with
+the Index and spectator changes from PRs #6 and #11. On a Valve Index through SteamVR/OpenXR
 with a PC-connected DualSense and fresh 1.04 saves, the tester completed controller
-calibration and played the first level. Combined-eye spectator crop also passed.
-Tests checked both actual executable layouts, 2880x3072 output and timing at 60 and 40 FPS,
-and timing at the original 1440x1536 resolution. We have not tested these 1.04 changes on
-Quest, other headsets, other regions or every 1.04 dump.
+calibration and played the first level using the combined build. Combined-eye spectator
+crop also passed. Tests checked both actual executable layouts, 2880x3072 output and
+timing at 60 and 40 FPS, and timing at the original 1440x1536 resolution.
+
+Upstream also tested both versions on the PC and, without wearing it, on the Quest 3
+(title, controller screen, world map and entry into a level). Those runs used upstream's
+calibration implementation. The merged pose-based calibration still needs headset
+regression tests. Other regions and additional executable variants remain untested.
 
 The 1.04 resolution offsets build on
 [Clodo76's investigation in issue #1](https://github.com/bigmak94/AstroQuest/issues/1).
@@ -153,6 +204,14 @@ The other order works too: start the game at the PC and put the headset on after
 game waits up to a minute for the headset (`wait` in the settings) and starts in it; after
 that it starts on the monitor and moves to the headset whenever Virtual Desktop connects.
 
+For people watching on the monitor, choose **Desktop view > Single eye (spectator)** in the
+launcher. It shows the complete left-eye picture with its proportions kept, leaving black
+bars where needed. The headset still gets both eyes
+at full resolution; the desktop reuses an existing eye image rather than rendering another
+camera. It follows the player's head, not a separate spectator camera. **Stereo (both eyes)**
+restores the original desktop view and remains the default. This setting is for the PC build;
+the standalone Quest app and external VR-host transport keep their stereo output.
+
 In the game:
 
 - The first screen asks to move the controller into a floating outline. Hold the controller
@@ -164,15 +223,46 @@ In the game:
   face is straight ahead. The emulator does it by itself when ✕ is pressed for the first time
   after the headset came up, and when the headset's own "reset view" is used (hold the Meta
   button).
-- A controller without a touchpad (an Xbox pad): the right stick stands in for the finger
-  (flick it), and the Back / View button for the click. The right stick does that with a
-  DualSense as well while nothing touches its pad; the game has no other use for it.
+- A controller without a touchpad (an Xbox pad): the right stick stands in for the finger,
+  and the Back / View button for the click. Push the stick the way you would swipe; for the
+  catapult at the end of a level (and the slingshot later on), **pull the stick towards you
+  and let go**: the finger lifts where the stick was pulled to, as a finger would, and the
+  shot goes off. The right stick does that with a DualSense as well while nothing touches
+  its pad; the game has no other use for it. (A stick that drifts, never resting at its
+  centre, is left out of this: it would hold a finger on the pad for good.)
+- **Where the game has you blow** into the controller's microphone: blow at the headset's
+  microphone, or hold the **PS button and □** together, which blows for as long as they are
+  held. The console window says how loud the game heard the last ten seconds whenever it
+  heard something ("Microphone: the loudest ... was -18 dB"): the game takes -21 dB for
+  blowing at half strength and -9 dB for all of it. If blowing gives too little, `mic_gain`
+  in the settings makes the microphone louder for the game.
 - **Taking the headset off pauses the game**, the way the console does it: the picture goes
   black and the game waits; it goes on where it was when the headset is back on. The same
   happens while Virtual Desktop shows the PC's desktop instead of the game, and when the
   connection to the headset breaks: the game waits, and goes on when it is shown again.
   (If it ever waits although the headset is on and shows the game: `pause=0`.)
 - To quit, close the game's window (or the console window).
+
+### The gamepad in the game, where nothing tracks it
+
+Without tracked hands (Virtual Desktop without hand tracking passed on, SteamVR, Pimax...),
+the gamepad in the game hangs before you: 17 cm below your eyes and half a metre ahead,
+which is where the game looks for it when it starts. That is in the way of the view for
+some, and too high or too low for what the controller has to be held to elsewhere. **Hold
+the PS button** and
+
+| press | to |
+| --- | --- |
+| D-pad up, down, left, right | move the gamepad that way, 2 cm a press |
+| L1, R1 | bring it nearer, push it farther |
+| △ | switch between your place for it and the standard one |
+
+The first of these puts the gamepad at your own place (30 cm below the eyes and 45 cm ahead
+until you move it) and every press is kept for the next time (`pc-vr\user\vr_controller.json`).
+Every start begins at the standard place, because the game's first screen needs the
+controller there: PS + △ brings it to yours afterwards. The PS button pressed and let go by
+itself still resets the view. With tracked hands, the hands say where the gamepad is as
+long as they are seen; your own place counts while they are not.
 
 ### With the headset's own controllers
 
@@ -185,8 +275,9 @@ While no gamepad is connected to the PC, the two Touch controllers are the gamep
 | B (right hand) | □ (punch) |
 | X (left hand) | ○ (back) |
 | Y (left hand) | △ |
-| right stick | the finger on the touchpad: push it the way you would swipe |
+| right stick | the finger on the touchpad: push it the way you would swipe; pull it towards you and let go for the catapult at the end of a level |
 | right stick pressed in | the touchpad pressed |
+| X and Y together (left hand) | blowing into the microphone, for as long as they are held |
 | triggers | L2, R2 |
 | grips | L1, R1 |
 | menu button (left hand) | OPTIONS |
@@ -200,6 +291,31 @@ controller into the outline; gadgets shoot where it points. `controller_hand=lef
 settings makes it the left one. The game's rumble goes to both controllers. A gamepad that
 is connected to the PC takes over at once, and gives the controllers back when it goes.
 
+## Desktop Spectator View
+
+The launcher offers **Stereo**, **Single eye** and **Combined eyes**. Single eye shows the
+complete left-eye picture. Combined eyes keep that eye as the main picture and add the
+other eye's non-overlapping peripheral strip. This is an experimental composite, not a
+separate spectator camera: nearby objects can disagree at the join because the eyes are
+in different places. Combined eyes preserve the source eye's proportions and widen the
+desktop canvas by the extra peripheral coverage. With symmetric horizontal projections,
+Combined eyes have the same aspect ratio as Single eye and add no peripheral view.
+These desktop choices leave the headset's stereo picture unchanged.
+
+By default, the desktop preserves the complete image with black bars as needed, without
+stretching or cropping. **Crop top/bottom to fill** scales Single eye or Combined eyes to
+the desktop width and crops the top and bottom equally on a wide monitor. It does not
+stretch the image, add scene coverage or change the headset. Narrow windows can still
+have bars above and below; the sides are never cropped. Stereo ignores this option.
+Fullscreen follows shadPS4's native `GPU.full_screen` setting in
+`pc-vr\user\config.json`; the launcher does not override it or save a separate preference.
+
+Sony describes the original PSVR's standard TV social screen as an undistorted, cropped
+right-eye image ([official FAQ](https://blog.playstation.com/archive/2016/10/03/playstation-vr-the-ultimate-faq/)).
+Games could also supply a separate TV image; Astro Bot-specific use of that path has not
+been confirmed here. Our default spectator option preserves the complete image; cropping
+is optional.
+
 ## Settings
 
 `pc-vr\settings.txt`, one `key=value` a line (the file explains each):
@@ -212,11 +328,14 @@ is connected to the PC takes over at once, and gives the controllers back when i
 | `fov=100` | how much of the headset's field of view the game draws, 70 to 100 percent: 100 fills all of it; less puts the same pixels over fewer degrees, sharper, with a dark border |
 | `fov_of=psvr` | `fov` is a percent of a PlayStation VR's field of view (100 by 103 degrees an eye, what the game was made for) instead of the headset's own (`fov_of=headset`, the default) |
 | `menu=0` | no window with the main settings at the start |
+| `desktop_view=spectator` | one complete eye on the monitor; `combined` adds the other eye's peripheral strip; default `stereo` keeps both eyes side by side. Does not change the headset view |
+| `desktop_crop=1` | scale Single eye or Combined eyes to the desktop width, cropping the top/bottom if needed; default `0` preserves the complete image. Stereo and headset output are unchanged |
 | `sharpen=0.3` | sharpening of the picture on its way out, 0 to 1. Virtual Desktop has its own on top |
 | `msaa=4` | the most samples a pixel gets; default as the console draws it. With `1` the emulator smooths edges itself (unless `antialias=0`) |
 | `hands=0` | do not use hand tracking to place the controller |
 | `predict_ms=20` | how far beyond the next picture the head position given to the game is predicted (0 to 80 ms) |
 | `stick_touchpad=0` | the right stick no longer doubles as a finger on the touchpad |
+| `mic_gain=3` | what the microphone hears, that many times louder for the game (0.1 to 30): for when blowing does too little |
 | `controllers=0` | the headset's own controllers never stand in for a gamepad |
 | `controller_hand=left` | which Touch controller is the controller in the game (default `right`) |
 | `pause=0` | the game is never made to wait when the headset is off the head or shows something else |
@@ -372,6 +491,51 @@ Things that had to be right, for whoever works on this again:
   The sound follows its device: when that goes away the sound moves to Windows' default
   device, and back when it is there again (see "Fixed in 0.13").
 
+## Fixed and added on 2026-10-06, from the reports on GitHub
+
+- **The game's version 1.04 plays** (issues #1, #3, #5, #7, #10). An updated copy of the game
+  stopped at "Adjust your position until you fit roughly inside the silhouette. The controller
+  with the RED light bar should also be in view", over a green picture, with no controller to
+  be seen. From its first update on, the game asks the tracker to find the controller anew on
+  that screen and waits to see the controller's status go from calibrating back to tracking;
+  the emulator's tracker never said either. It now does what a console's does. The updated
+  executable is also laid out differently, so the emulator did not know it and gave it
+  neither the larger pictures nor the game's own speed ("resolution stuck at the lowest"):
+  both builds are known now, 1.00 and 1.04, told apart by what the executable holds when it
+  is loaded (the console window says "Verified title profile ..."). The
+  addresses for 1.04 are Clodo76's. Any other version still plays as before: at the
+  console's sizes, and in slow motion where frames take long.
+- **A package that is only the game's update** was unpacked as if it were the game. The
+  launcher now takes the game's own package first and says what an update alone is. To play
+  the game with its update, use a copy that has the update in it, or put the update's files
+  in a folder named `CUSA12392-UPDATE` next to the game's `CUSA12392`: the emulator takes
+  what is there over the game's own files (shadPS4's way of keeping updates), and the
+  game's folder stays as it was. On the headset the same goes for
+  `/data/local/tmp/astro/games/CUSA12392-UPDATE`. Without that folder the game plays as on
+  its disc, 1.00, which is the version tried the most here.
+- **The game stopped as it started with code -1073741819** (#9) where Windows listed a
+  gamepad that could not be opened: nobody was logged in then, and the game takes its first
+  player for granted.
+- **With SteamVR, the game stopped as it started** with "Mapping cannot fit inside free
+  region", code -2147483645 (#14): SteamVR's parts came to lie where the game maps its
+  memory. The console's memory is now set aside before the headset is looked for (found by
+  evertec82). And a session that is asked for no pictures is only made anew for Virtual
+  Desktop's runtime, which needs it; SteamVR's are left alone.
+- **The catapult at the end of a level with a stick** (#2): see "In the game". It took luck
+  before: the game shoots by where the finger is when it lifts, and a stick let go took the
+  finger back to the middle first.
+- **The right stick no longer holds a finger on a real touchpad** (#12): a stick that drifts
+  touched the pad for good, and a real finger's swipes then counted for nothing. If swipes
+  on a DualSense's touchpad still do nothing, the console window tells what Windows hands
+  over ("Controller 1 connected: ... touchpad yes") and whether a finger was ever felt ("The
+  controller's touchpad feels a finger"): a gamepad that reaches the emulator through
+  something else than itself (Steam Input, DS4Windows, a headset's streaming app) may come
+  without its touchpad.
+- **The gamepad in the game can be moved** where nothing tracks it (#4), and **blowing** can
+  be seen and replaced (#8): see above.
+- SteamVR and Valve Index support and the desktop's spectator views are ODevStudio's (pull
+  requests #6 and #11).
+
 ## Fixed in 0.13 (2026-10-03)
 
 - **No sound until the emulator was started again.** Virtual Desktop takes its playback
@@ -428,6 +592,13 @@ is `pc-vr\user\log\shad_log.txt` (the start before it: `shad_log.prev.txt`). Wha
 | `pictures were shown N degrees from where they were drawn for` | how much the compositor had to turn pictures: a few degrees while the head turns, next to nothing at rest |
 | `Hands: both seen N% of the time ... holding the controller N%` | what hand tracking gave |
 | `Controller 1 connected: ... (motion sensors yes, touchpad yes, light yes)` | what Windows handed over of the gamepad |
+| `Controller ... cannot be opened and is not used: ...` | Windows lists a gamepad that something else holds, or that is just going away |
+| `The controller's touchpad feels a finger` | the first touch of the gamepad's own touchpad arrived |
+| `CUSA12392 in a build known from inside: 1.00, as on the disc` (or `1.04, the last update`) | the game's executable is one the emulator has its speed and picture fixes for |
+| `This build of CUSA12392 is none of those known from inside ...` | another version of the game: it plays at the console's sizes, and in slow motion where frames take long |
+| `Microphone: the loudest of the last 10 seconds was -18 dB ...` | what the game heard; it takes -21 dB for blowing at half strength, -9 dB for all of it |
+| `Microphone: nothing but silence has come from it so far ...` | no sound at all reaches the emulator: see the line for what to look at |
+| `The controller, while nothing sees where it is, is held to be at ...` | the gamepad's place was moved or switched (PS + D-pad, PS + triangle) |
 | `No gamepad is connected to the PC: the headset's controllers stand in for it` | the Touch controllers are the gamepad |
 | `Controllers: standing in for the gamepad; the right one tracked N% of the time ...` | every ten seconds: where the tracked controller is and what is pressed |
 | `The headset is gone: the game waits until it is back` / `... starting over with it` | the session was lost; a new one is made when the headset answers again |
@@ -438,6 +609,25 @@ No picture in the headset although the session is focused: look for `failed:` li
 calls the runtime refused are counted and logged).
 
 ## Testing without the headset
+
+The launcher checks run with `powershell -NoProfile -ExecutionPolicy Bypass -File tools/tests/launcher-test.ps1`.
+To check the OpenXR quaternion conversion, parallel and opposite-canted stereo bounds, and
+headset FOV cache validation, run these commands from the repository root in a developer shell
+with `clang-cl` and the Windows SDK available (the `build` directory must exist):
+
+```powershell
+clang-cl /std:c++latest /EHsc /Ishadps4-arm64-main/src /Ishadps4-arm64-main/externals/openxr-sdk/include tools/tests/openxr_view_test.cpp /Fobuild/openxr_view_test.obj /Febuild/openxr_view_test.exe
+./build/openxr_view_test.exe
+clang-cl /std:c++latest /EHsc /Ishadps4-arm64-main/src /Ishadps4-arm64-main/externals/json/include tools/tests/headset_fov_cache_test.cpp /Fobuild/headset_fov_cache_test.obj /Febuild/headset_fov_cache_test.exe
+./build/headset_fov_cache_test.exe
+```
+
+To check desktop composition, in the same shell:
+
+```powershell
+clang-cl /std:c++latest /EHsc /Ishadps4-arm64-main/src tools/tests/spectator_view_test.cpp /Fobuild/spectator_view_test.obj /Febuild/spectator_view_test.exe
+./build/spectator_view_test.exe
+```
 
 Virtual Desktop's runtime has no headset to offer unless one is connected, so the OpenXR path
 is tested against the **Meta XR Simulator** (installed on this PC), which is a full OpenXR
@@ -501,12 +691,12 @@ emulator; `ENABLE_OPENXR` (on for Windows) switches the whole of it.
 The compatibility checks need a C++23 compiler and no headset or game files:
 
 ```sh
-clang++ -std=c++23 -Ishadps4-arm64-main/src tools/tests/known_title_profile_test.cpp -o build/profile-test.exe
+clang++ -std=c++23 -Ishadps4-arm64-main/src tools/tests/known_title_builds_test.cpp -o build/profile-test.exe
 clang++ -std=c++23 -Ishadps4-arm64-main/src tools/tests/vr_tracker_calibration_test.cpp -o build/calibration-test.exe
 build/profile-test.exe
 build/calibration-test.exe
 ```
 
-The profile test also accepts two local flat mapped images, 1.00 then 1.04, to check
-real layouts. Do not pass SELF files or ELF files with their headers, and keep extracted
-game files outside Git.
+The profile test also accepts local plain ELF executables to check real layouts. Use
+`tools/ps4elf.mjs unwrap` to convert a SELF executable first, and keep extracted game files
+outside Git.

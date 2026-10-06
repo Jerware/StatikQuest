@@ -23,7 +23,7 @@ if (-not $base.StartsWith($top + "\build\", [System.StringComparison]::OrdinalIg
 if ([System.IO.Directory]::Exists($base)) { [System.IO.Directory]::Delete($base, $true) }
 $failed = 0
 function Check([string]$what, $got, $want) {
-    if ("$got" -eq "$want") { "ok    $what" } else { $script:failed++; "FAIL  $what`n      got:  $got`n      want: $want" }
+    if ("$got" -eq "$want") { Write-Host "ok    $what" } else { $script:failed++; Write-Host "FAIL  $what`n      got:  $got`n      want: $want" }
 }
 function Make-Game([string]$folder, [bool]$withSfo) {
     [void][System.IO.Directory]::CreateDirectory($folder)
@@ -33,7 +33,7 @@ function Make-Game([string]$folder, [bool]$withSfo) {
         [System.IO.File]::Copy($realSfo, (Join-Path $folder "sce_sys\param.sfo"))
     }
 }
-function Make-Package([string]$path, [string]$contentId, [int]$size, [uint32]$flags = 0) {
+function Make-Package([string]$path, [string]$contentId, [int]$size, [uint32]$flags = 0x0A000000) {
     [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($path))
     $bytes = New-Object byte[] $size
     $bytes[0] = 0x7F; $bytes[1] = 0x43; $bytes[2] = 0x4E; $bytes[3] = 0x54
@@ -64,6 +64,14 @@ if ($haveSfo) {
     Check "c  prefers CUSA12392 among two" (Find-Game $g) "$g\Zzz\eboot.bin"
 }
 
+# c2: the game's update in a folder of its own beside it, found first by its name
+if ($haveSfo) {
+    $g = "$base\c2\games"; Make-Game "$g\CUSA12392-UPDATE" $true; Make-Game "$g\Game\CUSA12392" $true
+    Check "c2 an update's folder is not the game" (Find-Game $g) "$g\Game\CUSA12392\eboot.bin"
+}
+$g = "$base\c3\games"; Make-Game "$g\CUSA12392-UPDATE" $true
+Check "c3 an update's folder alone is no game" (Find-Game $g) ""
+
 # d: only the leftovers of an unpacking
 $g = "$base\d\games"; Make-Game "$g\CUSA12392\.unpacking\files\uroot" $true
 Check "d  half-unpacked game is not taken" (Find-Game $g) ""
@@ -78,6 +86,22 @@ Check "e  no unpacked game" (Find-Game $g) ""
 Check "e  the largest package, brackets in its name" (Find-Package $g).FullName $package
 Check "e  content id" (Read-PackageId $package) "EP9000-CUSA12392_00-PLATFORMERVR00EU"
 Check "e  a file that is no package" (Read-PackageId "$g\notapackage.pkg") ""
+Check "e  a game's package is not an update" (Test-UpdatePackage $package) $false
+Check "e  a file that is no package is not an update" (Test-UpdatePackage "$g\notapackage.pkg") $false
+
+# e2: an update next to the game's package, and larger than it: the game's is taken
+$g = "$base\e2\games"
+Make-Package "$g\game.pkg" "EP9000-CUSA12392_00-PLATFORMERVR00EU" 2048
+Make-Package "$g\A-Update-v1.04.pkg" "EP9000-CUSA12392_00-PLATFORMERVR00EU" 8192 0x62300000
+Make-Package "$g\first-patch.pkg" "EP9000-CUSA12392_00-PLATFORMERVR00EU" 4096 0x00100000
+Check "e2 an update says so" (Test-UpdatePackage "$g\A-Update-v1.04.pkg") $true
+Check "e2 a first patch says so" (Test-UpdatePackage "$g\first-patch.pkg") $true
+Check "e2 the game's package before a larger update" (Find-Package $g).FullName "$g\game.pkg"
+# e3: nothing but updates: the largest of them, which is then turned down for what it is
+$g = "$base\e3\games"
+Make-Package "$g\small.pkg" "EP9000-CUSA12392_00-PLATFORMERVR00EU" 1024 0x62300000
+Make-Package "$g\large.pkg" "EP9000-CUSA12392_00-PLATFORMERVR00EU" 4096 0x62300000
+Check "e3 only updates: the largest" (Find-Package $g).FullName "$g\large.pkg"
 
 # f: too deep, and an empty or missing games folder
 $g = "$base\f\games"; Make-Game "$g\1\2\3\4" $true
@@ -101,14 +125,15 @@ if (-not $PkgTool) { $PkgTool = Join-Path $top "tools\pkgtool\PkgTool.exe" }
 if ([System.IO.File]::Exists($PkgTool)) {
     $full = "$base\full-1.04.pkg"
     Make-Package $full "EP9000-CUSA12392_00-PLATFORMERVR00EU" 8192
-    Check "i  a full package needs no version choice" (Test-UpdatePackage (Read-PackageHeader $full $PkgTool)) $false
+    Check "i  a full package needs no version choice" (Test-UpdateHeader (Read-PackageHeader $full $PkgTool)) $false
     foreach ($flags in @(0x00100000, 0x00200000, 0x40000000, 0x41000000, 0x60000000)) {
         $patch = "$base\patch.pkg"
         Make-Package $patch "EP9000-CUSA12392_00-PLATFORMERVR00EU" 8192 $flags
-        Check "i  patch header flags $flags" (Test-UpdatePackage (Read-PackageHeader $patch $PkgTool)) $true
+        Check "i  patch header flags $flags" (Test-UpdateHeader (Read-PackageHeader $patch $PkgTool)) $true
+        Check "i  patch discovery flags $flags" (Test-UpdatePackage $patch) $true
     }
-    if ($BasePackage) { Check "i  actual base package" (Test-UpdatePackage (Read-PackageHeader $BasePackage $PkgTool)) $false }
-    if ($UpdatePackage) { Check "i  actual update package" (Test-UpdatePackage (Read-PackageHeader $UpdatePackage $PkgTool)) $true }
+    if ($BasePackage) { Check "i  actual base package" (Test-UpdateHeader (Read-PackageHeader $BasePackage $PkgTool)) $false }
+    if ($UpdatePackage) { Check "i  actual update package" (Test-UpdateHeader (Read-PackageHeader $UpdatePackage $PkgTool)) $true }
 
     function Show-Box([string]$text) { $script:boxText = $text; return "No" }
     $here = Split-Path -Parent (Split-Path -Parent $PkgTool)
@@ -134,14 +159,104 @@ $log = "$base\profile-log.txt"
 $position = 0
 $shown = @{}
 [System.IO.File]::WriteAllLines($log, @(
-    "[Core] <Info> (Loader) known_title.cpp:785 OnGameLoaded: Verified title profile CUSA12392/ccc0b0: resolution and time-step support enabled",
+    "[Core] <Info> (Loader) known_title.cpp:785 OnGameLoaded: Verified title profile 1.04, the last update: resolution and time-step support enabled",
     "[Core] <Warning> (Loader) known_title.cpp:766 OnGameLoaded: Unrecognized or modified CUSA12392 layout: title resolution and time-step patches disabled (no game memory changed)",
     "[Core] <Warning> (Loader) known_title.cpp:778 OnGameLoaded: Title patch rejected at 0x123: no title patches enabled"
 ))
 Show-Log
-Check "j  prints verified executable profile" ($messages[0] -like "Gray|*Verified title profile CUSA12392/ccc0b0:*") $true
+Check "j  prints verified executable profile" ($messages[0] -like "Gray|*Verified title profile 1.04, the last update:*") $true
 Check "j  prints unknown-layout warning" ($messages[1] -like "Yellow|*Unrecognized or modified CUSA12392 layout:*") $true
 Check "j  prints patch rejection" ($messages[2] -like "Yellow|*Title patch rejected at 0x123:*") $true
+$steam = (Get-VrInstructions 'F:\steam\steamapps\common\SteamVR\steamxr_win64.json') -join "`n"
+Check "SteamVR instructions name the Index" ($steam -match 'Index') $true
+Check "SteamVR instructions require no Virtual Desktop" ($steam -match 'Virtual Desktop is not needed') $true
+Check "SteamVR instructions preserve native DualSense input" ($steam -match 'disable Steam Input') $true
+Check "SteamVR instructions explain the tracking limit" ($steam -match 'does not track bare hands') $true
+Check "SteamVR instructions say how to move the gamepad" ($steam -match 'Hold the PS button') $true
+$vd = (Get-VrInstructions 'C:\Program Files\Virtual Desktop Streamer\OpenXR\virtualdesktop-openxr.json') -join "`n"
+Check "VDXR instructions still forward hand tracking" ($vd -match 'hand tracking forwarded') $true
+Check "VDXR instructions do not describe an Index" ($vd -match 'Index') $false
+$unknown = (Get-VrInstructions '') -join "`n"
+Check "Unknown runtime instructions do not assume Virtual Desktop" ($unknown -match 'Virtual Desktop') $false
+Check "Unknown runtime instructions say how to move the gamepad" ($unknown -match 'Hold the PS button') $true
+Check "VDXR instructions say how to move the gamepad" ($vd -match 'Hold the PS button') $true
+$script:settings = [ordered]@{}
+Check "Desktop defaults to stereo" (Get-DesktopView) "stereo"
+$script:settings = [ordered]@{ desktop_view = "spectator" }
+Check "Spectator setting selects one eye" (Get-DesktopView) "spectator"
+$script:settings = [ordered]@{ desktop_view = "unknown" }
+Check "Unknown desktop view falls back to stereo" (Get-DesktopView) "stereo"
+$script:settings = [ordered]@{ desktop_view = "combined"; desktop_crop = "1" }
+Check "Combined setting selects both eyes" (Get-DesktopView) "combined"
+foreach ($assignment in $ast.EndBlock.Statements) {
+    if ($assignment -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+        $assignment.Left.Extent.Text -in @('$env:SHADPS4_VR_DESKTOP_VIEW', '$env:SHADPS4_VR_DESKTOP_CROP')) {
+        . ([scriptblock]::Create($assignment.Extent.Text))
+    }
+}
+Check "Launcher exports combined view" $env:SHADPS4_VR_DESKTOP_VIEW "combined"
+Check "Launcher exports crop enabled" $env:SHADPS4_VR_DESKTOP_CROP "1"
+$script:settings = [ordered]@{}
+foreach ($assignment in $ast.EndBlock.Statements) {
+    if ($assignment -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+        $assignment.Left.Extent.Text -eq '$env:SHADPS4_VR_DESKTOP_CROP') {
+        . ([scriptblock]::Create($assignment.Extent.Text))
+    }
+}
+Check "Launcher clears inherited crop by default" $env:SHADPS4_VR_DESKTOP_CROP "0"
+
+foreach ($assignment in $ast.EndBlock.Statements) {
+    if ($assignment -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+        $assignment.Left.Extent.Text -in @('$widths', '$caps')) {
+        . ([scriptblock]::Create($assignment.Extent.Text))
+    }
+}
+$SettingsFile = Join-Path $base 'menu-settings.txt'
+$script:menuAction = "choose"
+function Show-Form($form) {
+    $script:menuForm = $form
+    $view = $form.Controls["desktopView"]
+    $crop = $form.Controls["desktopCrop"]
+    foreach ($control in $form.Controls) {
+        Check "Menu bounds contain $($control.Text) $($control.Name)" $form.ClientRectangle.Contains($control.Bounds) $true
+    }
+    Check "Menu offers three desktop modes" $view.Items.Count 3
+    Check "Desktop view and crop controls do not overlap" $view.Bounds.IntersectsWith($crop.Bounds) $false
+    if ($script:menuAction -eq "choose") {
+        Check "Menu defaults to stereo" $view.SelectedIndex 0
+        Check "Menu defaults to uncropped image" $crop.Checked $false
+        Check "Stereo disables crop control" $crop.Enabled $false
+        $view.SelectedIndex = 1
+        Check "Single eye enables crop control" $crop.Enabled $true
+        $view.SelectedIndex = 2
+        Check "Combined eyes enable crop control" $crop.Enabled $true
+        $crop.Checked = $true
+        return [System.Windows.Forms.DialogResult]::OK
+    }
+    Check "Menu restores combined eyes" $view.SelectedIndex 2
+    Check "Menu restores crop" $crop.Checked $true
+    $view.SelectedIndex = 0
+    Check "Switching to stereo disables crop" $crop.Enabled $false
+    $crop.Checked = $false
+    if ($script:menuAction -eq "cancel") { return [System.Windows.Forms.DialogResult]::Cancel }
+    return [System.Windows.Forms.DialogResult]::OK
+}
+Read-Settings
+Check "Menu accepts combined eyes" (Show-Menu) $true
+$script:menuForm.Dispose()
+Check "Menu saves combined eyes" (Setting "desktop_view") "combined"
+Check "Menu saves crop" (Setting "desktop_crop") "1"
+$script:menuAction = "cancel"
+Check "Menu cancellation does not start game" (Show-Menu) $false
+$script:menuForm.Dispose()
+Read-Settings
+Check "Cancel preserves combined eyes" (Get-DesktopView) "combined"
+Check "Cancel preserves crop" (Setting "desktop_crop") "1"
+$script:menuAction = "restore"
+Check "Menu accepts stereo again" (Show-Menu) $true
+$script:menuForm.Dispose()
+Check "Menu saves stereo again" (Get-DesktopView) "stereo"
+Check "Menu saves uncropped image again" (Setting "desktop_crop") "0"
 
 [System.IO.Directory]::Delete($base, $true)
 "failed: $failed"

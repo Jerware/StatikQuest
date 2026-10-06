@@ -13,6 +13,7 @@
 #include "common/logging/log.h"
 #include "common/path_util.h"
 #include "core/libraries/system/systemservice.h"
+#include "core/vr/headset_fov_cache.h"
 #include "core/vr/vr_host_link.h"
 #include "core/vr/vr_runtime.h"
 #ifdef ENABLE_OPENXR_HOST
@@ -32,29 +33,6 @@ Quat Multiply(const Quat& a, const Quat& b) {
 
 Quat Conjugate(const Quat& q) {
     return {-q.x, -q.y, -q.z, q.w};
-}
-
-Quat Normalize(const Quat& q) {
-    const float length = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
-    if (length < 1e-6f) {
-        return {};
-    }
-    return {q.x / length, q.y / length, q.z / length, q.w / length};
-}
-
-Vec3 Rotate(const Quat& q, const Vec3& v) {
-    // v' = v + 2 * cross(q.xyz, cross(q.xyz, v) + q.w * v)
-    const Vec3 u{q.x, q.y, q.z};
-    const Vec3 t{
-        u.y * v.z - u.z * v.y + q.w * v.x,
-        u.z * v.x - u.x * v.z + q.w * v.y,
-        u.x * v.y - u.y * v.x + q.w * v.z,
-    };
-    return {
-        v.x + 2.0f * (u.y * t.z - u.z * t.y),
-        v.y + 2.0f * (u.z * t.x - u.x * t.z),
-        v.z + 2.0f * (u.x * t.y - u.y * t.x),
-    };
 }
 
 Quat FromYawPitch(float yaw, float pitch) {
@@ -110,6 +88,16 @@ bool EnvFlag(const char* name, bool& out) {
     }
     out = value[0] != '0';
     return true;
+}
+
+std::filesystem::path OwnPadPlacePath() {
+    return Common::FS::GetUserPath(Common::FS::PathType::UserDir) / "vr_controller.json";
+}
+
+/// How far from the standard place the player's own may be: within reach, and before them.
+Vec3 WithinReach(const Vec3& offset) {
+    return {std::clamp(offset.x, -0.40f, 0.40f), std::clamp(offset.y, -0.70f, 0.30f),
+            std::clamp(offset.z, -0.90f, -0.15f)};
 }
 
 FileConfig LoadFileConfig() {
@@ -200,6 +188,15 @@ Runtime& Runtime::Instance() {
 void Runtime::Configure(bool psvr_supported, bool psvr_required) {
     const FileConfig file_config = LoadFileConfig();
     config = file_config.config;
+    if (std::ifstream file{OwnPadPlacePath()}; file) {
+        const auto json = nlohmann::json::parse(file, nullptr, false);
+        if (const auto it = json.is_object() ? json.find("own_place") : json.end();
+            it != json.end() && it->is_array() && it->size() == 3 && (*it)[0].is_number() &&
+            (*it)[1].is_number() && (*it)[2].is_number()) {
+            own_pad_offset = WithinReach(
+                {(*it)[0].get<float>(), (*it)[1].get<float>(), (*it)[2].get<float>()});
+        }
+    }
     switch (file_config.mode) {
     case HeadsetMode::On:
         config.headset_connected = true;
@@ -566,6 +563,38 @@ void Runtime::SetPadOffset(const Vec3& offset) {
     pad_seen_offset_valid = false;
 }
 
+void Runtime::MoveOwnPadPlace(const Vec3& by) {
+    Vec3 place;
+    {
+        std::scoped_lock lock{mutex};
+        own_pad_offset =
+            WithinReach({own_pad_offset.x + by.x, own_pad_offset.y + by.y, own_pad_offset.z + by.z});
+        own_pad_place = true;
+        place = own_pad_offset;
+    }
+    LOG_INFO(Core_Vr,
+             "The controller, while nothing sees where it is, is held to be at the player's own "
+             "place: {:.2f} m to the right of the eyes, {:.2f} below and {:.2f} ahead",
+             place.x, -place.y, -place.z);
+    std::ofstream file{OwnPadPlacePath()};
+    file << nlohmann::json{{"own_place", {place.x, place.y, place.z}}}.dump() << "\n";
+}
+
+void Runtime::SwitchPadPlace() {
+    bool own;
+    Vec3 place;
+    {
+        std::scoped_lock lock{mutex};
+        own_pad_place = !own_pad_place;
+        own = own_pad_place;
+        place = own ? own_pad_offset : config.pad_offset;
+    }
+    LOG_INFO(Core_Vr,
+             "The controller, while nothing sees where it is, is held to be at {} place: {:.2f} "
+             "m to the right of the eyes, {:.2f} below and {:.2f} ahead",
+             own ? "the player's own" : "the standard", place.x, -place.y, -place.z);
+}
+
 void Runtime::UpdatePadYawReference(float yaw) {
     std::scoped_lock lock{mutex};
     // The host counts the heading from its own straight ahead.
@@ -630,6 +659,14 @@ void Runtime::UpdateOptics(const Fov& fov, float ipd) {
     config.ipd = ipd;
 }
 
+void Runtime::SetHeadsetIdentity(const HeadsetIdentity& identity) {
+    std::scoped_lock lock{mutex};
+    if (headset_identity != identity) {
+        headset_identity = identity;
+        has_headset_fov = false;
+    }
+}
+
 namespace {
 
 std::filesystem::path HeadsetFovPath() {
@@ -644,6 +681,7 @@ float Degrees(float tangent) {
 
 void Runtime::NoteHeadsetFov(const Fov& fov) {
     bool changed;
+    HeadsetIdentity identity;
     {
         std::scoped_lock lock{mutex};
         const auto differs = [](float a, float b) { return std::abs(Degrees(a) - Degrees(b)) > 0.5f; };
@@ -653,6 +691,7 @@ void Runtime::NoteHeadsetFov(const Fov& fov) {
                   differs(fov.tan_bottom, headset_fov.tan_bottom);
         headset_fov = fov;
         has_headset_fov = true;
+        identity = headset_identity;
     }
     headset_fov_known.notify_all();
     if (!changed) {
@@ -664,9 +703,14 @@ void Runtime::NoteHeadsetFov(const Fov& fov) {
              Degrees(fov.tan_out), Degrees(fov.tan_in), Degrees(fov.tan_top),
              Degrees(fov.tan_bottom), Degrees(fov.tan_out) + Degrees(fov.tan_in),
              Degrees(fov.tan_top) + Degrees(fov.tan_bottom));
-    // For the next start, when the title asks before the headset has said.
+    if (identity.runtime.empty() || identity.system.empty()) {
+        return;
+    }
     std::ofstream file{HeadsetFovPath()};
-    file << nlohmann::json{{"fov_tan", {fov.tan_out, fov.tan_in, fov.tan_top, fov.tan_bottom}}}
+    file << nlohmann::json{{"runtime", identity.runtime},
+                          {"system", identity.system},
+                          {"vendor_id", identity.vendor_id},
+                          {"fov_tan", {fov.tan_out, fov.tan_in, fov.tan_top, fov.tan_bottom}}}
                 .dump()
          << "\n";
 }
@@ -695,24 +739,14 @@ Fov Runtime::TitleFov() {
         }
     }
     if (from == nullptr) {
-        // As the headset showed it the last time.
         std::ifstream file{HeadsetFovPath()};
         const auto json = file ? nlohmann::json::parse(file, nullptr, false) : nlohmann::json{};
-        const auto usable = [](const nlohmann::json& tangents) {
-            if (!tangents.is_array() || tangents.size() != 4) {
-                return false;
-            }
-            for (const auto& tangent : tangents) {
-                if (!tangent.is_number() || tangent.get<float>() < 0.1f ||
-                    tangent.get<float>() > 10.0f) {
-                    return false;
-                }
-            }
-            return true;
-        };
-        if (json.is_object() && json.contains("fov_tan") && usable(json["fov_tan"])) {
-            base = {json["fov_tan"][0].get<float>(), json["fov_tan"][1].get<float>(),
-                    json["fov_tan"][2].get<float>(), json["fov_tan"][3].get<float>()};
+        std::scoped_lock lock{mutex};
+        if (has_headset_fov) {
+            base = headset_fov;
+            from = "the headset's own";
+        } else if (const auto cached = CachedHeadsetFov(json, headset_identity)) {
+            base = *cached;
             from = "the headset's, as it was the last time (it has not said yet)";
         } else {
             from = "a PlayStation VR's (the headset has not said what it shows)";
@@ -837,7 +871,11 @@ DeviceState Runtime::GetPad() {
                            pad_seen_position.z - pad_anchor.z};
         pad_seen_offset_valid = true;
     }
-    const Vec3& assumed = pad_seen_offset_valid ? pad_seen_offset : config.pad_offset;
+    // (The player's own place is theirs to say: it counts for more than where the controller
+    // was last seen.)
+    const Vec3& assumed = own_pad_place            ? own_pad_offset
+                          : pad_seen_offset_valid ? pad_seen_offset
+                                                  : config.pad_offset;
     const Vec3 goal = seen ? pad_seen_position
                            : Vec3{pad_anchor.x + assumed.x, pad_anchor.y + assumed.y,
                                   pad_anchor.z + assumed.z};

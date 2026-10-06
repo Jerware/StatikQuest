@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <span>
 #include <string>
 #include <string_view>
 #include <fmt/format.h>
@@ -17,8 +18,8 @@
 #include "common/logging/log.h"
 #include "core/emulator_settings.h"
 #include "core/known_title.h"
-#include "core/known_title_profile.h"
-#include "core/memory.h"
+#include "core/known_title_builds.h"
+#include "core/known_title_memory.h"
 #include "core/vr/vr_runtime.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 
@@ -28,10 +29,10 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
-using Profiles::ConsoleGraphicsHeap;
-using Profiles::ConsoleSizes;
-using Profiles::ConsoleSmallPool;
-using Profiles::ConsoleTargetPool;
+using Builds::Build;
+using Builds::ConsoleSizes;
+using Builds::FirstHeadsetLevel;
+using Builds::LastHeadsetLevel;
 
 constexpr u64 ManagerOrigin = 0x6210;
 constexpr u64 ManagerHeadState = 0x6848;
@@ -42,21 +43,15 @@ constexpr u64 ResolutionLevel = 0x4;
 constexpr u64 ResolutionOffset = 0x20;
 constexpr u64 ResolutionHighest = 0x28;
 constexpr u64 ResolutionLowest = 0x2c;
-constexpr s32 FirstHeadsetLevel = 3;
-constexpr s32 LastHeadsetLevel = 6;
 
-VAddr title_base{};
-std::atomic<const Profiles::Profile*> active_profile{nullptr};
+std::atomic<const Build*> known_build{nullptr};
+VAddr known_base{};
 
 /// The title drawing larger than it does on the console: every size of the headset's list (and
 /// the pictures handed to the headset) grown by the same factor, and the memory that takes.
 /// SHADPS4_TITLE_EYE_WIDTH=<pixels> is the width of the largest, 1440 on the console.
-struct Larger {
+struct Larger : Builds::Sizes {
     double factor{1.0};
-    std::array<std::array<u32, 2>, 7> sizes{ConsoleSizes};
-    u32 target_pool{ConsoleTargetPool};
-    u32 small_pool{ConsoleSmallPool};
-    u64 graphics_heap{ConsoleGraphicsHeap};
     /// What the console's memory has to grow by for it, in MB.
     s32 extra_memory_mb{};
 };
@@ -83,12 +78,12 @@ const Larger& GetLarger() {
         const auto megabytes = [&](u64 bytes) {
             return (static_cast<u64>(static_cast<double>(bytes) * pixels * 1.1) + MB - 1) / MB * MB;
         };
-        result.target_pool = static_cast<u32>(megabytes(ConsoleTargetPool));
-        result.small_pool = static_cast<u32>(megabytes(ConsoleSmallPool));
-        const u64 growth = (result.target_pool - ConsoleTargetPool) +
-                           (result.small_pool - ConsoleSmallPool) +
+        result.target_pool = static_cast<u32>(megabytes(Builds::ConsoleTargetPool));
+        result.small_pool = static_cast<u32>(megabytes(Builds::ConsoleSmallPool));
+        const u64 growth = (result.target_pool - Builds::ConsoleTargetPool) +
+                           (result.small_pool - Builds::ConsoleSmallPool) +
                            static_cast<u64>(200.0 * MB * (pixels - 1.0));
-        result.graphics_heap = ConsoleGraphicsHeap + growth;
+        result.graphics_heap = Builds::ConsoleGraphicsHeap + growth;
         result.extra_memory_mb = static_cast<s32>((growth + 256 * MB) / (256 * MB) * 256);
         return result;
     }();
@@ -114,63 +109,6 @@ T Read(VAddr address) {
 template <typename T>
 void Write(VAddr address, T value) {
     std::memcpy(reinterpret_cast<void*>(address), &value, sizeof(T));
-}
-
-bool Accessible(VAddr address, u64 bytes, bool write = false) {
-    if (address == 0) {
-        return false;
-    }
-    void* end{};
-    u32 protection{};
-    if (Memory::Instance()->QueryProtection(address, nullptr, &end, &protection) != 0) {
-        return false;
-    }
-    const auto limit = reinterpret_cast<VAddr>(end);
-    const u32 required = write ? 3 : 1;
-    return limit >= address && bytes <= limit - address && (protection & required) == required;
-}
-
-const Profiles::Profile* RecognizeProfile(VAddr base, u64 size) {
-    if (Common::ElfInfo::Instance().GameSerial() != "CUSA12392" || base == 0) {
-        return nullptr;
-    }
-    const auto image = std::span{reinterpret_cast<const u8*>(base), static_cast<size_t>(size)};
-    const auto mapped = [&](u64 at, u64 bytes) {
-        return Profiles::Contains(image, at, bytes) && at <= UINT64_MAX - base &&
-               Accessible(base + at, bytes);
-    };
-    const Profiles::Profile* selected = nullptr;
-    for (const auto& profile : Profiles::Known) {
-        if (!mapped(profile.recentre, Profiles::RecentreCode.size()) ||
-            !mapped(profile.manager_pointer, sizeof(u64)) ||
-            !mapped(profile.resolution_pointer, sizeof(u64)) ||
-            !mapped(profile.frame_rate, sizeof(double)) ||
-            !mapped(profile.frame_seconds, sizeof(float)) ||
-            !mapped(profile.frame_microseconds, sizeof(u64)) ||
-            !mapped(profile.widths, sizeof(u32) * Profiles::ConsoleSizes.size()) ||
-            !mapped(profile.heights, sizeof(u32) * Profiles::ConsoleSizes.size()) ||
-            !mapped(profile.pixels, 32 * 6 + sizeof(u64))) {
-            continue;
-        }
-        const auto changes = Profiles::ResolutionChanges(profile, ConsoleSizes, ConsoleTargetPool,
-                                                         ConsoleSmallPool, ConsoleGraphicsHeap);
-        if (!std::ranges::all_of(
-                changes, [&](const auto& change) { return mapped(change.at, change.bytes); })) {
-            continue;
-        }
-        if (&profile == &Profiles::Known[1] &&
-            !std::ranges::all_of(Profiles::AlternateCode,
-                                 [&](const auto& check) { return mapped(check.at, check.size); })) {
-            continue;
-        }
-        if (Profiles::Matches(image, profile)) {
-            if (selected != nullptr) {
-                return nullptr;
-            }
-            selected = &profile;
-        }
-    }
-    return selected;
 }
 
 /// The time step the title was made for.
@@ -587,8 +525,8 @@ private:
 
 // The size the title draws its scene at right now, as an index into ConsoleSizes; -1 when
 /// it has not got that far. Holds it to `wanted` on the way unless that is 0.
-s32 TendResolution(VAddr base, const Profiles::Profile& profile, s32 wanted) {
-    const u64 control = Read<u64>(base + profile.resolution_pointer);
+s32 TendResolution(VAddr base, const Build& build, s32 wanted) {
+    const u64 control = Read<u64>(base + build.resolution_pointer);
     if (!Accessible(control, ResolutionLowest + sizeof(s32), true)) {
         return -1;
     }
@@ -652,11 +590,11 @@ private:
 } // namespace
 
 void OnFrameSubmitted() {
-    const auto* profile = active_profile.load(std::memory_order_acquire);
-    if (profile == nullptr) {
+    const Build* const build = known_build.load(std::memory_order_acquire);
+    if (build == nullptr) {
         return;
     }
-    const VAddr base = title_base;
+    const VAddr base = known_base;
     const Settings& settings = GetSettings();
 
     static bool running = false;
@@ -700,7 +638,7 @@ void OnFrameSubmitted() {
         wanted = governor.Level(frame, now, 0);
         break;
     }
-    const s32 resolution = TendResolution(base, *profile, wanted);
+    const s32 resolution = TendResolution(base, *build, wanted);
     frame_pace.store(governor.Pace(), std::memory_order_relaxed);
 
     if (settings.time_step) {
@@ -708,9 +646,9 @@ void OnFrameSubmitted() {
         // was made for: a frame for every refresh of a display faster than 60 Hz.
         const double shortest = governor.Pace() == 1 ? 1.0 / 250.0 : Nominal;
         step = time_step.Next(frame, settings.longest_step, shortest);
-        Write<double>(base + profile->frame_rate, 1.0 / step);
-        Write<float>(base + profile->frame_seconds, static_cast<float>(step));
-        Write<u64>(base + profile->frame_microseconds, static_cast<u64>(step * 1e6));
+        Write<double>(base + build->frame_rate, 1.0 / step);
+        Write<float>(base + build->frame_seconds, static_cast<float>(step));
+        Write<u64>(base + build->frame_microseconds, static_cast<u64>(step * 1e6));
     }
 
     if (frame <= Stall) {
@@ -755,10 +693,10 @@ void Prepare() {
 }
 
 void OnGameLoaded(VAddr base, u64 size) {
-    active_profile.store(nullptr, std::memory_order_release);
+    known_build.store(nullptr, std::memory_order_release);
     const auto image = std::span{reinterpret_cast<u8*>(base), static_cast<size_t>(size)};
-    const auto* profile = RecognizeProfile(base, size);
-    if (profile == nullptr) {
+    const Build* const build = RecognizeBuild(base, size);
+    if (build == nullptr) {
         if (Common::ElfInfo::Instance().GameSerial() == "CUSA12392") {
             LOG_WARNING(Core, "Unrecognized or modified CUSA12392 layout: title resolution and "
                               "time-step patches disabled (no game memory changed)");
@@ -767,19 +705,17 @@ void OnGameLoaded(VAddr base, u64 size) {
     }
     const Larger& larger = GetLarger();
     if (larger.factor != 1.0) {
-        const auto changes = Profiles::ResolutionChanges(*profile, larger.sizes, larger.target_pool,
-                                                         larger.small_pool, larger.graphics_heap);
-        u64 rejected_at{};
-        if (!Profiles::Apply(image, changes, rejected_at)) {
+        const auto changes = Builds::SizeChanges(*build, larger);
+        if (const auto* unexpected = Builds::Apply(image, changes); unexpected != nullptr) {
             LOG_WARNING(Core, "Title patch rejected at {:#x}: no title patches enabled",
-                        rejected_at);
+                        unexpected->at);
             return;
         }
     }
-    title_base = base;
-    active_profile.store(profile, std::memory_order_release);
+    known_base = base;
+    known_build.store(build, std::memory_order_release);
     LOG_INFO(Core, "Verified title profile {}: resolution and time-step support enabled",
-             profile->name);
+             build->name);
     if (larger.factor == 1.0) {
         return;
     }
@@ -793,10 +729,11 @@ void OnGameLoaded(VAddr base, u64 size) {
 void NoteView(const Vr::Vec3& tracker_head) {
     static constexpr auto Interval = std::chrono::seconds{10};
 
-    const auto* profile = active_profile.load(std::memory_order_acquire);
-    if (profile == nullptr) {
+    const Build* const build = known_build.load(std::memory_order_acquire);
+    if (build == nullptr) {
         return;
     }
+    const VAddr base = known_base;
     static std::mutex mutex;
     static Vr::Vec3 last_origin;
     static Clock::time_point last_report;
@@ -806,7 +743,7 @@ void NoteView(const Vr::Vec3& tracker_head) {
     if (!lock.owns_lock()) {
         return;
     }
-    const u64 manager = Read<u64>(title_base + profile->manager_pointer);
+    const u64 manager = Read<u64>(base + build->manager_pointer);
     if (!Accessible(manager, ManagerHeadState + sizeof(u64))) {
         return;
     }

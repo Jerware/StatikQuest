@@ -27,12 +27,16 @@
 #include "common/thread.h"
 #include "core/vr/openxr_host.h"
 #include "input/controller.h"
+#include "input/scripted_input.h"
+#include "input/stick_finger.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 
 #define XR_USE_PLATFORM_WIN32
 #define XR_USE_GRAPHICS_API_VULKAN
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
+
+#include "core/vr/openxr_view.h"
 
 namespace Core::Vr {
 
@@ -289,6 +293,9 @@ struct OpenXrHost::Impl {
     u32 system_failures{};
     Clock::time_point last_wanted;
     bool ever_wanted{};
+    /// Whether a session that is asked for no pictures is made anew after a while (see
+    /// CheckWanted): for the runtime that says nothing when its headset goes away.
+    bool renew_unwanted{};
     Clock::time_point last_frame_ended;
     float lose_after{};
     bool pause_when_away{true};
@@ -386,6 +393,8 @@ struct OpenXrHost::Impl {
     bool sent_touch{};
     float sent_touch_x{0.5f};
     float sent_touch_y{0.5f};
+    Input::StickFinger stick_finger;
+    bool blowing{};
     std::atomic<u32> rumble_wanted{};
     u32 rumble_applied{};
     Clock::time_point rumble_time;
@@ -470,16 +479,26 @@ struct OpenXrHost::Impl {
             return false;
         }
         XrInstanceProperties properties{XR_TYPE_INSTANCE_PROPERTIES};
-        xrGetInstanceProperties(instance, &properties);
+        if (XR_FAILED(xrGetInstanceProperties(instance, &properties))) {
+            LOG_WARNING(Core_Vr, "The OpenXR runtime did not report its identity");
+            DestroyInstance();
+            return false;
+        }
         runtime_name = fmt::format("{} {}.{}.{}", properties.runtimeName,
                                    XR_VERSION_MAJOR(properties.runtimeVersion),
                                    XR_VERSION_MINOR(properties.runtimeVersion),
                                    XR_VERSION_PATCH(properties.runtimeVersion));
+        // (SHADPS4_XR_RENEW_UNWANTED=1 or 0 says so for any runtime, for tests.)
+        const char* renew = std::getenv("SHADPS4_XR_RENEW_UNWANTED");
+        renew_unwanted = renew != nullptr && renew[0] != '\0'
+                             ? renew[0] != '0'
+                             : runtime_name.starts_with("VirtualDesktopXR");
         return true;
     }
 
     /// Asks the runtime for its headset. False while there is none.
     bool FindSystem() {
+        Runtime::Instance().SetHeadsetIdentity({});
         // SHADPS4_XR_HIDE_FOR=<seconds>, for tests: the runtime's headset is not there for
         // that long after the start, as Virtual Desktop's is not until the headset connects.
         if (hide_for > 0.0f &&
@@ -513,7 +532,14 @@ struct OpenXrHost::Impl {
         if (hand_extension) {
             properties.next = &hand_properties;
         }
-        xrGetSystemProperties(instance, system, &properties);
+        if (XR_FAILED(xrGetSystemProperties(instance, system, &properties))) {
+            LOG_WARNING(Core_Vr, "The OpenXR runtime did not report its headset's identity");
+            system = XR_NULL_SYSTEM_ID;
+            return false;
+        }
+        Runtime::Instance().SetHeadsetIdentity(
+            {runtime_name, properties.systemName, properties.vendorId});
+        fov_samples = 0;
         max_swapchain_width = properties.graphicsProperties.maxSwapchainImageWidth;
         max_swapchain_height = properties.graphicsProperties.maxSwapchainImageHeight;
         // (Asked every time: a headset that comes back may track hands where it did not.)
@@ -610,6 +636,7 @@ struct OpenXrHost::Impl {
                 // and a session made with what answers.
                 session_lost = false;
                 system = XR_NULL_SYSTEM_ID;
+                Runtime::Instance().SetHeadsetIdentity({});
                 if (instance_lost) {
                     DestroyInstance();
                 }
@@ -625,6 +652,7 @@ struct OpenXrHost::Impl {
     }
 
     void DestroyInstance() {
+        Runtime::Instance().SetHeadsetIdentity({});
         instance_lost = false;
         system_failures = 0;
         if (instance != XR_NULL_HANDLE) {
@@ -819,43 +847,49 @@ struct OpenXrHost::Impl {
             return;
         }
 
-        std::vector<XrActionSuggestedBinding> bindings;
-        const auto bind = [&](XrAction action, const char* path) {
-            XrPath binding = XR_NULL_PATH;
-            if (XR_SUCCEEDED(xrStringToPath(instance, path, &binding))) {
-                bindings.push_back({action, binding});
+        for (const bool index : {false, true}) {
+            std::vector<XrActionSuggestedBinding> bindings;
+            const auto bind = [&](XrAction action, const char* path) {
+                XrPath binding = XR_NULL_PATH;
+                if (XR_SUCCEEDED(xrStringToPath(instance, path, &binding))) {
+                    bindings.push_back({action, binding});
+                }
+            };
+            bind(act_move, "/user/hand/left/input/thumbstick");
+            bind(act_finger, "/user/hand/right/input/thumbstick");
+            bind(act_finger_press, "/user/hand/right/input/thumbstick/click");
+            bind(act_cross, "/user/hand/right/input/a/click");
+            bind(act_square, "/user/hand/right/input/b/click");
+            bind(act_circle,
+                 index ? "/user/hand/left/input/a/click" : "/user/hand/left/input/x/click");
+            bind(act_triangle,
+                 index ? "/user/hand/left/input/b/click" : "/user/hand/left/input/y/click");
+            bind(act_l1, "/user/hand/left/input/squeeze/value");
+            bind(act_r1, "/user/hand/right/input/squeeze/value");
+            bind(act_l2, "/user/hand/left/input/trigger/value");
+            bind(act_r2, "/user/hand/right/input/trigger/value");
+            bind(act_options, index ? "/user/hand/left/input/trackpad/force"
+                                    : "/user/hand/left/input/menu/click");
+            bind(act_l3, "/user/hand/left/input/thumbstick/click");
+            bind(act_pose, pad_hand == 0 ? "/user/hand/left/input/aim/pose"
+                                         : "/user/hand/right/input/aim/pose");
+            bind(act_grip, "/user/hand/left/input/grip/pose");
+            bind(act_grip, "/user/hand/right/input/grip/pose");
+            bind(act_rumble, "/user/hand/left/output/haptic");
+            bind(act_rumble, "/user/hand/right/output/haptic");
+            XrInteractionProfileSuggestedBinding suggested{
+                XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+            xrStringToPath(instance,
+                           index ? "/interaction_profiles/valve/index_controller"
+                                 : "/interaction_profiles/oculus/touch_controller",
+                           &suggested.interactionProfile);
+            suggested.countSuggestedBindings = static_cast<uint32_t>(bindings.size());
+            suggested.suggestedBindings = bindings.data();
+            if (const XrResult result = xrSuggestInteractionProfileBindings(instance, &suggested);
+                XR_FAILED(result)) {
+                LOG_WARNING(Core_Vr, "The headset's runtime takes no {} controller bindings: {}",
+                            index ? "Index" : "Touch", ResultText(instance, result));
             }
-        };
-        bind(act_move, "/user/hand/left/input/thumbstick");
-        bind(act_finger, "/user/hand/right/input/thumbstick");
-        bind(act_finger_press, "/user/hand/right/input/thumbstick/click");
-        bind(act_cross, "/user/hand/right/input/a/click");
-        bind(act_square, "/user/hand/right/input/b/click");
-        bind(act_circle, "/user/hand/left/input/x/click");
-        bind(act_triangle, "/user/hand/left/input/y/click");
-        bind(act_l1, "/user/hand/left/input/squeeze/value");
-        bind(act_r1, "/user/hand/right/input/squeeze/value");
-        bind(act_l2, "/user/hand/left/input/trigger/value");
-        bind(act_r2, "/user/hand/right/input/trigger/value");
-        bind(act_options, "/user/hand/left/input/menu/click");
-        bind(act_l3, "/user/hand/left/input/thumbstick/click");
-        bind(act_pose, pad_hand == 0 ? "/user/hand/left/input/aim/pose"
-                                     : "/user/hand/right/input/aim/pose");
-        bind(act_grip, "/user/hand/left/input/grip/pose");
-        bind(act_grip, "/user/hand/right/input/grip/pose");
-        bind(act_rumble, "/user/hand/left/output/haptic");
-        bind(act_rumble, "/user/hand/right/output/haptic");
-        XrInteractionProfileSuggestedBinding suggested{
-            XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
-        xrStringToPath(instance, "/interaction_profiles/oculus/touch_controller",
-                       &suggested.interactionProfile);
-        suggested.countSuggestedBindings = static_cast<uint32_t>(bindings.size());
-        suggested.suggestedBindings = bindings.data();
-        if (const XrResult result = xrSuggestInteractionProfileBindings(instance, &suggested);
-            XR_FAILED(result)) {
-            LOG_WARNING(Core_Vr, "The headset's runtime takes no bindings for its controllers: {}",
-                        ResultText(instance, result));
-            return;
         }
 
         XrSessionActionSetsAttachInfo attach{XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
@@ -895,6 +929,11 @@ struct OpenXrHost::Impl {
         sent_buttons = {};
         sent_axes = {128, 128, 128, 128, 0, 0};
         sent_touch = false;
+        stick_finger.Reset();
+        if (blowing) {
+            blowing = false;
+            Input::SetBlowing(false);
+        }
         (*Common::Singleton<Input::GameControllers>::Instance())[0]->ApplyRemoteState(
             sent_buttons, sent_axes, false, sent_touch_x, sent_touch_y);
         Runtime::Instance().ReleasePad();
@@ -973,8 +1012,17 @@ struct OpenXrHost::Impl {
         };
         add(pressed(act_cross), Buttons::Cross);
         add(pressed(act_square), Buttons::Square);
-        add(pressed(act_circle), Buttons::Circle);
-        add(pressed(act_triangle), Buttons::Triangle);
+        // The left controller's two buttons together are not circle and triangle: they blow
+        // into the microphone, for as long as they are held (Input::SetBlowing).
+        const bool circle = pressed(act_circle);
+        const bool triangle = pressed(act_triangle);
+        const bool blow = circle && triangle;
+        if (blow != blowing) {
+            blowing = blow;
+            Input::SetBlowing(blow);
+        }
+        add(circle && !blow, Buttons::Circle);
+        add(triangle && !blow, Buttons::Triangle);
         add(pressed(act_options), Buttons::Options);
         const bool left_stick_in = pressed(act_l3);
         const bool right_stick_in = pressed(act_finger_press);
@@ -994,9 +1042,10 @@ struct OpenXrHost::Impl {
             controllers_used = true;
             LOG_INFO(Core_Vr,
                      "No gamepad is connected to the PC: the headset's controllers stand in for "
-                     "it (left stick to move, A = cross, B = square, X = circle, Y = triangle, "
-                     "right stick = finger on the touchpad, pressed in = touchpad pressed, left "
-                     "menu button = OPTIONS, both sticks pressed in = reset the view; the {} "
+                     "it (left stick to move, right A = cross, right B = square, left X/A = "
+                     "circle, left Y/B = triangle, right stick = finger on the touchpad, "
+                     "pressed in = touchpad pressed, left menu/trackpad = OPTIONS, "
+                     "both sticks pressed in = reset the view; the {} "
                      "one is the controller in the game)",
                      pad_hand == 0 ? "left" : "right");
         }
@@ -1031,12 +1080,18 @@ struct OpenXrHost::Impl {
         if (axes[5] > 0) {
             buttons |= Buttons::R2;
         }
-        // The finger touches down where the stick points, and in the middle of the touchpad
-        // when the stick is only pressed in: a touchpad cannot be pressed without touching it.
-        const bool swiping = std::hypot(finger.x, finger.y) > 0.25f;
+        // The right stick moves a finger over the touchpad (see Input::StickFinger: a stick
+        // let go lifts the finger where it was, which is what lets a pull on the stick shoot
+        // the game's catapults). A stick pushed away from the player is the pad's far edge.
+        // The finger also touches, in the middle of the pad, when the stick is only pressed
+        // in: a touchpad cannot be pressed without touching it.
+        const Input::StickFinger::Touch dragged = stick_finger.Update(
+            std::chrono::duration<double>(Clock::now().time_since_epoch()).count(), finger.x,
+            -finger.y);
+        const bool swiping = dragged.down;
         const bool touch = swiping || (right_stick_in && !view_reset);
-        const float touch_x = swiping ? std::clamp(0.5f + finger.x * 0.45f, 0.0f, 1.0f) : 0.5f;
-        const float touch_y = swiping ? std::clamp(0.5f - finger.y * 0.45f, 0.0f, 1.0f) : 0.5f;
+        const float touch_x = swiping ? dragged.x : 0.5f;
+        const float touch_y = swiping ? dragged.y : 0.5f;
         if (buttons != sent_buttons || axes != sent_axes || touch != sent_touch ||
             (touch && (std::abs(touch_x - sent_touch_x) > 0.002f ||
                        std::abs(touch_y - sent_touch_y) > 0.002f))) {
@@ -1387,6 +1442,10 @@ struct OpenXrHost::Impl {
     /// the table is not a reason to make sessions all day, and a new session takes the
     /// headset away from whatever else it shows.
     /// A session that is on the head and was asked for pictures since is left alone.
+    /// All of this for Virtual Desktop's runtime only. Others say what becomes of their
+    /// sessions through the states and events OpenXR has for it, and ask for no pictures
+    /// whenever nobody looks (SteamVR while its headset rests, or while its dashboard is in
+    /// front): a session ended under them for that is a session they were still using.
     void CheckWanted(bool wanted, Clock::time_point now) {
         if (wanted) {
             last_wanted = now;
@@ -1395,7 +1454,7 @@ struct OpenXrHost::Impl {
             focus_patience = FirstFocusPatience;
             return;
         }
-        if (session_lost) {
+        if (session_lost || !renew_unwanted) {
             return;
         }
         if (state == XR_SESSION_STATE_FOCUSED) {
@@ -1633,23 +1692,17 @@ struct OpenXrHost::Impl {
         XrViewState view_state{XR_TYPE_VIEW_STATE};
         XrView eye_views[2]{{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
         uint32_t view_count = 0;
-        if (!XR_SUCCEEDED(xrLocateViews(session, &locate, &view_state, 2, &view_count, eye_views)) ||
+        if (!XR_SUCCEEDED(
+                xrLocateViews(session, &locate, &view_state, 2, &view_count, eye_views)) ||
             view_count != 2) {
             return;
         }
-        // What the headset shows, both eyes together: the left eye's left and the right eye's
-        // right are the outer sides. (Tracked or not: a headset lying on the desk shows as much.)
-        const auto tangent = [](float angle) { return std::tan(std::abs(angle)); };
-        const Fov seen{
-            std::max(tangent(eye_views[0].fov.angleLeft), tangent(eye_views[1].fov.angleRight)),
-            std::max(tangent(eye_views[0].fov.angleRight), tangent(eye_views[1].fov.angleLeft)),
-            std::max(tangent(eye_views[0].fov.angleUp), tangent(eye_views[1].fov.angleUp)),
-            std::max(tangent(eye_views[0].fov.angleDown), tangent(eye_views[1].fov.angleDown)),
-        };
-        if (seen.tan_out > 0.1f && seen.tan_out < 10.0f && seen.tan_in > 0.1f &&
-            seen.tan_in < 10.0f && seen.tan_top > 0.1f && seen.tan_top < 10.0f &&
-            seen.tan_bottom > 0.1f && seen.tan_bottom < 10.0f && ++fov_samples % 600 == 1) {
-            runtime.NoteHeadsetFov(seen);
+        if ((view_state.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) == 0) {
+            return;
+        }
+        const auto seen = ParallelStereoFov(eye_views[0], eye_views[1]);
+        if (seen && ++fov_samples % 600 == 1) {
+            runtime.NoteHeadsetFov(*seen);
         }
         if ((view_state.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT) != 0) {
             const float dx = eye_views[1].pose.position.x - eye_views[0].pose.position.x;

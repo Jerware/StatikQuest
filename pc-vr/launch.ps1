@@ -54,6 +54,47 @@ $widths = @(1440, 1800, 2160, 2520, 2880, 3240, 3600)
 function EyeHeight([int]$width) { return [int]([math]::Round(1536.0 * $width / 1440 / 8) * 8) }
 $caps = @(120, 90, 72, 60, 45, 40, 36, 30)
 
+function Get-VrInstructions([string]$runtime) {
+    # How to move the gamepad in the game while nothing tracks where it is.
+    $placeHelp = "Hold the PS button and press the D-pad to move it (L1 nearer, R1 farther); PS + triangle switches between your place for it and the standard one."
+    if ($runtime -match 'steamvr|steamxr') {
+        return @(
+            "Start SteamVR and check that the headset is ready (an Index: with its base stations). Virtual Desktop is not needed."
+            "Set the headset to 120 Hz in SteamVR's Video settings for the game's own 60 frames a second (90 Hz gives 45)."
+            "The DualSense: connect it to THIS PC by USB or Bluetooth. It keeps its motion sensors, touchpad and rumble."
+            "If launching through a Steam shortcut, disable Steam Input for that shortcut so the emulator can read the DualSense."
+            "SteamVR does not track bare hands: the gamepad in the game stays in front of you and turns with its own sensors."
+            $placeHelp
+            "Sound and microphone: the ones chosen in SteamVR's Audio settings; the game uses the microphone for blowing."
+            "No gamepad: the headset's controllers play (right A jump, right B punch, left X or A back, left Y or B triangle, left menu or trackpad press = OPTIONS)."
+        )
+    }
+    if ($runtime -match 'virtualdesktop') {
+        return @(
+            "In the headset: connect Virtual Desktop to this PC. The game moves into the headset by itself."
+            "The DualSense: connect it to THIS PC (USB cable, or Bluetooth paired with the PC). Paired with"
+            "the headset, it reaches the PC through Virtual Desktop without motion sensors or touchpad."
+            "Where it is in the game comes from your hands: hand tracking on in the headset, and in"
+            "Virtual Desktop's settings hand tracking forwarded to the PC. Without that it stays in front of you:"
+            $placeHelp
+            "No gamepad: Touch controllers play (A jump, B punch, X back, Y triangle, left menu = OPTIONS)."
+        )
+    }
+    return @(
+        "Start your headset's OpenXR runtime and check that the headset is ready."
+        "The DualSense: connect it to THIS PC by USB or Bluetooth, with Steam Input disabled for any Steam shortcut."
+        "Without hand tracking, the gamepad in the game stays in front of you and turns with its own sensors."
+        $placeHelp
+        "No gamepad: the headset's controllers play (right A jump, right B punch, left X or A back, left Y or B triangle)."
+    )
+}
+
+function Get-DesktopView {
+    if ((Setting "desktop_view" "stereo") -eq "combined") { return "combined" }
+    if ((Setting "desktop_view" "stereo") -eq "spectator") { return "spectator" }
+    return "stereo"
+}
+
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
@@ -145,7 +186,9 @@ function Get-GameInfo([string]$eboot) {
     return Read-Sfo ([System.IO.Path]::Combine($folder, "sce_sys", "param.sfo"))
 }
 
-# The unpacked game under a folder: the one this is made for, if there are several.
+# The unpacked game under a folder: the one this is made for, if there are several. (A folder
+# named after a game with -UPDATE, -patch or -mods at the end is not a game: the emulator lays
+# what is in it over the game's own files.)
 function Find-Game([string]$top) {
     $first = $null
     foreach ($folder in (Get-Folders $top)) {
@@ -158,15 +201,37 @@ function Find-Game([string]$top) {
     return $first
 }
 
-# The package under a folder: the largest, if there are several (a game's is larger than its
-# updates').
+# Whether a package is an update of a game (a patch), which holds the files the update changed
+# and no more, rather than the game: its header says so.
+function Test-UpdatePackage([string]$path) {
+    try {
+        $head = New-Object byte[] 128
+        $stream = [System.IO.File]::OpenRead($path)
+        try { $read = $stream.Read($head, 0, $head.Length) } finally { $stream.Dispose() }
+        if ($read -lt $head.Length) { return $false }
+        if ($head[0] -ne 0x7F -or $head[1] -ne 0x43 -or $head[2] -ne 0x4E -or $head[3] -ne 0x54) {
+            return $false
+        }
+        # (First patch, later patch, cumulative patch: 0x00100000, 0x40000000, 0x20000000.)
+        return (($head[0x78] -band 0x60) -ne 0) -or (($head[0x79] -band 0x30) -ne 0)
+    } catch { return $false }
+}
+
+# The package under a folder: a game's own before any update of it, and the largest if there
+# are several.
 function Find-Package([string]$top) {
     $largest = $null
+    $largestIsUpdate = $true
     foreach ($folder in (Get-Folders $top)) {
         try { $files = [System.IO.Directory]::GetFiles($folder, "*.pkg") } catch { continue }
         foreach ($file in $files) {
             $info = New-Object System.IO.FileInfo($file)
-            if ($null -eq $largest -or $info.Length -gt $largest.Length) { $largest = $info }
+            $isUpdate = Test-UpdatePackage $file
+            if ($null -eq $largest -or ($largestIsUpdate -and -not $isUpdate) -or
+                ($largestIsUpdate -eq $isUpdate -and $info.Length -gt $largest.Length)) {
+                $largest = $info
+                $largestIsUpdate = $isUpdate
+            }
         }
     }
     return $largest
@@ -197,7 +262,7 @@ function Read-PackageHeader([string]$path, [string]$tool) {
     } finally { $stream.Dispose() }
 }
 
-function Test-UpdatePackage($header) {
+function Test-UpdateHeader($header) {
     $patchFlags = [LibOrbisPkg.PKG.ContentFlags]::FIRST_PATCH -bor
                   [LibOrbisPkg.PKG.ContentFlags]::PATCHGO -bor
                   [LibOrbisPkg.PKG.ContentFlags]::SUBSEQUENT_PATCH
@@ -277,6 +342,10 @@ function Expand-Package($package) {
         [void](Show-Box ($package.FullName + "`n`nis not a PlayStation 4 package.") "OK" "Warning")
         return $null
     }
+    if (Test-UpdatePackage $package.FullName) {
+        [void](Show-Box ("This package is an update of the game, not the game:`n`n" + $package.Name + "`n`nAn update holds only the files it changed. Put the package of the game itself (about 7 GB) in the games folder; the update is not needed, and is left alone when it is there as well. (A copy of the game that already has its update 1.04 in it plays too.)") "OK" "Warning")
+        return $null
+    }
     $tool = $null
     foreach ($candidate in @((Join-Path $here "pkgtool\PkgTool.exe"),
                              (Join-Path $root "tools\pkgtool\PkgTool.exe"))) {
@@ -292,7 +361,7 @@ function Expand-Package($package) {
         [void](Show-Box ("The package header could not be read. Nothing was unpacked.`n`n" + $package.FullName + "`n`n" + $_.Exception.Message) "OK" "Warning")
         return $null
     }
-    if (Test-UpdatePackage $header) {
+    if (Test-UpdateHeader $header) {
         [void](Show-Box ("This package is an update, not a complete game. It needs the base game's files and must not replace them.`n`nExtract it into a separate CUSA12392-UPDATE folder beside CUSA12392, then launch the base game's eboot.bin. See README-PC-VR.md, Game versions.`n`n" + $package.FullName) "OK" "Warning")
         return $null
     }
@@ -547,7 +616,7 @@ function Show-Menu {
 
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "Astro Bot VR"
-    $form.ClientSize = New-Object System.Drawing.Size(560, 452)
+    $form.ClientSize = New-Object System.Drawing.Size(560, 514)
     $form.StartPosition = "CenterScreen"
     $form.FormBorderStyle = "FixedDialog"
     $form.MaximizeBox = $false
@@ -617,7 +686,7 @@ function Show-Menu {
     $form.Controls.Add($fps)
     $y += 32
     $fpsText = New-Object System.Windows.Forms.Label
-    $fpsText.Text = "A frame lasts a whole number of the headset's refreshes, so the headset's refresh rate decides what is possible: at 120 Hz 120, 60, 40 or 30 frames a second, at 90 Hz 90, 45 or 30, at 72 Hz 72 or 36. Virtual Desktop sets the refresh rate (Settings > Streaming > Frame rate): choose 120 for 60 frames a second."
+    $fpsText.Text = "A frame lasts a whole number of the headset's refreshes: at 120 Hz, 120, 60, 40 or 30 frames a second; at 90 Hz, 90, 45 or 30; at 80 Hz, 80 or 40. Choose 120 Hz for 60 frames a second. Set it in SteamVR Video settings for an Index, or Virtual Desktop Streaming settings for a Quest."
     $fpsText.SetBounds(16, $y, 530, 84)
     $form.Controls.Add($fpsText)
     $y += 88
@@ -653,6 +722,30 @@ function Show-Menu {
     & $updateFov
     $y += 46
 
+    $label = New-Object System.Windows.Forms.Label
+    $label.Text = "Desktop view"
+    $label.Font = New-Object System.Drawing.Font("Segoe UI", 9.5, [System.Drawing.FontStyle]::Bold)
+    $label.SetBounds(16, $y, 520, 20)
+    $form.Controls.Add($label)
+    $y += 22
+    $desktopView = New-Object System.Windows.Forms.ComboBox
+    $desktopView.Name = "desktopView"
+    $desktopView.DropDownStyle = "DropDownList"
+    $desktopModes = @("stereo", "spectator", "combined")
+    $desktopView.Items.AddRange(@("Stereo (both eyes)", "Single eye (spectator)", "Combined eyes (spectator)"))
+    $desktopView.SelectedIndex = [array]::IndexOf($desktopModes, (Get-DesktopView))
+    $desktopView.SetBounds(16, $y, 248, 26)
+    $form.Controls.Add($desktopView)
+    $desktopCrop = New-Object System.Windows.Forms.CheckBox
+    $desktopCrop.Name = "desktopCrop"
+    $desktopCrop.Text = "Crop top/bottom to fill"
+    $desktopCrop.Checked = (Setting "desktop_crop" "0") -eq "1"
+    $desktopCrop.SetBounds(284, $y, 250, 26)
+    $desktopCrop.Enabled = $desktopView.SelectedIndex -ne 0
+    $desktopView.Add_SelectedIndexChanged({ $desktopCrop.Enabled = $desktopView.SelectedIndex -ne 0 })
+    $form.Controls.Add($desktopCrop)
+    $y += 40
+
     $again = New-Object System.Windows.Forms.CheckBox
     $again.Text = "Show this window at every start"
     $again.Checked = (Setting "menu" "1") -ne "0"
@@ -678,6 +771,8 @@ function Show-Menu {
     Save-Setting "fps" ($caps[$fps.SelectedIndex])
     Save-Setting "fov" ($fov.Value * 5)
     Save-Setting "menu" ($(if ($again.Checked) { "1" } else { "0" }))
+    Save-Setting "desktop_view" ($desktopModes[$desktopView.SelectedIndex])
+    Save-Setting "desktop_crop" ($(if ($desktopCrop.Checked) { "1" } else { "0" }))
     Read-Settings
     return $true
 }
@@ -706,8 +801,13 @@ if ($info.Count -eq 0) {
     }
 }
 Say "The emulator recognizes the 1.00 and 1.04 executable layouts by their contents, not package metadata. Its verified profile or rejection appears below."
-if ([System.IO.Path]::GetDirectoryName($game).Length + 1 + $longestInside -gt 259) {
-    [void](Show-Box ("The game is in`n" + [System.IO.Path]::GetDirectoryName($game) + "`n`nThat path is too long: some of the game's files have a path of more than 259 characters there, which the emulator cannot open, and the game would stop when it needs them. Move the folder somewhere with a shorter path, for example C:\Games\AstroQuest, and start again.") "OK" "Warning")
+$gameFolder = [System.IO.Path]::GetDirectoryName($game)
+if ($info["TITLE_ID"] -eq $madeFor -and -not [System.IO.File]::Exists([System.IO.Path]::Combine($gameFolder, "sce_module", "libc.prx"))) {
+    [void](Show-Box ("This is not a complete copy of the game:`n" + $gameFolder + "`n`nParts that every copy has are missing (sce_module\libc.prx for one). A folder with only an update of the game in it looks like this: an update holds the files it changed and no more. Put the update's files over a copy of the whole game, or use the game without its update.") "OK" "Warning")
+    exit 1
+}
+if ($gameFolder.Length + 1 + $longestInside -gt 259) {
+    [void](Show-Box ("The game is in`n" + $gameFolder + "`n`nThat path is too long: some of the game's files have a path of more than 259 characters there, which the emulator cannot open, and the game would stop when it needs them. Move the folder somewhere with a shorter path, for example C:\Games\AstroQuest, and start again.") "OK" "Warning")
     exit 1
 }
 
@@ -737,11 +837,14 @@ if ($resolution -eq "game") {
     }
 }
 $env:SHADPS4_VR_SHARPEN = Setting "sharpen" "0.3"
+$env:SHADPS4_VR_DESKTOP_VIEW = Get-DesktopView
+$env:SHADPS4_VR_DESKTOP_CROP = $(if ((Setting "desktop_crop" "0") -eq "1") { "1" } else { "0" })
 if ((Setting "msaa") -ne "") { $env:SHADPS4_MAX_MSAA = Setting "msaa" }
 if ((Setting "antialias" "1") -eq "0") { $env:SHADPS4_RESOLVE_AA = "0" }
 if ((Setting "hands" "1") -eq "0") { $env:SHADPS4_XR_HANDS = "0" }
 if ((Setting "predict_ms") -ne "") { $env:SHADPS4_XR_PREDICT_MS = Setting "predict_ms" }
 if ((Setting "stick_touchpad" "1") -eq "0") { $env:SHADPS4_STICK_TOUCHPAD = "0" }
+if ((Setting "mic_gain") -ne "") { $env:SHADPS4_MIC_GAIN = Setting "mic_gain" }
 if ((Setting "surround" "1") -eq "0") { $env:SHADPS4_VIRTUAL_SURROUND = "0" }
 if ((Setting "real_time" "1") -eq "0") { $env:SHADPS4_TITLE_TIMESTEP = "0" }
 $fovSetting = Setting "fov" "100"
@@ -777,7 +880,8 @@ if ($env:XR_RUNTIME_JSON) {
 }
 if ($runtime -eq "") {
     Say "No OpenXR runtime is set up on this PC: the game will only show on the monitor." "Yellow"
-    Say "Virtual Desktop Streamer installs one (Options > OpenXR Runtime: VDXR)."
+    Say "For an Index, use SteamVR Settings > OpenXR > Set SteamVR as OpenXR Runtime."
+    Say "For Virtual Desktop, use Streamer Options > OpenXR Runtime: VDXR."
 } else {
     Say "OpenXR runtime: $runtime"
     if ($runtime -match "virtualdesktop") {
@@ -794,17 +898,15 @@ if ($runtime -eq "") {
     }
 }
 Say ""
-Say "In the headset: connect Virtual Desktop to this PC. The game moves into the headset by itself."
+Get-VrInstructions $runtime | ForEach-Object { Say $_ }
 if ($env:SHADPS4_OPENXR -ne "0" -and [int]$env:SHADPS4_XR_WAIT -gt 0) {
     Say ("The game waits up to " + $env:SHADPS4_XR_WAIT + " seconds for the headset before it starts on the monitor.")
 }
-Say "The DualSense: connect it to THIS PC (USB cable, or Bluetooth paired with the PC). Paired with"
-Say "the headset, it reaches the PC through Virtual Desktop without motion sensors or touchpad."
-Say "Where it is in the game comes from your hands: hand tracking on in the headset, and in"
-Say "Virtual Desktop's settings hand tracking forwarded to the PC."
 Say "Hold OPTIONS for a second (or press the PS button) to reset the view."
-Say "No gamepad: the headset's own controllers play (A jump, B punch, right stick = touchpad,"
-Say "press both sticks in to reset the view)."
+Say "Where the game wants you to blow: into the headset's microphone, or hold the PS button and square"
+Say "(X and Y together on VR controllers)."
+Say "With VR controllers: the right stick is the touchpad (pull it back and let go to shoot at the end of a level),"
+Say "both sticks pressed in reset the view."
 Say "Close the game's window to quit."
 Say ""
 # The emulator asks Windows for about 14 GB at once (the console's memory, and what the larger
@@ -860,9 +962,13 @@ function Show-Log {
                     if (($script:reports % 6) -ne 1) { continue }
                 }
                 if ($warning) { Say ("  " + $text) "Yellow" } else { Say ("  " + $text) }
-            } elseif ($line -match '^\[Input\] <Info> \([^)]*\) \S+ (?:\w+: )?(Controller .*)$') {
+            } elseif ($line -match '^\[Input\] <Info> \([^)]*\) \S+ (?:\w+: )?(Controller .*|The controller.s touchpad .*)$') {
                 Say ("  " + $Matches[1])
+            } elseif ($line -match '^\[Input\] <Warning> \([^)]*\) \S+ (?:\w+: )?(Controller .*)$') {
+                Say ("  " + $Matches[1]) "Yellow"
             } elseif ($line -match '^\[Core\] <(Info|Warning)> \([^)]*\) \S+ (?:\w+: )?(Verified title profile .*|Unrecognized or modified CUSA12392 layout:.*|Title patch rejected at .*|The title draws at up to .*|The scene is drawn at .*|Frames are given .*)$') {
+                if ($Matches[1] -eq "Warning") { Say ("  " + $Matches[2]) "Yellow" } else { Say ("  " + $Matches[2]) }
+            } elseif ($line -match '^\[Lib\.AudioIn\] <(Info|Warning)> \([^)]*\) \S+ (?:\w+: )?(Microphone: .*)$') {
                 if ($Matches[1] -eq "Warning") { Say ("  " + $Matches[2]) "Yellow" } else { Say ("  " + $Matches[2]) }
             } elseif ($line -match '<Critical>.*?: (.*)$') {
                 $text = $Matches[1]

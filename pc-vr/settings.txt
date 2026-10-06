@@ -57,6 +57,11 @@
 # 0: the right stick no longer doubles as a finger on the touchpad.
 #stick_touchpad=1
 
+# Makes what the microphone hears that many times louder for the game (0.1 to 30), for when
+# blowing does too little. The launcher's window shows how loud the game hears things, and
+# what it takes for blowing. (Holding the PS button and square blows without a microphone.)
+#mic_gain=1
+
 # 0: the headset's own controllers never stand in for a gamepad. (They only do while no gamepad
 # is connected to the PC.)
 #controllers=1

@@ -23,7 +23,14 @@ namespace Input {
 /// Lines starting with '#' are ignored. Times count from when the script is started.
 void StartScriptedInput(const std::filesystem::path& script);
 
-/// The loudness a running script wants the microphone to hear right now, 0 for none.
+/// The loudness a running script wants the microphone to hear right now, 0 for none. Also
+/// what a title takes for blowing hard while the player holds the buttons that stand for it
+/// (SetBlowing).
 float ScriptedMicrophoneLevel();
+
+/// The player blows without a microphone: with buttons (the PS button and square on a gamepad,
+/// X and Y together on a headset's controllers), for where the microphone is not to be had,
+/// gives too little, or blowing is not what the player wants to do.
+void SetBlowing(bool blowing);
 
 } // namespace Input
