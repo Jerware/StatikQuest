@@ -136,7 +136,7 @@ void PostProcessingPass::Create(const Instance& instance, MasterSemaphore* maste
         .rasterizationSamples = vk::SampleCountFlagBits::e1,
     };
 
-    const std::array attachments{
+    std::array attachments{
         vk::PipelineColorBlendAttachmentState{
             .blendEnable = false,
             .colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
@@ -178,6 +178,15 @@ void PostProcessingPass::Create(const Instance& instance, MasterSemaphore* maste
 
     pipeline = Check<"create post process pipeline">(device.createGraphicsPipelineUnique(
         /*pipeline_cache*/ {}, pipeline_info));
+    attachments[0].blendEnable = true;
+    attachments[0].srcColorBlendFactor = vk::BlendFactor::eSrcAlpha;
+    attachments[0].dstColorBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha;
+    attachments[0].colorBlendOp = vk::BlendOp::eAdd;
+    attachments[0].srcAlphaBlendFactor = vk::BlendFactor::eOne;
+    attachments[0].dstAlphaBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha;
+    attachments[0].alphaBlendOp = vk::BlendOp::eAdd;
+    overlay_pipeline = Check<"create overlay pipeline">(device.createGraphicsPipelineUnique(
+        {}, pipeline_info));
 
     // Once pipeline is compiled, we don't need the shader module anymore
     device.destroyShaderModule(vs_module);
@@ -269,6 +278,12 @@ void PostProcessingPass::Render(vk::CommandBuffer cmdbuf, std::span<const Region
     cmdbuf.beginRendering(rendering_info);
     for (size_t i = 0; i < regions.size(); ++i) {
         const Region& region = regions[i];
+        settings.uv_transform = region.uv_transform;
+        settings.overlay = region.overlay;
+        cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics,
+                            region.overlay ? *overlay_pipeline : *pipeline);
+        cmdbuf.pushConstants(*pipeline_layout, vk::ShaderStageFlagBits::eFragment, 0,
+                             sizeof(Settings), &settings);
         cmdbuf.setViewport(0, vk::Viewport{
                                   .x = static_cast<float>(region.area.offset.x),
                                   .y = static_cast<float>(region.area.offset.y),

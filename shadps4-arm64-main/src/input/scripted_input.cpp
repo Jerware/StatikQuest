@@ -4,6 +4,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <fstream>
 #include <numbers>
 #include <optional>
@@ -219,6 +220,11 @@ void Replay(std::vector<Step> steps, std::filesystem::path live_script) {
     StickFinger stick_finger;
     PadGestures gestures;
     std::filesystem::file_time_type live_stamp{};
+    // Optional local test inbox. Each submitted script is relative to receipt,
+    // allowing desktop reproduction without restarting or global key injection.
+    const char* inbox_env = std::getenv("SHADPS4_INPUT_INBOX");
+    const std::filesystem::path inbox = inbox_env ? inbox_env : "";
+    double next_inbox_check = 0.0;
     while (true) {
         if (!live_script.empty()) {
             std::error_code error;
@@ -232,6 +238,28 @@ void Replay(std::vector<Step> steps, std::filesystem::path live_script) {
         }
         const double now =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
+        if (!inbox.empty() && now >= next_inbox_check) {
+            next_inbox_check = now + 0.5;
+            std::error_code error;
+            if (std::filesystem::exists(inbox, error)) {
+                try {
+                    auto commands = ParseScript(inbox);
+                    if (std::filesystem::remove(inbox, error)) {
+                        for (auto& command : commands) {
+                            command.start += now;
+                            command.end += now;
+                            last_end = std::max(last_end, command.end);
+                            steps.push_back(std::move(command));
+                        }
+                        started.resize(steps.size(), false);
+                        LOG_INFO(Input, "Received {} desktop test input steps", commands.size());
+                    }
+                } catch (const std::exception& exception) {
+                    LOG_ERROR(Input, "Invalid desktop input inbox: {}", exception.what());
+                    std::filesystem::remove(inbox, error);
+                }
+            }
+        }
 
         Buttons buttons{Buttons::None};
         std::array<int, 6> axes{128, 128, 128, 128, 0, 0};
@@ -347,7 +375,7 @@ void Replay(std::vector<Step> steps, std::filesystem::path live_script) {
             previous_axes = axes;
             previous_touch = touch;
         }
-        if (live_script.empty() && now > last_end + 1.0) {
+        if (live_script.empty() && inbox.empty() && now > last_end + 1.0) {
             break;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(5));

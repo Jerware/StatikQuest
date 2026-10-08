@@ -38,6 +38,8 @@ struct BufferResource {
     bool is_written{};
     bool is_formatted{};
     bool used_as_readconst{};
+    // Retain the descriptor for shader specialization, but do not bind eliminated accesses.
+    bool is_unused{};
 
     bool IsSpecial() const noexcept {
         return buffer_type != BufferType::Guest;

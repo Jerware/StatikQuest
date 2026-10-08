@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdlib>
 #include <map>
 #include <ranges>
 #include <magic_enum/magic_enum.hpp>
@@ -22,6 +23,8 @@
 #include "core/file_sys/directories/pfs_directory.h"
 #include "core/file_sys/fs.h"
 #include "core/libraries/kernel/file_system.h"
+#include "core/libraries/kernel/allocation_read_history.h"
+#include "core/libraries/kernel/guest_file_read.h"
 #include "core/libraries/kernel/orbis_error.h"
 #include "core/libraries/kernel/posix_error.h"
 #include "core/libraries/libs.h"
@@ -353,12 +356,53 @@ s64 PS4_SYSV_ABI sceKernelWrite(s32 fd, const void* buf, u64 nbytes) {
 }
 
 s64 ReadFile(Common::FS::IOFile& file, void* buf, u64 nbytes) {
+    static const bool trace_reads = [] {
+        const char* value = std::getenv("SHADPS4_TRACE_FILE_READS");
+        return value && value[0] == '1';
+    }();
     const auto* memory = Core::Memory::Instance();
     // Invalidate up to the actual number of bytes that could be read.
-    const auto remaining = file.GetSize() - file.Tell();
+    const auto file_size = file.GetSize();
+    const auto position = file.Tell();
+    const auto remaining = position < file_size ? file_size - position : 0;
     memory->InvalidateMemory(reinterpret_cast<VAddr>(buf), std::min<u64>(nbytes, remaining));
 
-    return file.ReadRaw<u8>(buf, nbytes);
+    static const bool retain_reads = [] {
+        const char* value = std::getenv("SHADPS4_TRACE_LARGE_ALLOCATIONS");
+        return value && value[0] == '1';
+    }();
+    const auto offset = (trace_reads || retain_reads) ? file.Tell() : 0;
+#ifdef _WIN32
+    // Invalidation alone is insufficient: GPU tracking may protect a page again
+    // before the OS writes into it. Windows I/O returns an error instead of
+    // raising a user-mode fault on such pages. CPU copying from host staging
+    // lets the existing GPU fault handler service the write normally.
+    const auto result = ReadViaHostBuffer(buf, nbytes,
+        [&](void* staging, std::size_t size) { return file.ReadRaw<u8>(staging, size); });
+#else
+    const auto result = file.ReadRaw<u8>(buf, nbytes);
+#endif
+    if (result < std::min<u64>(nbytes, remaining)) {
+        LOG_WARNING(Kernel_Fs, "Unexpected short file read: file={} offset={:#x} requested={:#x} returned={:#x} errno={}",
+                    file.GetPath().string(), position, nbytes, result, errno);
+    }
+    if (retain_reads) {
+        auto& record = allocation_reads.records[allocation_reads.count++ % allocation_reads.records.size()];
+        record.path = file.GetPath().string();
+        record.offset = offset;
+        record.requested = nbytes;
+        record.returned = result;
+        record.buffer = reinterpret_cast<std::uintptr_t>(buf);
+        record.prefix = {};
+        if (result != 0) {
+            std::memcpy(record.prefix.data(), buf, std::min<std::size_t>(result, sizeof(record.prefix)));
+        }
+    }
+    if (trace_reads) {
+        LOG_INFO(Kernel_Fs, "Read trace: file={} offset={:#x} requested={:#x} returned={:#x}",
+                 file.GetPath().string(), offset, nbytes, result);
+    }
+    return result;
 }
 
 s64 PS4_SYSV_ABI readv(s32 fd, const OrbisKernelIovec* iov, s32 iovcnt) {

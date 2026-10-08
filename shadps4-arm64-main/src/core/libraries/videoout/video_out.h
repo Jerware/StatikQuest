@@ -146,6 +146,10 @@ s32 PS4_SYSV_ABI sceVideoOutAdjustColor(s32 handle, const SceVideoOutColorSettin
 /// One stereo frame handed to the headset by the HMD reprojection.
 struct HmdFrame {
     std::array<AmdGpu::Image, 2> eye_textures; ///< Guest texture descriptors, left then right.
+    bool side_by_side{}; ///< Both descriptors refer to one packed stereo image.
+    std::array<AmdGpu::Image, 2> overlay_textures{};
+    std::array<std::array<float, 4>, 2> overlay_uv{};
+    bool has_overlay{};
     Core::Vr::Fov fov;                         ///< Field of view the eyes were rendered with.
     /// Head pose used for rendering: in tracker space as the title hands it in, in the host's
     /// space once the frame is on its way to the display.
@@ -159,6 +163,8 @@ s32 sceVideoOutSubmitEopFlip(s32 handle, u32 buf_id, u32 mode, s64 flip_arg, voi
                              u32 flip_token);
 /// Queues a frame for the headset, the way the reprojection scans one out on real hardware.
 s32 SubmitHmdFrame(s32 handle, const HmdFrame& frame);
+/// Notify a repeated scanout of the latest completed HMD frame (present thread only).
+void ReprojectLatestFrame(s32 handle);
 
 void RegisterLib(Core::Loader::SymbolsResolver* sym);
 

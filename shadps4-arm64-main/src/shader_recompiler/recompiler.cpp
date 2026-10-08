@@ -89,6 +89,7 @@ IR::Program TranslateProgram(const std::span<const u32>& code, Pools& pools, Inf
     Shader::Optimization::DeadCodeEliminationPass(program);
     Shader::Optimization::ConstantPropagationPass(program.post_order_blocks);
     Shader::Optimization::CollectShaderInfoPass(program, profile);
+    Shader::Optimization::MarkUnusedBufferResources(program);
 
     Shader::IR::DumpProgram(program, info);
 

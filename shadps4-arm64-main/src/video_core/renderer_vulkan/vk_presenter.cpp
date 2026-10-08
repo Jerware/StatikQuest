@@ -848,7 +848,9 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
 
 HmdFrames Presenter::PrepareHmdFrame(std::span<const AmdGpu::Image, 2> eye_textures,
                                     const Core::Vr::Fov& fov, u32 frame_id,
-                                    u32& eye_width, u32& eye_height) {
+                                    u32& eye_width, u32& eye_height, bool side_by_side,
+                                    std::span<const AmdGpu::Image> overlays,
+                                    std::span<const std::array<float, 4>> overlay_uv) {
     // The guest hands the eyes over as plain textures; they were rendered as color targets, so
     // the cache already holds their contents.
     std::array<VideoCore::TextureCache::ImageDesc, 2> descs;
@@ -857,6 +859,17 @@ HmdFrames Presenter::PrepareHmdFrame(std::span<const AmdGpu::Image, 2> eye_textu
         descs[eye] = VideoCore::TextureCache::ImageDesc{eye_textures[eye], Shader::ImageResource{}};
         image_ids[eye] = texture_cache.FindImage(descs[eye]);
         texture_cache.UpdateImage(image_ids[eye]);
+    }
+
+    const bool has_overlay = overlays.size() == 2 && overlay_uv.size() == 2;
+    std::array<VideoCore::TextureCache::ImageDesc, 2> overlay_descs;
+    std::array<VideoCore::ImageId, 2> overlay_ids;
+    if (has_overlay) {
+        for (u32 eye = 0; eye < 2; ++eye) {
+            overlay_descs[eye] = VideoCore::TextureCache::ImageDesc{overlays[eye], Shader::ImageResource{}};
+            overlay_ids[eye] = texture_cache.FindImage(overlay_descs[eye]);
+            texture_cache.UpdateImage(overlay_ids[eye]);
+        }
     }
 
     // Diagnostics: creating <UserDir>/dump_render_targets dumps what the guest has rendered so
@@ -892,7 +905,7 @@ HmdFrames Presenter::PrepareHmdFrame(std::span<const AmdGpu::Image, 2> eye_textu
     ++logged_frames;
 
     const auto& left_info = texture_cache.GetImage(image_ids[0]).info;
-    eye_width = left_info.size.width;
+    eye_width = left_info.size.width / (side_by_side ? 2 : 1);
     eye_height = left_info.size.height;
 
     // With a VR host attached the frame goes into one of its buffers instead of the window. A
@@ -961,18 +974,49 @@ HmdFrames Presenter::PrepareHmdFrame(std::span<const AmdGpu::Image, 2> eye_textu
                       {}, cmdbuf);
         eye_views[eye] = *image.FindView(view_info).image_view;
     }
+    std::array<vk::ImageView, 2> overlay_views;
+    if (has_overlay) {
+        for (u32 eye = 0; eye < 2; ++eye) {
+            auto& image = texture_cache.GetImage(overlay_ids[eye]);
+            image.Transit(vk::ImageLayout::eShaderReadOnlyOptimal, vk::AccessFlagBits2::eShaderRead,
+                          {}, cmdbuf);
+            // Unlike the scene, preserve UI alpha for composition.
+            overlay_views[eye] = *image.FindView(overlay_descs[eye].view_info).image_view;
+        }
+    }
+    const auto scene_uv_for = [&](u32 eye) {
+        return side_by_side ? std::array<float, 4>{0.5f, 1.0f, eye * 0.5f, 0.0f}
+                            : std::array<float, 4>{1.0f, 1.0f, 0.0f, 0.0f};
+    };
+    const auto overlay_region = [&](u32 eye,
+                                    const HostPasses::PostProcessingPass::Region& scene) {
+        return HostPasses::PostProcessingPass::Region{
+            .input = overlay_views[eye],
+            .uv_transform = overlay_uv[eye],
+            .area = scene.area,
+            .clip = scene.clip,
+            .overlay = true,
+        };
+    };
     // Left eye on the left half, right eye on the right half.
     const auto regions_for = [&](const Frame& target) {
         const u32 half_width = target.width / 2;
-        std::array<HostPasses::PostProcessingPass::Region, 2> regions;
+        boost::container::static_vector<HostPasses::PostProcessingPass::Region, 4> regions;
+        regions.resize(2);
         for (u32 eye = 0; eye < 2; ++eye) {
             regions[eye] = {
                 .input = eye_views[eye],
+                .uv_transform = scene_uv_for(eye),
                 .area{
                     .offset{.x = static_cast<s32>(eye * half_width), .y = 0},
                     .extent{.width = half_width, .height = target.height},
                 },
             };
+        }
+        if (has_overlay) {
+            for (u32 eye = 0; eye < 2; ++eye) {
+                regions.push_back(overlay_region(eye, regions[eye]));
+            }
         }
         return regions;
     };
@@ -998,6 +1042,7 @@ HmdFrames Presenter::PrepareHmdFrame(std::span<const AmdGpu::Image, 2> eye_textu
                 const auto& region = layout[eye];
                 return HostPasses::PostProcessingPass::Region{
                     .input = eye_views[eye],
+                    .uv_transform = scene_uv_for(eye),
                     .area{
                         .offset{.x = content.offset.x + static_cast<s32>(region.x),
                                 .y = content.offset.y},
@@ -1010,14 +1055,26 @@ HmdFrames Presenter::PrepareHmdFrame(std::span<const AmdGpu::Image, 2> eye_textu
                     },
                 };
             };
-            const std::array regions{region_for(0), region_for(1)};
             const auto count = layout[1].clip_width == 0 ? 1u : 2u;
-            pp_pass.Render(cmdbuf, std::span{regions}.first(count), *frame, hmd_settings);
+            boost::container::static_vector<HostPasses::PostProcessingPass::Region, 4> regions;
+            for (u32 eye = 0; eye < count; ++eye) {
+                regions.push_back(region_for(eye));
+            }
+            if (has_overlay) {
+                for (u32 eye = 0; eye < count; ++eye) {
+                    regions.push_back(overlay_region(eye, regions[eye]));
+                }
+            }
+            pp_pass.Render(cmdbuf, regions, *frame, hmd_settings);
         } else if (spectator) {
-            const std::array regions{
-                HostPasses::PostProcessingPass::Region{
-                    .input = eye_views[0], .area = content, .clip = clip},
-            };
+            boost::container::static_vector<HostPasses::PostProcessingPass::Region, 2> regions;
+            regions.push_back({.input = eye_views[0],
+                               .uv_transform = scene_uv_for(0),
+                               .area = content,
+                               .clip = clip});
+            if (has_overlay) {
+                regions.push_back(overlay_region(0, regions[0]));
+            }
             pp_pass.Render(cmdbuf, regions, *frame, hmd_settings);
         } else {
             pp_pass.Render(cmdbuf, regions_for(*frame), *frame, hmd_settings,

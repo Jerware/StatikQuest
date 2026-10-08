@@ -2,6 +2,27 @@
 > # 🚧 UNDER CONSTRUCTION 🚧
 > This project is under active development and is not yet ready for general use.
 
+# StatikQuest
+
+Statik: Institute of Retention (PS4 / PlayStation VR) on a Windows PC through
+OpenXR, based on [AstroQuest](https://github.com/bigmak94/AstroQuest) and shadPS4.
+Bring your own game and compatible decrypted system module. No game, firmware,
+keys, or proprietary SDK files are included.
+
+The Statik changes from the older development checkout have been ported onto the
+current AstroQuest code. This is a local development build awaiting headset
+validation, not a finished release. Statik support is for Windows PC VR; a native
+Quest build of Statik has not been developed or tested.
+
+See [the Statik setup and build guide](README-STATIK.md) for the launcher, build
+commands, supported game version, and test checklist. After staging a local build,
+run **Play Statik VR.cmd** from this repository.
+
+The original AstroQuest documentation below is retained as upstream reference;
+its Astro Bot instructions and release links are not Statik setup instructions.
+
+---
+
 # AstroQuest
 
 **ASTRO BOT Rescue Mission (PS4 / PlayStation VR) in virtual reality on Meta Quest 3**, played

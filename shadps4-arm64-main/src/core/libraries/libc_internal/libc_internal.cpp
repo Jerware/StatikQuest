@@ -23,6 +23,9 @@ void RegisterLib(Core::Loader::SymbolsResolver* sym) {
     RegisterlibSceLibcInternalMemory(sym);
     RegisterlibSceLibcInternalIo(sym);
     RegisterlibSceLibcInternalThreads(sym);
+    // Native x64 guests also need one-time C++ static initialization. Returning zero from
+    // unresolved guard stubs skips constructors (including NP Toolkit's allocator).
+    RegisterFexLibcCxaAliases(sym);
 }
 
 void ForceRegisterLib(Core::Loader::SymbolsResolver* sym) {

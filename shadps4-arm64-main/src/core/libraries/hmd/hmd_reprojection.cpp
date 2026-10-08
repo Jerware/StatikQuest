@@ -2,12 +2,16 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <chrono>
+#include <cstdlib>
+#include <atomic>
 #include <mutex>
 
 #include "common/logging/log.h"
 #include "core/guest_cpu/guest_watchdog.h"
 #include "core/libraries/error_codes.h"
 #include "core/libraries/hmd/hmd.h"
+#include "core/libraries/hmd/eye_layout.h"
+#include "core/libraries/hmd/overlay_layout.h"
 #include "core/libraries/hmd/hmd_error.h"
 #include "core/libraries/libs.h"
 #include "core/libraries/videoout/video_out.h"
@@ -38,6 +42,7 @@ struct UserEvent {
 struct Reprojection {
     std::mutex mutex;
     bool initialized{};
+    bool running{};
     s32 video_out_handle{-1};
     s32 display_index[2]{-1, -1};
     u32 submitted_frames{};
@@ -63,6 +68,7 @@ Core::Vr::Fov FovFromUv(const OrbisHmdReprojectionEyeUv& left_eye) {
 void OnVblank() {
     UserEvent start_event;
     UserEvent end_event;
+    s32 video_out_handle = -1;
     {
         std::scoped_lock lock{g_reprojection.mutex};
         if (!g_reprojection.initialized) {
@@ -70,8 +76,14 @@ void OnVblank() {
         }
         start_event = g_reprojection.start_event;
         end_event = g_reprojection.end_event;
+        if (g_reprojection.running) {
+            video_out_handle = g_reprojection.video_out_handle;
+        }
     }
     start_event.Trigger();
+    if (video_out_handle >= 0) {
+        Libraries::VideoOut::ReprojectLatestFrame(video_out_handle);
+    }
     end_event.Trigger();
 }
 
@@ -113,6 +125,7 @@ s32 PS4_SYSV_ABI sceHmdReprojectionFinalize() {
     LOG_INFO(Lib_Hmd, "called");
     std::scoped_lock lock{g_reprojection.mutex};
     g_reprojection.initialized = false;
+    g_reprojection.running = false;
     g_reprojection.video_out_handle = -1;
     g_reprojection.start_event = {};
     g_reprojection.end_event = {};
@@ -136,6 +149,7 @@ s32 PS4_SYSV_ABI sceHmdReprojectionInitialize(const OrbisHmdReprojectionResource
              resource->queue_id);
     std::scoped_lock lock{g_reprojection.mutex};
     g_reprojection.initialized = true;
+    g_reprojection.running = false;
     g_reprojection.submitted_frames = 0;
     return ORBIS_OK;
 }
@@ -198,9 +212,10 @@ s32 PS4_SYSV_ABI sceHmdReprojectionSetUserEventStart(Libraries::Kernel::OrbisKer
     return ORBIS_OK;
 }
 
-s32 PS4_SYSV_ABI sceHmdReprojectionStart(const OrbisHmdReprojectionParam* param,
+static s32 SubmitReprojection(const OrbisHmdReprojectionParam* param,
                                          const OrbisHmdReprojectionTrackerState* tracker_state,
-                                         s64 flip_arg, s32 option) {
+                                         s64 flip_arg, s32 option,
+                                         const OrbisHmdReprojectionParam* overlay) {
     if (param == nullptr || tracker_state == nullptr || param->texture[0] == nullptr ||
         param->texture[1] == nullptr) {
         return ORBIS_HMD_ERROR_PARAMETER_NULL;
@@ -210,6 +225,25 @@ s32 PS4_SYSV_ABI sceHmdReprojectionStart(const OrbisHmdReprojectionParam* param,
     std::memcpy(&frame.eye_textures[0], param->texture[0], sizeof(AmdGpu::Image));
     std::memcpy(&frame.eye_textures[1], param->texture[1], sizeof(AmdGpu::Image));
     frame.fov = FovFromUv(param->uv[0]);
+    frame.side_by_side = IsSideBySideEyeAtlas(
+        std::memcmp(&frame.eye_textures[0], &frame.eye_textures[1], sizeof(AmdGpu::Image)) == 0,
+        param->uv[0].scale_x,
+        param->uv[1].scale_x, param->uv[0].offset_x, param->uv[1].offset_x);
+    if (frame.side_by_side) {
+        frame.fov.tan_in = (0.5f - param->uv[0].offset_x) / param->uv[0].scale_x;
+    }
+    if (overlay && overlay->texture[0] && overlay->texture[1]) {
+        frame.has_overlay = true;
+        for (u32 eye = 0; eye < 2; ++eye) {
+            const auto& scene_uv = param->uv[eye];
+            const auto& ui_uv = overlay->uv[eye];
+            frame.has_overlay &= OverlayUvTransform(
+                {scene_uv.scale_x, scene_uv.scale_y, scene_uv.offset_x, scene_uv.offset_y},
+                {ui_uv.scale_x, ui_uv.scale_y, ui_uv.offset_x, ui_uv.offset_y},
+                frame.side_by_side, eye, frame.overlay_uv[eye]);
+            std::memcpy(&frame.overlay_textures[eye], overlay->texture[eye], sizeof(AmdGpu::Image));
+        }
+    }
     frame.render_pose = {
         .position{tracker_state->position[0], tracker_state->position[1],
                   tracker_state->position[2]},
@@ -226,6 +260,7 @@ s32 PS4_SYSV_ABI sceHmdReprojectionStart(const OrbisHmdReprojectionParam* param,
             return ORBIS_HMD_ERROR_NOT_INITIALIZED;
         }
         video_out_handle = g_reprojection.video_out_handle;
+        g_reprojection.running = true;
         frame_number = g_reprojection.submitted_frames++;
         // The reprojection alternates between the two display buffers it was given.
         frame.display_index = g_reprojection.display_index[frame_number & 1];
@@ -245,6 +280,20 @@ s32 PS4_SYSV_ABI sceHmdReprojectionStart(const OrbisHmdReprojectionParam* param,
                  param->uv[0].scale_x, param->uv[0].scale_y, param->uv[0].offset_x,
                  param->uv[0].offset_y, param->uv[1].scale_x, param->uv[1].scale_y,
                  param->uv[1].offset_x, param->uv[1].offset_y);
+    }
+
+    static const bool trace_pose = [] {
+        const char* value = std::getenv("SHADPS4_TRACE_HMD_POSE");
+        return value && value[0] == '1';
+    }();
+    if (trace_pose && frame_number % 120 == 0) {
+        const auto& p = frame.render_pose;
+        LOG_INFO(Lib_Hmd,
+                 "Render pose: frame={} position={}/{}/{} orientation={}/{}/{}/{} timestamp={} "
+                 "atlas={} flags={:#x} option={}",
+                 frame_number, p.position.x, p.position.y, p.position.z,
+                 p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w,
+                 tracker_state->timestamp, frame.side_by_side, param->flags, option);
     }
 
     Core::GuestCpu::NoteGuestProgress();
@@ -303,13 +352,48 @@ s32 PS4_SYSV_ABI sceHmdReprojectionStartWideNearWithOverlay() {
     return ORBIS_OK;
 }
 
-s32 PS4_SYSV_ABI sceHmdReprojectionStartWithOverlay() {
-    LOG_ERROR(Lib_Hmd, "(STUBBED) called");
-    return ORBIS_OK;
+s32 PS4_SYSV_ABI sceHmdReprojectionStart(const OrbisHmdReprojectionParam* param,
+    const OrbisHmdReprojectionTrackerState* tracker_state, s64 flip_arg, s32 option) {
+    return SubmitReprojection(param, tracker_state, flip_arg, option, nullptr);
+}
+
+s32 PS4_SYSV_ABI sceHmdReprojectionStartWithOverlay(
+    const OrbisHmdReprojectionParam* param,
+    const OrbisHmdReprojectionTrackerState* tracker_state, s64 flip_arg,
+    const OrbisHmdReprojectionParam* overlay, s32 option) {
+    // Statik's call at eboot+0x33e56 passes scene, tracker, flip, overlay, option.
+    // Copy both layers into the queued frame; guest parameter pointers are transient.
+    static std::atomic<u32> calls{};
+    if (calls.fetch_add(1, std::memory_order_relaxed) < 4) {
+        LOG_WARNING(Lib_Hmd, "Overlay frame {}: submitting scene and per-eye UI layers",
+                    flip_arg);
+        for (u32 eye = 0; eye < 2; ++eye) {
+            if (param && param->texture[eye]) {
+                AmdGpu::Image image{};
+                std::memcpy(&image, param->texture[eye], sizeof(image));
+                const auto& uv = param->uv[eye];
+                LOG_INFO(Lib_Hmd, "Scene eye {}: {}x{} address={:#x} uv={}/{}/{}/{}", eye,
+                         u32(image.width) + 1, u32(image.height) + 1, image.Address(),
+                         uv.scale_x, uv.scale_y, uv.offset_x, uv.offset_y);
+            }
+            if (overlay && overlay->texture[eye]) {
+                AmdGpu::Image image{};
+                std::memcpy(&image, overlay->texture[eye], sizeof(image));
+                const auto& uv = overlay->uv[eye];
+                LOG_INFO(Lib_Hmd, "Overlay eye {}: {}x{} address={:#x} uv={}/{}/{}/{}", eye,
+                         u32(image.width) + 1, u32(image.height) + 1, image.Address(),
+                         uv.scale_x, uv.scale_y, uv.offset_x, uv.offset_y);
+            }
+        }
+    }
+
+    return SubmitReprojection(param, tracker_state, flip_arg, option, overlay);
 }
 
 s32 PS4_SYSV_ABI sceHmdReprojectionStop() {
     LOG_INFO(Lib_Hmd, "called");
+    std::scoped_lock lock{g_reprojection.mutex};
+    g_reprojection.running = false;
     return ORBIS_OK;
 }
 

@@ -245,6 +245,22 @@ void BufferCache::BindVertexBuffers(const Vulkan::GraphicsPipeline& pipeline) {
 
     // Map buffers for merged ranges
     for (auto& range : ranges_merged) {
+        if (range.base_address < 0x10000 && range.GetSize() >= (1ULL << 30)) {
+            LOG_CRITICAL(Render_Vulkan, "Invalid vertex buffer capture: merged address={:#x} size={:#x}",
+                         range.base_address, range.GetSize());
+            const auto& hashes = pipeline.GetGraphicsKey().stage_hashes;
+            for (size_t i = 0; i < hashes.size(); ++i) {
+                LOG_CRITICAL(Render_Vulkan, "Vertex pipeline stage [{}] hash={:#x}", i, hashes[i]);
+            }
+            for (size_t i = 0; i < guest_buffers.size(); ++i) {
+                const auto& buffer = guest_buffers[i];
+                std::array<u32, 4> raw{};
+                std::memcpy(raw.data(), &buffer, sizeof(buffer));
+                LOG_CRITICAL(Render_Vulkan,
+                    "Vertex buffer [{}] address={:#x} size={:#x} raw={:08x}/{:08x}/{:08x}/{:08x}",
+                    i, u64(buffer.base_address), buffer.GetSize(), raw[0], raw[1], raw[2], raw[3]);
+            }
+        }
         const u64 size = memory->ClampRangeSize(range.base_address, range.GetSize());
         const auto [buffer, offset] = ObtainBuffer(range.base_address, size, false);
         range.vk_buffer = buffer->buffer;

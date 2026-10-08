@@ -117,7 +117,9 @@ public:
     /// and stamps it with `frame_id` so the host can match it to a head pose.
     HmdFrames PrepareHmdFrame(std::span<const AmdGpu::Image, 2> eye_textures,
                               const Core::Vr::Fov& fov, u32 frame_id,
-                              u32& eye_width, u32& eye_height);
+                              u32& eye_width, u32& eye_height, bool side_by_side = false,
+                              std::span<const AmdGpu::Image> overlays = {},
+                              std::span<const std::array<float, 4>> overlay_uv = {});
 
     /// Hands a frame made by PrepareHmdFrame to the VR host. Returns false for a frame that is
     /// not one of the host's, which has to be presented as usual.

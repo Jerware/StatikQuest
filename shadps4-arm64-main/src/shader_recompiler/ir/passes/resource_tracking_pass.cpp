@@ -1222,6 +1222,29 @@ void PatchImageArgs(IR::Block& block, IR::Inst& inst, Info& info) {
     }
 }
 
+void MarkUnusedBufferResources(IR::Program& program) {
+    auto& buffers = program.info.buffers;
+    for (auto& buffer : buffers) {
+        // Special resources can be referenced implicitly by the backend.
+        buffer.is_unused = !buffer.IsSpecial();
+    }
+    for (const auto* block : program.blocks) {
+        for (const auto& inst : block->Instructions()) {
+            if (IsBufferInstruction(inst)) {
+                const u32 binding = inst.Arg(0).U32();
+                ASSERT(binding < buffers.size());
+                buffers[binding].is_unused = false;
+            }
+        }
+    }
+    for (const auto& buffer : buffers) {
+        if (buffer.is_unused) {
+            LOG_DEBUG(Render_Recompiler, "Eliminated buffer binding: shader={:#x} sharp={}",
+                      program.info.pgm_hash, buffer.sharp_idx);
+        }
+    }
+}
+
 void ResourceTrackingPass(IR::Program& program, const Profile& profile) {
     // Iterate resource instructions and patch them after finding the sharp.
     auto& info = program.info;

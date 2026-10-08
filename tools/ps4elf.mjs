@@ -75,15 +75,17 @@ export function loadElf(path) {
   return { file, elfOff, header: eh.subarray(0, headerLen), phdrs, isSelf: !!selfSegments };
 }
 
-export function unwrap(elf) {
+export function unwrap(elf, preservePs4Header = false) {
   let size = elf.header.length;
   for (const ph of elf.phdrs) if (ph.data) size = Math.max(size, ph.offset + ph.filesz);
   const out = Buffer.alloc(size);
   elf.header.copy(out, 0);
   for (const ph of elf.phdrs) if (ph.data) ph.data.copy(out, ph.offset);
-  // Present it as a normal shared object so stock binutils-style tools accept it.
-  out.writeUInt16LE(3, 0x10); // e_type = ET_DYN
-  out.writeUInt8(0, 7); // EI_OSABI = SYSV (was FreeBSD)
+  // Stock binutils wants ET_DYN/SYSV; shadPS4 instead validates the original SCE type/FreeBSD ABI.
+  if (!preservePs4Header) {
+    out.writeUInt16LE(3, 0x10); // e_type = ET_DYN
+    out.writeUInt8(0, 7); // EI_OSABI = SYSV (was FreeBSD)
+  }
   out.writeBigUInt64LE(0n, 0x28); // e_shoff
   out.writeUInt16LE(0, 0x3c); // e_shnum
   out.writeUInt16LE(0, 0x3e); // e_shstrndx
@@ -173,9 +175,9 @@ export function callers(elf, regex) {
 
 const hex = (n) => "0x" + n.toString(16);
 const [cmd, path, a, b] = process.argv.slice(2);
-if (cmd === "unwrap") {
+if (cmd === "unwrap" || cmd === "unwrap-ps4") {
   const elf = loadElf(path);
-  writeFileSync(a, unwrap(elf));
+  writeFileSync(a, unwrap(elf, cmd === "unwrap-ps4"));
   for (const ph of elf.phdrs) {
     console.log(`phdr ${ph.index} type=${hex(ph.type)} flags=${ph.flags} vaddr=${hex(ph.vaddr)} filesz=${hex(ph.filesz)} memsz=${hex(ph.memsz)} off=${hex(ph.offset)}`);
   }

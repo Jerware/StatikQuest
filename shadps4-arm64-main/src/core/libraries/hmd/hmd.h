@@ -146,7 +146,12 @@ s32 PS4_SYSV_ABI sceHmdReprojectionStartLiveCapture();
 s32 PS4_SYSV_ABI sceHmdReprojectionStartMultilayer2();
 s32 PS4_SYSV_ABI sceHmdReprojectionStartWideNear();
 s32 PS4_SYSV_ABI sceHmdReprojectionStartWideNearWithOverlay();
-s32 PS4_SYSV_ABI sceHmdReprojectionStartWithOverlay();
+// The overlay begins with the same texture/sampler/UV prefix as the scene parameter.
+// Remaining overlay fields are not yet interpreted.
+s32 PS4_SYSV_ABI sceHmdReprojectionStartWithOverlay(
+    const OrbisHmdReprojectionParam* param,
+    const OrbisHmdReprojectionTrackerState* tracker_state, s64 flip_arg,
+    const OrbisHmdReprojectionParam* overlay, s32 option);
 s32 PS4_SYSV_ABI sceHmdReprojectionStop();
 s32 PS4_SYSV_ABI sceHmdReprojectionStopCapture();
 s32 PS4_SYSV_ABI sceHmdReprojectionStopLiveCapture();

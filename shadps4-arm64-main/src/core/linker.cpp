@@ -27,6 +27,7 @@
 #include "core/libraries/sysmodule/sysmodule.h"
 #include "core/linker.h"
 #include "core/memory.h"
+#include "core/signals.h"
 #include "core/tls.h"
 #include "ipc/ipc.h"
 
@@ -582,6 +583,9 @@ void Linker::Execute(const std::vector<std::string>& args) {
         }
 
         // Run the game's entry function
+        if (id == "CUSA06929") {
+            InstallStatikFileProbes(module->GetBaseAddress());
+        }
         params.entry_addr = module->GetEntryAddress();
         RunMainEntry(&params);
     });

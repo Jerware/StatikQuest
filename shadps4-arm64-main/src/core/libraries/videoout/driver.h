@@ -6,6 +6,7 @@
 #include "common/debug.h"
 #include "common/polyfill_thread.h"
 #include "core/libraries/videoout/flip_label_tracker.h"
+#include "core/libraries/videoout/reprojection_flip.h"
 #include "core/libraries/videoout/video_out.h"
 
 #include <chrono>
@@ -37,6 +38,7 @@ struct VideoOutPort {
     int prev_index = -1;
     bool is_open = false;
     bool is_hdr = false;
+    ReprojectionFlip reprojection_flip;
     FlipLabelTracker flip_labels;
 
     s32 LabelIndex(const u64* address) const {
@@ -103,6 +105,7 @@ public:
     bool SubmitFlip(VideoOutPort* port, s32 index, s64 flip_arg, bool is_eop = false,
                     u64 lock_generation = FlipLabelTracker::kInvalidGeneration);
     bool SubmitHmdFrame(VideoOutPort* port, const HmdFrame& hmd_frame);
+    void ReprojectLatestFrame(VideoOutPort* port);
 
 private:
     struct Request {
@@ -128,7 +131,9 @@ private:
     };
 
     void Flip(const Request& req);
-    void FinishFlip(VideoOutPort* port, s32 index, s64 flip_arg, bool is_eop, u64 lock_generation);
+    void FinishFlip(VideoOutPort* port, s32 index, s64 flip_arg, bool is_eop, u64 lock_generation,
+                    bool is_hmd);
+    void SignalFlipEvents(VideoOutPort* port, s64 flip_arg);
     void SignalVblank(VideoOutPort& port);
     void DrawBlankFrame(); // Video port out not open
     void DrawLastFrame();  // Used when there is no flip request

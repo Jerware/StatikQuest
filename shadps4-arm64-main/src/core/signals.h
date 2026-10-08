@@ -15,6 +15,9 @@
 #endif
 namespace Core {
 
+// Opt-in, byte-validated one-shot diagnostics for the Statik 1.00 file reader.
+void InstallStatikFileProbes(u64 base);
+
 using AccessViolationHandler = bool (*)(void* context, void* fault_address);
 using IllegalInstructionHandler = bool (*)(void* context);
 

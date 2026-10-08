@@ -101,6 +101,7 @@ void VideoOutDriver::Close(s32 handle) {
     port->is_open = false;
     port->flip_rate = 0;
     port->prev_index = -1;
+    port->reprojection_flip.Reset();
     port->flip_labels.ResetAll();
 
     // Clear port information
@@ -311,7 +312,7 @@ void VideoOutDriver::Flip(const Request& req) {
             note_flip();
             // (Frames that are put on a window are counted where that is done.)
             FrameStats::EndFrame();
-            FinishFlip(req.port, req.index, req.flip_arg, req.eop, req.lock_generation);
+            FinishFlip(req.port, req.index, req.flip_arg, req.eop, req.lock_generation, req.is_hmd);
             return;
         }
     }
@@ -325,11 +326,11 @@ void VideoOutDriver::Flip(const Request& req) {
                  req.index, req.flip_arg);
     }
 
-    FinishFlip(req.port, req.index, req.flip_arg, req.eop, req.lock_generation);
+    FinishFlip(req.port, req.index, req.flip_arg, req.eop, req.lock_generation, req.is_hmd);
 }
 
 void VideoOutDriver::FinishFlip(VideoOutPort* port, s32 index, s64 flip_arg, bool is_eop,
-                                u64 lock_generation) {
+                                u64 lock_generation, bool is_hmd) {
     // Update flip status.
     {
         std::unique_lock lock{port->port_mutex};
@@ -339,23 +340,14 @@ void VideoOutDriver::FinishFlip(VideoOutPort* port, s32 index, s64 flip_arg, boo
         flip_status.tsc = Libraries::Kernel::sceKernelReadTsc();
         flip_status.flip_arg = flip_arg;
         flip_status.current_buffer = index;
+        port->reprojection_flip.Presented(is_hmd);
         if (is_eop) {
             --flip_status.gc_queue_num;
         }
         --flip_status.flip_pending_num;
     }
 
-    // Trigger flip events for the port.
-    for (auto event : port->flip_events) {
-        auto equeue = Kernel::GetEqueue(event);
-        if (equeue != nullptr) {
-            equeue->TriggerEvent(
-                static_cast<u64>(OrbisVideoOutInternalEventId::Flip),
-                Kernel::OrbisKernelEvent::Filter::VideoOut,
-                reinterpret_cast<void*>(static_cast<u64>(OrbisVideoOutInternalEventId::Flip) |
-                                        (flip_arg << 16)));
-        }
-    }
+    SignalFlipEvents(port, flip_arg);
 
     // Reset prev flip label
     if (port->prev_index != -1) {
@@ -372,6 +364,44 @@ void VideoOutDriver::FinishFlip(VideoOutPort* port, s32 index, s64 flip_arg, boo
         std::scoped_lock lock{port->port_mutex};
         port->flip_labels.ScheduleRetirement(index, lock_generation,
                                              port->vblank_status.count + 1);
+    }
+}
+
+void VideoOutDriver::SignalFlipEvents(VideoOutPort* port, s64 flip_arg) {
+    for (auto event : port->flip_events) {
+        if (auto* equeue = Kernel::GetEqueue(event)) {
+            equeue->TriggerEvent(
+                static_cast<u64>(OrbisVideoOutInternalEventId::Flip),
+                Kernel::OrbisKernelEvent::Filter::VideoOut,
+                reinterpret_cast<void*>(static_cast<u64>(OrbisVideoOutInternalEventId::Flip) |
+                                        (static_cast<u64>(flip_arg) << 16)));
+        }
+    }
+}
+
+void VideoOutDriver::ReprojectLatestFrame(VideoOutPort* port) {
+    s64 flip_arg;
+    {
+        std::scoped_lock lock{port->port_mutex};
+        // A newly presented frame already signalled this refresh. Only repeat a completed
+        // HMD frame; never signal a queued frame before the GPU has finished it.
+        const bool repeat = port->is_open && port->reprojection_flip.Refresh();
+        if (!repeat) {
+            return;
+        }
+        auto& status = port->flip_status;
+        ++status.count;
+        status.process_time = Kernel::sceKernelGetProcessTime();
+        status.tsc = Kernel::sceKernelReadTsc();
+        flip_arg = status.flip_arg;
+    }
+    // Reprojection scans the previous image out again without consuming a queued flip or
+    // retiring a buffer. WipEout's tracker waits for these intervening display events.
+    SignalFlipEvents(port, flip_arg);
+    static u32 traces = 0;
+    if (traces < 4) {
+        ++traces;
+        LOG_INFO(Lib_VideoOut, "Repeated HMD display refresh: flip_arg = {}", flip_arg);
     }
 }
 
@@ -413,7 +443,7 @@ bool VideoOutDriver::SubmitFlip(VideoOutPort* port, s32 index, s64 flip_arg,
     if (port == &social_port) {
         // Nothing displays the TV image while the headset is in use, so the flip only has to
         // complete from the guest's point of view.
-        FinishFlip(port, index, flip_arg, is_eop, lock_generation);
+        FinishFlip(port, index, flip_arg, is_eop, lock_generation, false);
         return true;
     }
 
@@ -517,7 +547,9 @@ void VideoOutDriver::SubmitHmdFrameInternal(VideoOutPort* port, const HmdFrame& 
     u32 eye_height = 0;
     const Vulkan::HmdFrames frames =
         presenter->PrepareHmdFrame(hmd_frame.eye_textures, hmd_frame.fov, frame_id, eye_width,
-                                   eye_height);
+                                   eye_height, hmd_frame.side_by_side,
+                                   hmd_frame.has_overlay ? std::span<const AmdGpu::Image>{hmd_frame.overlay_textures} : std::span<const AmdGpu::Image>{},
+                                   hmd_frame.overlay_uv);
     if (!frames) {
         // Same as regular flips: retry once the current graphics task yields.
         liverpool->EnqueueCommand([=, this] {

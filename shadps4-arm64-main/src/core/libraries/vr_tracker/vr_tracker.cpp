@@ -13,6 +13,7 @@
 #include "core/libraries/kernel/time.h"
 #include "core/libraries/libs.h"
 #include "core/libraries/vr_tracker/vr_tracker.h"
+#include "core/libraries/vr_tracker/tracker_init_legacy.h"
 #include "core/known_title.h"
 #include "core/libraries/vr_tracker/vr_tracker_error.h"
 #include "core/memory.h"
@@ -147,6 +148,17 @@ s32 PS4_SYSV_ABI sceVrTrackerQueryMemory(const OrbisVrTrackerQueryMemoryParam* p
 }
 
 s32 PS4_SYSV_ABI sceVrTrackerInit(const OrbisVrTrackerInitParam* param) {
+    if (param == nullptr) {
+        return ORBIS_VR_TRACKER_ERROR_ARGUMENT_INVALID;
+    }
+    OrbisVrTrackerInitParam normalized{};
+    if (param->size == sizeof(LegacyTrackerInit)) {
+        LegacyTrackerInit legacy{};
+        std::memcpy(&legacy, param, sizeof(legacy));
+        normalized = NormalizeLegacyTrackerInit<OrbisVrTrackerInitParam>(legacy);
+        param = &normalized;
+        LOG_INFO(Lib_VrTracker, "Using 0x90-byte tracker initialization layout");
+    }
     if (g_library_initialized) {
         return ORBIS_VR_TRACKER_ERROR_ALREADY_INITIALIZED;
     }

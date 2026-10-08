@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "common/debug.h"
+#include "common/path_util.h"
+#include "video_core/renderer_vulkan/gpu_failure_capture.h"
+#include "video_core/renderer_vulkan/unbound_buffer.h"
+#include "video_core/renderer_vulkan/clear_rect.h"
 #include "core/emulator_settings.h"
 #include "core/memory.h"
 #include "shader_recompiler/runtime_info.h"
@@ -16,6 +20,11 @@
 
 #include <array>
 #include <bit>
+#include <chrono>
+#include <fstream>
+#ifdef _WIN32
+#include "core/one_shot_probe.h"
+#endif
 
 #include <vk_mem_alloc.h>
 #include "video_core/texture_cache/image_view.h"
@@ -258,6 +267,8 @@ void Rasterizer::EliminateFastClear() {
 }
 
 void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
+    capture_draw_indexed = is_indexed;
+    capture_index_offset = index_offset;
     RENDERER_TRACE;
 
     scheduler.PopPendingOperations();
@@ -286,7 +297,7 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
     }
     // SHADPS4_DBG_SKIP_PS=<hash>[,<hash>...]: draws whose pixel shader is one of these are left
     // out, to see in the picture what they draw.
-    static const std::vector<u64> skip_ps = [] {
+    static std::vector<u64> skip_ps = [] {
         std::vector<u64> hashes;
         if (const char* value = std::getenv("SHADPS4_DBG_SKIP_PS"); value != nullptr) {
             for (const char* at = value; *at != '\0';) {
@@ -300,6 +311,18 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
         }
         return hashes;
     }();
+    // Opt-in live diagnostic only: whitespace-separated hexadecimal program hashes.
+    // Empty/missing file restores every draw. Normal launches never poll a file.
+    static const char* skip_file = std::getenv("SHADPS4_DBG_SKIP_PS_FILE");
+    static auto next_skip_check = std::chrono::steady_clock::time_point{};
+    if (skip_file && std::chrono::steady_clock::now() >= next_skip_check) {
+        next_skip_check = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+        std::ifstream input{skip_file};
+        std::vector<u64> hashes;
+        u64 hash{};
+        while (input >> std::hex >> hash) hashes.push_back(hash);
+        skip_ps = std::move(hashes);
+    }
     if (!skip_ps.empty() && pipeline != nullptr &&
         pipeline->GetStages()[static_cast<u32>(Shader::LogicalStage::Fragment)] != nullptr &&
         std::ranges::find(skip_ps,
@@ -328,8 +351,11 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
                  static_cast<bool>(regs.depth_control.depth_write_enable),
                  static_cast<u32>(regs.depth_control.depth_func), key.num_samples,
                  key.depth_samples, vp.xscale, vp.yscale, vp.zscale, vp.xoffset, vp.yoffset,
-                 vp.zoffset, key.stage_hashes[static_cast<u32>(Shader::LogicalStage::Vertex)],
-                 key.stage_hashes[static_cast<u32>(Shader::LogicalStage::Fragment)],
+                 vp.zoffset,
+                 pipeline && pipeline->GetStages()[static_cast<u32>(Shader::LogicalStage::Vertex)]
+                     ? pipeline->GetStage(Shader::LogicalStage::Vertex).pgm_hash : 0,
+                 pipeline && pipeline->GetStages()[static_cast<u32>(Shader::LogicalStage::Fragment)]
+                     ? pipeline->GetStage(Shader::LogicalStage::Fragment).pgm_hash : 0,
                  static_cast<bool>(regs.depth_control.stencil_enable),
                  static_cast<u32>(regs.depth_control.stencil_ref_func),
                  static_cast<u32>(regs.stencil_ref_front.stencil_test_val),
@@ -353,7 +379,14 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
         }
         return;
     }
-    const auto state = BeginRendering(pipeline);
+    auto state = BeginRendering(pipeline);
+    // Rect-list fast stencil clears are draw-sized, not whole-attachment clears.
+    // In packed stereo a full loadOp clear after the left eye destroys the right
+    // eye's existing stencil (including the receives-decals bit).
+    const bool rect_stencil_clear = state.depth_stencil_attachment.stencil_clear &&
+        regs.primitive_type == AmdGpu::PrimitiveType::RectList && regs.num_indices == 3 &&
+        !regs.color_target_mask.raw && !state.depth_stencil_attachment.depth_clear;
+    if (rect_stencil_clear) state.depth_stencil_attachment.stencil_clear = false;
 
     buffer_cache.BindVertexBuffers(*pipeline);
     if (is_indexed) {
@@ -363,6 +396,26 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
     pipeline->BindResources(set_writes, buffer_barriers, push_data);
     UpdateDynamicState(pipeline, is_indexed);
     scheduler.BeginRendering(state);
+    if (rect_stencil_clear) {
+        const auto& dynamic = scheduler.GetDynamicState();
+        if (!dynamic.viewports.empty() && !dynamic.scissors.empty()) {
+            const auto& vp = dynamic.viewports.front();
+            const auto& sc = dynamic.scissors.front();
+            const auto bounds = ViewportClearBounds(vp.x, vp.y, vp.width, vp.height,
+                sc.offset.x, sc.offset.y, sc.extent.width, sc.extent.height,
+                state.width, state.height);
+            if (bounds.width && bounds.height) {
+                const vk::ClearAttachment clear{
+                    .aspectMask = vk::ImageAspectFlagBits::eStencil,
+                    .clearValue = vk::ClearValue{.depthStencil = vk::ClearDepthStencilValue{
+                        .stencil = state.depth_stencil_attachment.clear_value[1]}}};
+                const vk::ClearRect rect{
+                    .rect = {{bounds.x, bounds.y}, {bounds.width, bounds.height}},
+                    .baseArrayLayer = 0, .layerCount = state.num_layers};
+                scheduler.CommandBuffer().clearAttachments(clear, rect);
+            }
+        }
+    }
     scheduler.NoteDraw();
     FrameStats::Draw();
 
@@ -674,6 +727,159 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
 
     bool uses_dma = false;
 
+    // Opt-in bounded captures of both draw variants for the shaders seen with
+    // missing resources. Keep originals intact; this does not change rendering.
+    static const bool capture_enabled = [] {
+        const char* value = std::getenv("SHADPS4_CAPTURE_GPU_FAILURE");
+        return value && value[0] == '1';
+    }();
+    static constexpr std::array<u64, 5> capture_shaders{
+        0x39fe19fe189782d4ULL, 0x3c1accb0a9693738ULL,
+        0xe084507d9afa911eULL, 0x3d0d30fb9afa911eULL, 0xacdf65155b300cb7ULL};
+    static std::array<u32, 5> capture_counts{};
+    static std::array<std::array<u64, 2>, 5> capture_keys{};
+    static std::array<bool, 2> ring_eye_captured{};
+    for (const auto* candidate : pipeline->GetStages()) {
+        if (!capture_enabled || !candidate || pipeline->IsCompute()) continue;
+        const auto found = std::find(capture_shaders.begin(), capture_shaders.end(), candidate->pgm_hash);
+        if (found == capture_shaders.end()) continue;
+        const size_t slot = found - capture_shaders.begin();
+        if (capture_counts[slot] >= 2) continue;
+        const bool is_ring = candidate->pgm_hash == 0xacdf65155b300cb7ULL;
+        const size_t ring_eye = liverpool->regs.viewports[0].xoffset > 1400.f ? 1 : 0;
+        if (is_ring && ring_eye_captured[ring_eye]) continue;
+        const auto* capture_pipeline = static_cast<const GraphicsPipeline*>(pipeline);
+        const auto& capture_vertex = capture_pipeline->GetStage(Shader::LogicalStage::Vertex);
+        const auto [capture_vertex_offset, capture_instance_offset] =
+            GetDrawOffsets(liverpool->regs, capture_vertex, capture_pipeline->GetFetchShader());
+        // Different eye/instance layouts or resource tables deserve separate snapshots.
+        const u64 capture_key = XXH3_64bits(candidate->flattened_ud_buf.data(),
+            candidate->flattened_ud_buf.size() * sizeof(u32)) ^ capture_vertex.pgm_hash ^
+            (u64(capture_instance_offset) << 32) ^ liverpool->regs.num_instances.NumInstances();
+        if (!is_ring && capture_counts[slot] && capture_keys[slot][0] == capture_key) {
+            continue;
+        }
+        if (is_ring) ring_eye_captured[ring_eye] = true;
+        capture_keys[slot][capture_counts[slot]++] = capture_key;
+        for (const auto* sibling : pipeline->GetStages()) {
+            if (sibling) {
+                LOG_CRITICAL(Render_Vulkan, "GPU draw context: stage={} hash={:#x} program={:#x}",
+                             static_cast<u32>(sibling->stage), sibling->pgm_hash, sibling->pgm_base);
+                for (size_t i = 0; i < sibling->user_data.size(); ++i) {
+                    LOG_CRITICAL(Render_Vulkan, "GPU draw stage={} userdata[{}]={:#x}",
+                                 static_cast<u32>(sibling->stage), i, sibling->user_data[i]);
+                }
+            }
+        }
+#ifdef _WIN32
+        // Saved IR traces this descriptor to s[10:11], dwords 20..23.
+        GpuFailureCapture capture{Common::FS::GetUserPath(Common::FS::PathType::LogDir), 16 * 1024 * 1024};
+        capture.Note(fmt::format("stereo investigation shader={:#x} variant={} base_vertex={} base_instance={}",
+            candidate->pgm_hash, capture_counts[slot], capture_vertex_offset, capture_instance_offset));
+        LOG_CRITICAL(Render_Vulkan, "GPU failure snapshot: {}", capture.directory.string());
+        const auto& draw_regs = liverpool->regs;
+        capture.Note(fmt::format("draw indexed={} index_offset={} vertex_offset={} count={} instances={}",
+            capture_draw_indexed, capture_index_offset, draw_regs.index_offset,
+            draw_regs.num_indices, draw_regs.num_instances.NumInstances()));
+        capture.Save("gpu_registers", &draw_regs, sizeof(draw_regs));
+        const u32 index_size = draw_regs.index_buffer_type.index_type == AmdGpu::IndexType::Index16 ? 2 : 4;
+        if (capture_draw_indexed) {
+            capture.Save("indices", reinterpret_cast<const void*>(draw_regs.index_base_address.Address<VAddr>() +
+                u64(capture_index_offset) * index_size), u64(draw_regs.num_indices) * index_size);
+        }
+        for (const auto* stage : pipeline->GetStages()) {
+            if (!stage) continue;
+            const auto label = fmt::format("stage_{}_{:016x}", u32(stage->stage), stage->pgm_hash);
+            capture.Note(label + " program=" + std::to_string(stage->pgm_base));
+            capture.Save(label + "_code_window", reinterpret_cast<const void*>(stage->pgm_base), 256 * 1024);
+            capture.Save(label + "_userdata", stage->user_data.data(), stage->user_data.size_bytes());
+            capture.Save(label + "_flattened", stage->flattened_ud_buf.data(), stage->flattened_ud_buf.size() * 4);
+            // Capture possible direct SRT roots; non-pointers are skipped by their address range.
+            for (size_t i = 0; i + 1 < stage->user_data.size(); i += 2) {
+                const u64 pointer = (u64(stage->user_data[i]) | (u64(stage->user_data[i+1]) << 32)) & 0xFFFFFFFFFFFFULL;
+                if (pointer >= 0x10000 && pointer < 0x10000000000ULL)
+                    capture.Save(label + "_root_" + std::to_string(i), reinterpret_cast<const void*>(pointer), 16 * 1024);
+            }
+            for (size_t i = 0; i < stage->buffers.size(); ++i) {
+                const auto& desc = stage->buffers[i];
+                capture.Note(fmt::format("{} buffer={} sharp={} special={} unused={} readconst={} written={}",
+                    label, i, desc.sharp_idx, desc.IsSpecial(), desc.is_unused, desc.used_as_readconst, desc.is_written));
+                if (desc.IsSpecial()) continue;
+                const auto sharp = desc.GetSharp(*stage);
+                const auto name = label + "_buffer_" + std::to_string(i);
+                capture.Save(name + "_descriptor", &sharp, sizeof(sharp));
+                if (sharp.base_address >= 0x10000 && sharp.GetSize())
+                    capture.Save(name, reinterpret_cast<const void*>(u64(sharp.base_address)), sharp.GetSize());
+            }
+            for (size_t i = 0; i < stage->images.size(); ++i) {
+                const auto sharp = stage->images[i].GetSharp(*stage);
+                capture.Save(label + "_image_" + std::to_string(i) + "_descriptor", &sharp, sizeof(sharp));
+            }
+        }
+        // Preserve fetch descriptors and bounded input records for offline analysis.
+        // PS Param3 maps to VS output Param4 in the first captured shader; its low
+        // bit comes from InstanceId, not from vertex input semantic 4.
+        if (!pipeline->IsCompute()) {
+            const auto* graphics = static_cast<const GraphicsPipeline*>(pipeline);
+            capture.Save("pipeline_key", &graphics->GetGraphicsKey(), sizeof(GraphicsPipelineKey));
+            const auto& fetch = graphics->GetFetchShader();
+            if (fetch) {
+                const auto& vertex = graphics->GetStage(Shader::LogicalStage::Vertex);
+                for (const auto& attribute : fetch->attributes) {
+                    capture.Note(fmt::format("fetch semantic={} sgpr={} dword={} instance={} offset={} components={} format={}/{}",
+                        attribute.semantic, attribute.sgpr_base, attribute.dword_offset, attribute.instance_data,
+                        attribute.inst_offset, attribute.num_elements, attribute.data_format, attribute.num_format));
+                    if (attribute.sgpr_base + 1 >= vertex.user_data.size()) continue;
+                    const u64 table_address = (u64(vertex.user_data[attribute.sgpr_base]) |
+                        (u64(vertex.user_data[attribute.sgpr_base + 1]) << 32)) & 0xFFFFFFFFFFFFULL;
+                    AmdGpu::Buffer input{};
+                    if (!Core::ReadProbeMemory(table_address + attribute.dword_offset * 4,
+                                               &input, sizeof(input))) continue;
+                    const auto input_name = "vertex_" + std::to_string(attribute.semantic);
+                    capture.Save(input_name + "_descriptor", &input, sizeof(input));
+                    capture.Save(input_name, reinterpret_cast<const void*>(u64(input.base_address)), input.GetSize());
+                    if (attribute.semantic != 4) continue;
+                    const auto raw = std::bit_cast<std::array<u32, 4>>(input);
+                    LOG_CRITICAL(Render_Vulkan,
+                        "GPU branch input: semantic={} instance={} offset={} format_override={}/{} raw={:08x}/{:08x}/{:08x}/{:08x}",
+                        attribute.semantic, attribute.instance_data, attribute.inst_offset,
+                        attribute.data_format, attribute.num_format, raw[0], raw[1], raw[2], raw[3]);
+                    const size_t bytes = std::min<size_t>(input.GetSize(), 1024 * 1024);
+                    std::vector<u8> data(bytes);
+                    if (bytes && Core::ReadProbeMemory(input.base_address, data.data(), bytes)) {
+                        const size_t stride = input.GetStride() ? input.GetStride() : 4;
+                        size_t records = 0, odd = 0;
+                        for (size_t offset = attribute.inst_offset; offset + 4 <= bytes; offset += stride) {
+                            u32 value{};
+                            std::memcpy(&value, data.data() + offset, sizeof(value));
+                            odd += value & 1;
+                            if (records < 8) LOG_CRITICAL(Render_Vulkan, "GPU branch input record[{}]={:#x}", records, value);
+                            ++records;
+                        }
+                        LOG_CRITICAL(Render_Vulkan, "GPU branch input scan: records={} bit0_set={} captured_bytes={} full_bytes={}",
+                                     records, odd, bytes, input.GetSize());
+                    }
+                }
+            }
+        }
+        // Compare original guest bytes with the flattened copy; never dereference blindly.
+        if (candidate->user_data.size() >= 12) {
+            const u64 table = (u64(candidate->user_data[10]) |
+                              (u64(candidate->user_data[11]) << 32)) & 0xFFFFFFFFFFFFULL;
+            std::array<u32, 32> raw{};
+            if (Core::ReadProbeMemory(table, raw.data(), sizeof(raw))) {
+                for (size_t i = 0; i < raw.size(); ++i) {
+                    LOG_CRITICAL(Render_Vulkan, "GPU original resource table={:#x} [{}]={:#x}",
+                                 table, i, raw[i]);
+                }
+            } else {
+                LOG_CRITICAL(Render_Vulkan, "GPU original resource table unreadable at {:#x}", table);
+            }
+        }
+        capture.Note("CAPTURE_COMPLETE: snapshot did not change rendering state.");
+#endif
+    }
+
     // Bind resource buffers and textures.
     Shader::Backend::Bindings binding{};
     push_data = MakeUserData(liverpool->regs);
@@ -876,8 +1082,50 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
     buffer_bindings.clear();
 
     for (const auto& desc : stage.buffers) {
+        if (desc.is_unused) {
+            // All accesses disappeared during lowering/optimization. Preserve binding order
+            // and specialization metadata, without mapping an unused guest address.
+            buffer_bindings.emplace_back(VideoCore::BufferId{}, AmdGpu::Buffer::Null(), 0);
+            continue;
+        }
         const auto vsharp = desc.GetSharp(stage);
+#ifdef _WIN32
+        if (IsUnboundLowReadOnlyBuffer(vsharp.base_address, desc.IsSpecial(), desc.is_written)) {
+            static u32 reports = 0;
+            if (vsharp.base_address > 1 && vsharp.GetSize() && reports++ < 8) {
+                LOG_WARNING(Render_Vulkan,
+                    "Unbound read-only GPU resource: shader={:#x} binding={} address={:#x} size={:#x}; preserving null descriptor",
+                    stage.pgm_hash, buffer_bindings.size(), u64(vsharp.base_address), vsharp.GetSize());
+            }
+            buffer_bindings.emplace_back(VideoCore::BufferId{}, vsharp, 0);
+            continue;
+        }
+#endif
         if (!desc.IsSpecial() && vsharp.base_address != 0 && vsharp.GetSize() > 0) {
+            // Capture the low-address/oversized descriptor before ClampRangeSize asserts.
+            // Do not suppress the assertion or change binding behavior.
+            if (vsharp.base_address < 0x10000 && vsharp.GetSize() >= (1ULL << 30)) {
+                const auto raw = std::bit_cast<std::array<u32, 4>>(vsharp);
+                LOG_CRITICAL(Render_Vulkan,
+                    "Invalid GPU buffer capture: shader={:#x} stage={} program={:#x} binding={} "
+                    "sharp={} inline={} readconst={} written={} formatted={} address={:#x} "
+                    "size={:#x} raw={:08x}/{:08x}/{:08x}/{:08x}",
+                    stage.pgm_hash, static_cast<u32>(stage.stage), stage.pgm_base,
+                    buffer_bindings.size(), desc.sharp_idx, bool(desc.inline_cbuf),
+                    desc.used_as_readconst, desc.is_written, desc.is_formatted,
+                    u64(vsharp.base_address), vsharp.GetSize(), raw[0], raw[1], raw[2], raw[3]);
+                for (size_t i = 0; i < stage.user_data.size(); ++i) {
+                    LOG_CRITICAL(Render_Vulkan, "GPU buffer user data [{}]={:#x}", i, stage.user_data[i]);
+                }
+                if (desc.sharp_idx < stage.flattened_ud_buf.size()) {
+                    const size_t first = desc.sharp_idx > 4 ? desc.sharp_idx - 4 : 0;
+                    const size_t last = std::min(stage.flattened_ud_buf.size(), size_t(desc.sharp_idx) + 12);
+                    for (size_t i = first; i < last; ++i) {
+                        LOG_CRITICAL(Render_Vulkan, "GPU buffer flattened data [{}]={:#x}", i,
+                                     stage.flattened_ud_buf[i]);
+                    }
+                }
+            }
             const u64 size = memory->ClampRangeSize(vsharp.base_address, vsharp.GetSize());
             const auto buffer_id = buffer_cache.FindBuffer(vsharp.base_address, size);
             buffer_bindings.emplace_back(buffer_id, vsharp, size);

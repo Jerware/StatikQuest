@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <cstring>
+#include <cstdlib>
 #include "common/arch.h"
 #include "common/assert.h"
 #include "common/crash_reporter.h"
@@ -16,6 +17,11 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#if defined(ARCH_X86_64)
+#include "core/one_shot_probe.h"
+#include "core/libraries/kernel/allocation_trace.h"
+#include "core/libraries/kernel/allocation_read_history.h"
+#endif
 static constexpr DWORD MS_VC_EXCEPTION = 0x406D1388;
 #else
 #include <csignal>
@@ -35,6 +41,98 @@ extern std::array<OrbisKernelExceptionHandler, 32> Handlers;
 
 namespace Core {
 
+#if defined(_WIN32) && defined(ARCH_X86_64)
+static OneShotProbe statik_file_probes[5];
+static constexpr const char* statik_probe_names[] = {
+    "seek-failed", "buffer-refill-short", "direct-read-short", "invalid-refill-size",
+    "empty-refill"
+};
+
+void InstallStatikFileProbes(u64 base) {
+    const char* enabled = std::getenv("SHADPS4_TRACE_STATIK_FILE_ERRORS");
+    if (!enabled || enabled[0] != '1') {
+        return;
+    }
+    const u64 offsets[] = {0x1965ba, 0x196937, 0x196b72, 0x196b80, 0x196963};
+    const unsigned char seek[] = {0x80, 0x4b, 0x08, 0x40};
+    const unsigned char read[] = {0x41, 0x80, 0x4e, 0x08, 0x40};
+    const unsigned char empty[] = {0x83, 0xca, 0x40};
+    // Validate a second signature tying these addresses to the expected reader.
+    unsigned char entry[4]{};
+    const unsigned char expected_entry[] = {0x55, 0x48, 0x89, 0xe5};
+    if (!ReadProbeMemory(base + 0x196820, entry, sizeof(entry)) ||
+        std::memcmp(entry, expected_entry, sizeof(entry)) != 0) {
+        LOG_WARNING(Debug, "Statik file probes: unsupported executable; not installed");
+        return;
+    }
+    for (unsigned i = 0; i < 5; ++i) {
+        const std::span<const unsigned char> bytes = i == 0 ? std::span<const unsigned char>(seek) :
+            i == 4 ? std::span<const unsigned char>(empty) : std::span<const unsigned char>(read);
+        const bool installed = statik_file_probes[i].Install(base + offsets[i], bytes);
+        LOG_WARNING(Debug, "Statik file probe {}: {} at {:#x}", statik_probe_names[i],
+                    installed ? "armed" : "NOT installed (byte mismatch or protection)",
+                    base + offsets[i]);
+    }
+}
+
+static bool HandleStatikFileProbe(EXCEPTION_POINTERS* exception) {
+    for (unsigned i = 0; i < 5; ++i) {
+        bool first{};
+        if (!statik_file_probes[i].Resume(exception, first)) {
+            continue;
+        }
+        if (!first) {
+            return true;
+        }
+        const auto& c = *exception->ContextRecord;
+        const auto reader = i == 0 ? c.Rbx : c.R14;
+        LOG_WARNING(Debug,
+                    "Statik FIRST file error {}: reader={:#x} rip={:#x} rax={:#x} "
+                    "rdx={:#x} r12={:#x} r13={:#x} r14={:#x} rbp={:#x}",
+                    statik_probe_names[i], reader, c.Rip, c.Rax, c.Rdx,
+                    c.R12, c.R13, c.R14, c.Rbp);
+        // Reader includes flags, logical position, buffer base/count and file handle.
+        u64 words[20]{};
+        if (ReadProbeMemory(reader, words, sizeof(words))) {
+            for (unsigned j = 0; j < 20; j += 4) {
+                LOG_WARNING(Debug, "Statik reader {:#x}: {:#x} {:#x} {:#x} {:#x}",
+                            reader + j * 8, words[j], words[j + 1], words[j + 2], words[j + 3]);
+            }
+            u64 handle[8]{};
+            if (ReadProbeMemory(words[19], handle, sizeof(handle))) {
+                LOG_WARNING(Debug, "Statik handle {:#x}: {:#x} {:#x} {:#x} {:#x} {:#x} {:#x} {:#x} {:#x}",
+                            words[19], handle[0], handle[1], handle[2], handle[3],
+                            handle[4], handle[5], handle[6], handle[7]);
+            }
+        }
+        Libraries::Kernel::WalkAllocationFrames(c.Rbp, ReadProbeMemory,
+            [](unsigned depth, auto frame, auto caller) {
+                LOG_WARNING(Debug, "Statik file error stack {}: frame={:#x} return={:#x}",
+                            depth, frame, caller);
+                if (depth < 4) {
+                    u64 local[8]{};
+                    if (ReadProbeMemory(frame - sizeof(local), local, sizeof(local))) {
+                        LOG_WARNING(Debug, "Statik file error locals {:#x}: {:#x} {:#x} {:#x} {:#x} {:#x} {:#x} {:#x} {:#x}",
+                                    frame - sizeof(local), local[0], local[1], local[2], local[3],
+                                    local[4], local[5], local[6], local[7]);
+                    }
+                }
+            });
+        const auto& history = Libraries::Kernel::allocation_reads;
+        const auto begin = history.count > history.records.size() ? history.count - history.records.size() : 0;
+        for (auto n = begin; n < history.count; ++n) {
+            const auto& r = history.records[n % history.records.size()];
+            LOG_WARNING(Debug, "Statik error read {}: file={} offset={:#x} requested={:#x} returned={:#x} buffer={:#x}",
+                        n, r.path, r.offset, r.requested, r.returned, r.buffer);
+        }
+        return true;
+    }
+    return false;
+}
+#else
+void InstallStatikFileProbes(u64) {}
+#endif
+
 #if defined(_WIN32)
 
 static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
@@ -49,6 +147,11 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
 
     bool handled = false;
     switch (code) {
+#if defined(ARCH_X86_64)
+    case EXCEPTION_BREAKPOINT:
+        handled = HandleStatikFileProbe(pExp);
+        break;
+#endif
     case EXCEPTION_ACCESS_VIOLATION:
         handled = signals->DispatchAccessViolation(
             pExp, reinterpret_cast<void*>(pExp->ExceptionRecord->ExceptionInformation[1]));

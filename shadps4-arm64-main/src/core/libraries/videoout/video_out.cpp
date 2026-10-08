@@ -413,6 +413,14 @@ s32 SubmitHmdFrame(s32 handle, const HmdFrame& frame) {
     return ORBIS_OK;
 }
 
+void ReprojectLatestFrame(s32 handle) {
+    if (driver) {
+        if (auto* port = driver->GetPort(handle)) {
+            driver->ReprojectLatestFrame(port);
+        }
+    }
+}
+
 s32 PS4_SYSV_ABI sceVideoOutGetDeviceCapabilityInfo(
     s32 handle, SceVideoOutDeviceCapabilityInfo* pDeviceCapabilityInfo) {
     pDeviceCapabilityInfo->capability = 0;

@@ -1,0 +1,69 @@
+STATIK PC VR RELEASE AUDIT - 2026-10-07
+Retained from the older Statik candidate. Its successful build/runtime results
+do not validate the StatikQuest port onto AstroQuest 0.20. See README-STATIK.md
+and the new build handoff for current testing. Existing release concerns remain.
+Historical technical review and unresolved concerns, not legal advice.
+These notes are retained for transparency, not as additional beta acceptance
+criteria. The requested deliverable is an AstroQuest-style local beta with source
+and notices. Installation, game and headset testing are assigned to the user.
+No claim of legal clearance is made; inherited compatibility concerns remain.
+
+SCOPE AND EVIDENCE
+Inspected the staged file inventory, packaging allowlist, launcher sources,
+local source diff and added VR layout helpers, CMake configuration, emulator
+link libraries, and PE import table. No Sony SDK include or link dependency
+was identified. The only SDK include paths identified were Khronos OpenXR.
+Windows DLL imports were Windows system and Visual C++ runtime libraries.
+This is not proof of the historical provenance of every source line or asset.
+Any code previously copied/adapted from proprietary documentation needs its
+provenance resolved before a source release; filename searches cannot settle it.
+
+CONTENTS
+No .pkg/.pup/.sprx/.prx game or firmware files, saves, keys, SDK headers/libraries,
+or development captures are present in the staging package inventory.
+libSceJson2.sprx is supplied by the tester later and is NOT distributed.
+Never zip this workspace or a used beta folder: private firmware and games exist
+elsewhere in the workspace. Build only from the explicit packaging allowlist.
+audit_statik_beta.ps1 rejects additional files, including post-play user data.
+
+REVIEW FINDINGS (some descriptions reflect earlier preparation stages)
+1. Modified source snapshot now exists and a separate clean Release compile
+   passed. Twelve native regression checks passed; desktop gameplay and pause
+   overlays rendered in both eyes. Final source hash reconciliation and complete
+   build-material review are still pending. A rebuild is not license clearance.
+2. A 130-file notice/source collection is available for candidate_04. Full
+   component-by-component and embedded asset provenance review is incomplete.
+   Upstream's generic notices include irrelevant Quest materials and a source
+   offer made by someone else. Replaced with staging-specific notices.
+3. The link command includes externals/aacdec/fdk-aac.lib. Its NOTICE contains
+   a custom license with copyright-fee/patent conditions. Resolve compatibility
+   with the GPL-covered executable (or replace/remove and retest); do not assume
+   that adding the NOTICE alone clears the combination. The user chose to keep
+   this inherited decoder, not to rewrite audio; no license exception established.
+4. FFmpeg is a prebuilt static dependency selected by ext-ffmpeg-core revision
+   94dde08. Pinned FFmpeg 7.1.1 source, vcpkg sources/patches and actual avcodec
+   configuration are collected in source_materials_01. Its configuration disables
+   libfdk-aac; FDK-AAC is separately linked by the emulator. Independent FFmpeg
+   source rebuild/correspondence and any transitive notices need final review.
+   OpenAL/libusb and other static LGPL components also require review of source
+   and rebuilding/relinking obligations.
+5. PkgTool/LibOrbisPkg v0.2 release lists the bundled 0.2.231 binaries. Its pinned
+   source archive is in source_materials_01, and GPLv3 text is included. Fresh
+   official extractor binaries match the bundled binaries by SHA256. An independent
+   extractor source rebuild has not been performed.
+6. LibreSSL's linked ssl.lib and crypto.lib retain original OpenSSL/SSLeay terms.
+   Do not classify the whole library as ISC. Compatibility requires review along
+   with the Apache-2.0 OpenXR loader and selected GPL distribution version.
+7. Physical headset validation of this exact rebuilt executable remains needed.
+   The UI automation tool did not expose the PowerShell-hosted launcher; first-run
+   click paths and GUI cancellation are not verified. The extraction cancellation
+   boundary and actual package extraction have passed separate tests.
+
+No emulator or gameplay behavior was changed by this audit. No proprietary
+development material was deleted. Preserve these findings with the beta materials.
+
+Primary guidance consulted:
+https://www.gnu.org/licenses/old-licenses/gpl-2.0-faq.html
+https://ffmpeg.org/legal.html
+Local license texts: root LICENSE; tools/pkgtool/LICENSE.txt;
+shadps4-arm64-main/externals/aacdec/fdk-aac/NOTICE.

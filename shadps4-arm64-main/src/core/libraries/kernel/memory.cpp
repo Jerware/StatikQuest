@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <bit>
+#include <atomic>
+#include <cstdlib>
+#if defined(_WIN32) && defined(__x86_64__)
+#include <intrin.h>
+#include <windows.h>
+#endif
 
 #include "common/alignment.h"
 #include "common/assert.h"
@@ -11,6 +17,8 @@
 #include "common/singleton.h"
 #include "core/libraries/kernel/kernel.h"
 #include "core/libraries/kernel/memory.h"
+#include "core/libraries/kernel/allocation_trace.h"
+#include "core/libraries/kernel/allocation_read_history.h"
 #include "core/libraries/kernel/orbis_error.h"
 #include "core/libraries/kernel/process.h"
 #include "core/libraries/libs.h"
@@ -150,6 +158,52 @@ s32 PS4_SYSV_ABI sceKernelVirtualQuery(const void* addr, s32 flags, OrbisVirtual
 }
 
 s32 PS4_SYSV_ABI sceKernelReserveVirtualRange(void** addr, u64 len, s32 flags, u64 alignment) {
+#if defined(_WIN32) && defined(__x86_64__)
+    static const bool trace = [] {
+        const char* value = std::getenv("SHADPS4_TRACE_LARGE_ALLOCATIONS");
+        return value && value[0] == '1';
+    }();
+    static std::atomic<unsigned> captures{};
+    if (trace && len >= 0x40000000ULL && captures.fetch_add(1) < 4) {
+        const auto return_slot = reinterpret_cast<std::uintptr_t>(_AddressOfReturnAddress());
+        LOG_WARNING(Kernel_Vmm,
+                    "Large allocation trace: requested={:#x} host_frame={} return_slot={:#x}",
+                    len, __builtin_frame_address(0), return_slot);
+        const auto count = std::min<std::uint64_t>(allocation_reads.count, allocation_reads.records.size());
+        for (auto i = allocation_reads.count - count; i < allocation_reads.count; ++i) {
+            const auto& r = allocation_reads.records[i % allocation_reads.records.size()];
+            LOG_WARNING(Kernel_Vmm,
+                        "Allocation read {}: file={} offset={:#x} requested={:#x} returned={:#x} "
+                        "buffer={:#x} prefix={:08x}/{:08x}/{:08x}/{:08x}",
+                        i, r.path, r.offset, r.requested, r.returned, r.buffer,
+                        r.prefix[0], r.prefix[1], r.prefix[2], r.prefix[3]);
+        }
+        // clang-cl's Windows unwind frame pointer is biased into the locals,
+        // even on a sysv_abi function. Its prologue saves incoming RBP directly
+        // below the return address; begin there, then follow guest SysV frames.
+        WalkAllocationFrames(return_slot - sizeof(std::uintptr_t),
+            [](std::uintptr_t frame, void* data, std::size_t size) {
+                SIZE_T copied{};
+                return ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void*>(frame),
+                                         data, size, &copied) && copied == size;
+            },
+            [](unsigned depth, std::uintptr_t frame, std::uintptr_t caller) {
+                LOG_WARNING(Kernel_Vmm, "Allocation stack {}: frame={:#x} return={:#x}",
+                            depth, frame, caller);
+                if (depth < 8 && frame >= 128) {
+                    std::array<std::uintptr_t, 16> locals{};
+                    SIZE_T copied{};
+                    if (ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void*>(frame - 128),
+                                          locals.data(), sizeof(locals), &copied) && copied == sizeof(locals)) {
+                        for (unsigned i = 0; i < locals.size(); i += 4) {
+                            LOG_WARNING(Kernel_Vmm, "Allocation frame words {:#x}: {:#x} {:#x} {:#x} {:#x}",
+                                        frame - 128 + i * 8, locals[i], locals[i + 1], locals[i + 2], locals[i + 3]);
+                        }
+                    }
+                }
+            });
+    }
+#endif
     LOG_INFO(Kernel_Vmm, "addr = {}, len = {:#x}, flags = {:#x}, alignment = {:#x}",
              fmt::ptr(*addr), len, flags, alignment);
     if (addr == nullptr) {

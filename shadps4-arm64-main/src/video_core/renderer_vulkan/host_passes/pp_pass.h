@@ -26,6 +26,8 @@ public:
         float sharpen = 0.0f;
         /// For an output image of an sRGB format, which does the encoding for display itself.
         u32 linear_out = 0;
+        std::array<float, 4> uv_transform{1.0f, 1.0f, 0.0f, 0.0f};
+        u32 overlay = 0;
     };
 
     void Create(const Instance& instance, MasterSemaphore* master_semaphore,
@@ -34,8 +36,10 @@ public:
     /// An input image and the part of the output frame it is drawn into.
     struct Region {
         vk::ImageView input;
+        std::array<float, 4> uv_transform{1.0f, 1.0f, 0.0f, 0.0f};
         vk::Rect2D area;
         std::optional<vk::Rect2D> clip;
+        bool overlay = false;
     };
 
     // Frame marker: a row of black and white blocks stamped along the top-left edge of a frame.
@@ -67,6 +71,7 @@ private:
     }};
     DescriptorHeap desc_heap;
     vk::UniquePipeline pipeline{};
+    vk::UniquePipeline overlay_pipeline{};
     vk::UniquePipelineLayout pipeline_layout{};
     vk::UniqueDescriptorSetLayout desc_set_layout{};
     vk::UniqueSampler sampler{};

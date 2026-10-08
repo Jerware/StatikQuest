@@ -17,6 +17,8 @@ layout (push_constant) uniform settings {
     // The target encodes what it is given for display by itself (an sRGB image): it has to be
     // given linear light, or the picture would be encoded twice.
     bool linear_out;
+    vec4 uv_transform;
+    bool overlay;
 } pp;
 
 const float cutoff = 0.0031308, a = 1.055, b = 0.055, d = 12.92;
@@ -35,16 +37,19 @@ vec3 shown(vec2 at) {
 }
 
 void main() {
-    vec4 color_linear = texture(texSampler, uv);
+    vec2 source_uv = uv * pp.uv_transform.xy + pp.uv_transform.zw;
+    if (pp.overlay && (any(lessThan(source_uv, vec2(0.0))) ||
+                       any(greaterThan(source_uv, vec2(1.0))))) discard;
+    vec4 color_linear = texture(texSampler, source_uv);
     vec3 here = pp.hdr ? color_linear.rgb : gamma(color_linear.rgb);
-    if (pp.sharpen > 0.0) {
+    if (pp.sharpen > 0.0 && !pp.overlay) {
         // Contrast adaptive sharpening: a pixel is pushed away from the four next to it, the
         // more the less they differ already, and never beyond black or white.
         vec2 texel = 1.0 / vec2(textureSize(texSampler, 0));
-        vec3 above = shown(uv - vec2(0.0, texel.y));
-        vec3 below = shown(uv + vec2(0.0, texel.y));
-        vec3 left = shown(uv - vec2(texel.x, 0.0));
-        vec3 right = shown(uv + vec2(texel.x, 0.0));
+        vec3 above = shown(source_uv - vec2(0.0, texel.y));
+        vec3 below = shown(source_uv + vec2(0.0, texel.y));
+        vec3 left = shown(source_uv - vec2(texel.x, 0.0));
+        vec3 right = shown(source_uv + vec2(texel.x, 0.0));
         vec3 darkest = min(min(min(above, below), min(left, right)), here);
         vec3 brightest = max(max(max(above, below), max(left, right)), here);
         vec3 room = sqrt(clamp(min(darkest, 1.0 - brightest) / max(brightest, vec3(1e-5)),
