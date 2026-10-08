@@ -1,3 +1,7 @@
+> [!WARNING]
+> # 🚧 UNDER CONSTRUCTION 🚧
+> This project is under active development and is not yet ready for general use.
+
 # AstroQuest
 
 **ASTRO BOT Rescue Mission (PS4 / PlayStation VR) in virtual reality on Meta Quest 3**, played
