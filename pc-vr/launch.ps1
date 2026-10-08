@@ -1,8 +1,9 @@
-# Starts ASTRO BOT Rescue Mission in the emulator for a headset connected to this PC (Virtual
+# Starts Statik: Institute of Retention in the emulator for a headset connected to this PC (Virtual
 # Desktop, or anything else with an OpenXR runtime), and tells what is going on while it runs.
-# Started by "Play Astro Bot VR.bat"; settings are in settings.txt next to this file, and the
+# Started by "Play Statik VR.bat"; personal settings are in settings.local.txt next to this file, and the
 # main ones can be chosen in a small window before the game starts.
-param([string]$SettingsFile = "", [switch]$NoMenu)
+param([string]$SettingsFile = "", [switch]$NoMenu, [switch]$CheckOnly,
+      [string]$PreviewPath = "")
 
 # The 64-bit PowerShell of this PC, for a 32-bit one to hand over to; "" where this is it.
 # Started from a 32-bit program (a file manager, a game launcher), "powershell" is the 32-bit
@@ -20,15 +21,17 @@ if ($nativePowerShell -ne "") {
     $again = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $MyInvocation.MyCommand.Path)
     if ($SettingsFile -ne "") { $again += @("-SettingsFile", $SettingsFile) }
     if ($NoMenu) { $again += "-NoMenu" }
+    if ($CheckOnly) { $again += "-CheckOnly" }
+    if ($PreviewPath) { $again += @("-PreviewPath", $PreviewPath) }
     & $nativePowerShell @again
     exit $LASTEXITCODE
 }
 
-$ErrorActionPreference = "Continue"
+$ErrorActionPreference = "Stop"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $root = Split-Path -Parent $here
-Set-Location $here
-if ($SettingsFile -eq "") { $SettingsFile = Join-Path $here "settings.txt" }
+if ($SettingsFile -eq "") { $SettingsFile = Join-Path $here "settings.local.txt" }
+. (Join-Path $here "package_setup.ps1")
 
 function Say([string]$text, [string]$color = "Gray") { Write-Host $text -ForegroundColor $color }
 
@@ -36,8 +39,10 @@ function Say([string]$text, [string]$color = "Gray") { Write-Host $text -Foregro
 function Read-Settings {
     $script:settings = [ordered]@{}
     $script:extraEnv = @()
-    if (Test-Path $SettingsFile) {
-        foreach ($line in Get-Content $SettingsFile) {
+    $source = $SettingsFile
+    if (-not (Test-Path -LiteralPath $source)) { $source = Join-Path $here "settings.txt" }
+    if (Test-Path -LiteralPath $source) {
+        foreach ($line in Get-Content -LiteralPath $source) {
             $line = $line.Trim()
             if ($line -eq "" -or $line.StartsWith("#")) { continue }
             $at = $line.IndexOf("=")
@@ -55,7 +60,8 @@ function Setting([string]$key, [string]$default = "") {
 # Writes key=value into the settings file: in place of the line that sets it, or at the end.
 function Save-Setting([string]$key, [string]$value) {
     $lines = @()
-    if (Test-Path $SettingsFile) { $lines = @(Get-Content $SettingsFile) }
+    if (Test-Path -LiteralPath $SettingsFile) { $lines = @(Get-Content -LiteralPath $SettingsFile) }
+    elseif (Test-Path -LiteralPath (Join-Path $here "settings.txt")) { $lines = @(Get-Content -LiteralPath (Join-Path $here "settings.txt")) }
     $done = $false
     for ($i = 0; $i -lt $lines.Count; $i++) {
         if ($lines[$i] -match ("^\s*" + [regex]::Escape($key) + "\s*=")) {
@@ -68,12 +74,7 @@ function Save-Setting([string]$key, [string]$value) {
 }
 Read-Settings
 
-# The sizes an eye can be drawn at: the console's largest (1440x1536, what a PlayStation 4 Pro
-# draws) and larger, all the same shape.
-$widths = @(1440, 1800, 2160, 2520, 2880, 3240, 3600)
-function EyeHeight([int]$width) { return [int]([math]::Round(1536.0 * $width / 1440 / 8) * 8) }
-$caps = @(120, 90, 72, 60, 45, 40, 36, 30)
-# The languages the game has, as Windows names them.
+# Console-language choices, as Windows names them. The game's own supported languages vary.
 $gameLanguages = @("en-US", "en-GB", "fr-FR", "fr-CA", "es-ES", "es-419", "de-DE", "it-IT", "nl-NL",
                    "pt-PT", "pt-BR", "ru-RU", "pl-PL", "tr-TR", "sv-SE", "nb-NO", "da-DK", "fi-FI",
                    "cs-CZ", "hu-HU", "el-GR", "ro-RO", "ar-SA", "ja-JP", "ko-KR", "zh-Hant", "zh-Hans",
@@ -105,13 +106,13 @@ function Get-VrInstructions([string]$runtime) {
     if ($runtime -match 'steamvr|steamxr') {
         return @(
             "Start SteamVR and check that the headset is ready (an Index: with its base stations). Virtual Desktop is not needed."
-            "Set the headset to 120 Hz in SteamVR's Video settings for the game's own 60 frames a second (90 Hz gives 45)."
+            "Use a headset refresh rate of 120 Hz to start; Statik's rendering cadence is game-controlled."
             "The DualSense: connect it to THIS PC by USB or Bluetooth. It keeps its motion sensors, touchpad and rumble."
             "If launching through a Steam shortcut, disable Steam Input for that shortcut so the emulator can read the DualSense."
             "SteamVR does not track bare hands: the gamepad in the game stays in front of you and turns with its own sensors."
             $placeHelp
-            "Sound and microphone: the ones chosen in SteamVR's Audio settings; the game uses the microphone for blowing."
-            "The headset's controllers play too, with no gamepad or whenever they were used after it (right A jump, right B punch, left X or A back, left Y or B triangle, left menu or trackpad press = OPTIONS)."
+            "Sound: the output selected in SteamVR's Audio settings or Windows."
+            "The headset's controllers can stand in for a gamepad; Statik's puzzle controls still need headset verification."
             $turnHelp
         )
     }
@@ -123,7 +124,7 @@ function Get-VrInstructions([string]$runtime) {
             "Where it is in the game comes from your hands: hand tracking on in the headset, and in"
             "Virtual Desktop's settings hand tracking forwarded to the PC. Without that it stays in front of you:"
             $placeHelp
-            "The Touch controllers play too, with no gamepad or whenever they were used after it (A jump, B punch, X back, Y triangle, left menu = OPTIONS)."
+            "Touch controllers can stand in for a gamepad; Statik's puzzle controls still need headset verification."
             $turnHelp
         )
     }
@@ -132,7 +133,7 @@ function Get-VrInstructions([string]$runtime) {
         "The DualSense: connect it to THIS PC by USB or Bluetooth, with Steam Input disabled for any Steam shortcut."
         "Without hand tracking, the gamepad in the game stays in front of you and turns with its own sensors."
         $placeHelp
-        "The headset's controllers play too, with no gamepad or whenever they were used after it (right A jump, right B punch, left X or A back, left Y or B triangle)."
+        "The headset's controllers can stand in for a gamepad; Statik's puzzle controls still need headset verification."
         $turnHelp
     )
 }
@@ -154,7 +155,7 @@ function Show-Box([string]$text, [string]$buttons = "OK", [string]$icon = "Infor
     $owner = New-Object System.Windows.Forms.Form
     $owner.TopMost = $true
     try {
-        return [System.Windows.Forms.MessageBox]::Show($owner, $text, "Astro Bot VR", $buttons,
+        return [System.Windows.Forms.MessageBox]::Show($owner, $text, "Statik VR", $buttons,
                                                        $icon, $default).ToString()
     } finally { $owner.Dispose() }
 }
@@ -172,7 +173,7 @@ function Show-Form($form) {
 # game= in the settings names one that is elsewhere (its eboot.bin, its folder or its package),
 # and when none is found a window asks where it is.
 $gamesFolder = Join-Path $root "games"
-$madeFor = "CUSA12392"
+$madeFor = "CUSA06929"
 # The longest path of a file inside that game: the emulator cannot open a file whose whole path
 # is longer than 259 characters.
 $longestInside = 126
@@ -194,7 +195,8 @@ function Get-Folders([string]$top, [int]$depth = 3) {
             if ([System.IO.File]::Exists([System.IO.Path]::Combine($folder, "eboot.bin"))) { continue }
             try {
                 foreach ($sub in [System.IO.Directory]::GetDirectories($folder)) {
-                    if ([System.IO.Path]::GetFileName($sub) -ne $unpackFolder) { $next += $sub }
+                    $name = [System.IO.Path]::GetFileName($sub)
+                    if ($name -ne $unpackFolder -and $name -notlike 'unpacking_*') { $next += $sub }
                 }
             } catch {}
         }
@@ -238,15 +240,13 @@ function Get-GameInfo([string]$eboot) {
 # named after a game with -UPDATE, -patch or -mods at the end is not a game: the emulator lays
 # what is in it over the game's own files.)
 function Find-Game([string]$top) {
-    $first = $null
     foreach ($folder in (Get-Folders $top)) {
         if ($folder -match '-(UPDATE|patch|mods)$') { continue }
         $eboot = [System.IO.Path]::Combine($folder, "eboot.bin")
         if (-not [System.IO.File]::Exists($eboot)) { continue }
-        if ((Get-GameInfo $eboot)["TITLE_ID"] -eq $madeFor) { return $eboot }
-        if ($null -eq $first) { $first = $eboot }
+        if (-not (Get-GameError $eboot)) { return $eboot }
     }
-    return $first
+    return $null
 }
 
 # Whether a package is an update of a game (a patch), which holds the files the update changed
@@ -273,6 +273,7 @@ function Find-Package([string]$top) {
     foreach ($folder in (Get-Folders $top)) {
         try { $files = [System.IO.Directory]::GetFiles($folder, "*.pkg") } catch { continue }
         foreach ($file in $files) {
+            try { $null = Get-StatikPackageInfo $file } catch { continue }
             $info = New-Object System.IO.FileInfo($file)
             $isUpdate = Test-UpdatePackage $file
             if ($null -eq $largest -or ($largestIsUpdate -and -not $isUpdate) -or
@@ -285,7 +286,7 @@ function Find-Package([string]$top) {
     return $largest
 }
 
-# What a package calls its content ("EP9000-CUSA12392_00-..."), or nothing if the file is not
+# What a package calls its content ("EP9000-CUSA06929_00-..."), or nothing if the file is not
 # a PlayStation 4 package.
 function Read-PackageId([string]$path) {
     try {
@@ -304,7 +305,7 @@ function Read-PackageId([string]$path) {
 # when it was cancelled (and stopped).
 function Show-Unpacking($process, [string]$drive, [double]$freeBefore) {
     $form = New-Object System.Windows.Forms.Form
-    $form.Text = "Astro Bot VR"
+    $form.Text = "Statik VR"
     $form.ClientSize = New-Object System.Drawing.Size(460, 132)
     $form.StartPosition = "CenterScreen"
     $form.FormBorderStyle = "FixedDialog"
@@ -368,120 +369,36 @@ function Show-Unpacking($process, [string]$drive, [double]$freeBefore) {
 # that are not encrypted, which is what a dump of a game is; what the PlayStation Store hands
 # out is encrypted and cannot be unpacked by anything here.
 function Expand-Package($package) {
-    $contentId = Read-PackageId $package.FullName
-    if ($null -eq $contentId) {
-        [void](Show-Box ($package.FullName + "`n`nis not a PlayStation 4 package.") "OK" "Warning")
-        return $null
-    }
-    if (Test-UpdatePackage $package.FullName) {
-        [void](Show-Box ("This package is an update of the game, not the game:`n`n" + $package.Name + "`n`nAn update holds only the files it changed. Put the package of the game itself (about 7 GB) in the games folder; the update is not needed, and is left alone when it is there as well. (A copy of the game that already has its update 1.04 in it plays too.)") "OK" "Warning")
-        return $null
-    }
     $tool = $null
-    foreach ($candidate in @((Join-Path $here "pkgtool\PkgTool.exe"),
-                             (Join-Path $root "tools\pkgtool\PkgTool.exe"))) {
-        if ([System.IO.File]::Exists($candidate)) { $tool = $candidate; break }
+    foreach ($candidate in @((Join-Path $here "pkgtool\\PkgTool.exe"),
+                             (Join-Path $root "tools\\pkgtool\\PkgTool.exe"))) {
+        if ([IO.File]::Exists($candidate)) { $tool = $candidate; break }
     }
-    if ($null -eq $tool) {
-        [void](Show-Box ("The game is here as a package:`n" + $package.FullName + "`n`nbut PkgTool, which unpacks packages, is missing from`n" + (Join-Path $here "pkgtool") + "`n`nUnzip the whole AstroQuest package again.") "OK" "Warning")
-        return $null
-    }
-    $serial = "game"
-    if ($contentId -match "[A-Z]{4}[0-9]{5}") { $serial = $Matches[0] }
-    $target = Join-Path $gamesFolder $serial
-    if ($target.Length + 1 + $longestInside -gt 259) {
-        [void](Show-Box ("The game cannot be unpacked into`n" + $target + "`n`nThat path is too long: some of the game's files would have a path of more than 259 characters, which the emulator cannot open. Move the AstroQuest folder somewhere with a shorter path, for example C:\Games\AstroQuest, and start again.") "OK" "Warning")
-        return $null
-    }
-    # What unpacking takes, by this game's own measure (12.5 GB out of a package of 6.9).
-    $needed = $package.Length * 1.85
-    $drive = [System.IO.Path]::GetPathRoot($target)
-    $free = -1
-    try { $free = (New-Object System.IO.DriveInfo($drive)).AvailableFreeSpace } catch {}
-    if ($free -ge 0 -and $free -lt $needed) {
-        [void](Show-Box ("Unpacking the game takes about " + (Gigabytes $needed) + ", and drive " + $drive + " has " + (Gigabytes $free) + " free.`n`nMake room, or move the AstroQuest folder to a drive that has it.") "OK" "Warning")
-        return $null
-    }
-    $answer = Show-Box ("The game is here as a package:`n`n" + $package.Name + "   (" + (Gigabytes $package.Length) + ")`n`nIt has to be unpacked before it can be played. That is done once, takes a minute or a few, and about " + (Gigabytes $needed) + " in`n" + $target + "`n`nUnpack it now?") "YesNo" "Question"
-    if ($answer -ne "Yes") { return $null }
-
-    # Unpacked into a folder of its own first: what is left of an unpacking that did not finish
-    # is never taken for the game.
-    $work = Join-Path $target $unpackFolder
     try {
-        if ([System.IO.Directory]::Exists($work)) { [System.IO.Directory]::Delete($work, $true) }
-        [void][System.IO.Directory]::CreateDirectory($work)
+        $null = Get-StatikPackageInfo $package.FullName
+        if (-not $tool) { throw "PkgTool is missing. Extract the complete StatikQuest PC package again." }
+        $answer = Show-Box ("Unpack this Statik base-game package into the games folder? Your original package will be kept.`n`n" + $package.FullName) "YesNo" "Question"
+        if ($answer -ne "Yes") { return $null }
+        $runner = {
+            param($extractor, $arguments, $work)
+            $process = Start-Process -FilePath $extractor -ArgumentList $arguments -PassThru -WindowStyle Hidden `
+                -RedirectStandardOutput (Join-Path $work "pkgtool-output.txt") -RedirectStandardError (Join-Path $work "pkgtool-errors.txt")
+            $null = $process.Handle
+            try {
+                $finished = Show-Unpacking $process ([IO.Path]::GetPathRoot($work)) -1
+                if (-not $finished) { throw "Cancelled by user." }
+                $process.WaitForExit()
+                if ($process.ExitCode -ne 0) { throw ("PkgTool exited with code " + $process.ExitCode) }
+            } finally {
+                if (-not $process.HasExited) { $process.Kill(); $process.WaitForExit() }
+                $process.Dispose()
+            }
+        }
+        return Install-StatikPackage $package.FullName $root $tool $runner
     } catch {
-        [void](Show-Box ("Could not write to`n" + $target + "`n`n" + $_.Exception.Message) "OK" "Warning")
+        [void](Show-Box $_.Exception.Message "OK" "Warning")
         return $null
     }
-    $errors = Join-Path $work "pkgtool-errors.txt"
-    $arguments = "pkg_extract --passcode " + $zeroPasscode + " `"" + $package.FullName + "`" `"" + (Join-Path $work "files") + "`""
-    Say ("Unpacking " + $package.FullName)
-    $process = Start-Process -FilePath $tool -ArgumentList $arguments -PassThru -WindowStyle Hidden `
-        -RedirectStandardOutput (Join-Path $work "pkgtool-output.txt") -RedirectStandardError $errors
-    # (Without this the exit code is not to be had later.)
-    $null = $process.Handle
-    $finished = Show-Unpacking $process $drive $free
-
-    $unpacked = Join-Path $work "files\uroot"
-    if (-not [System.IO.Directory]::Exists($unpacked)) { $unpacked = Join-Path $work "files" }
-    $failure = $null
-    if (-not $finished) {
-        $failure = "cancelled"
-    } elseif ($process.ExitCode -ne 0 -or -not [System.IO.File]::Exists((Join-Path $unpacked "eboot.bin"))) {
-        $why = ""
-        try { $why = (@(Get-Content -LiteralPath $errors -ErrorAction Stop | Where-Object { $_.Trim() -ne "" })[0]) } catch {}
-        $failure = "The package could not be unpacked.`n`nOnly a package made from a dump of the game can be: it is not encrypted. A package from the PlayStation Store is, and cannot be used.`n`n" + $package.FullName
-        if ($why) { $failure += "`n`n(PkgTool: " + $why.Trim() + ")" }
-    } else {
-        try {
-            # Into place: over anything of the same name that an earlier attempt left there.
-            foreach ($item in [System.IO.Directory]::GetFileSystemEntries($unpacked)) {
-                $to = Join-Path $target ([System.IO.Path]::GetFileName($item))
-                if ([System.IO.Directory]::Exists($to)) { [System.IO.Directory]::Delete($to, $true) }
-                elseif ([System.IO.File]::Exists($to)) { [System.IO.File]::Delete($to) }
-                [System.IO.Directory]::Move($item, $to)
-            }
-            # What the package keeps outside its file system: the game's own description
-            # (param.sfo, which tells the emulator what game this is), pictures, trophies.
-            # Named ICON0_PNG, PLAYGO_CHUNK_DAT, TROPHY__TROPHY00_TRP... there; icon0.png,
-            # playgo-chunk.dat, trophy/trophy00.trp in the game's sce_sys folder.
-            $leftOut = @("DIGESTS", "ENTRY_KEYS", "IMAGE_KEY", "GENERAL_DIGESTS", "METAS",
-                         "ENTRY_NAMES", "LICENSE_DAT", "LICENSE_INFO")
-            foreach ($line in (& $tool pkg_listentries $package.FullName 2>$null)) {
-                if ($line -notmatch '^0x[0-9A-Fa-f]+\s+0x[0-9A-Fa-f]+\s+[0-9A-Fa-f]+\s+(\d+)\s+(?:\d+\s+)?([A-Z0-9_]+)\s*$') { continue }
-                $index = $Matches[1]
-                $name = $Matches[2]
-                if ($leftOut -contains $name -or $name.EndsWith("_DDS")) { continue }
-                $file = $name.ToLower().Replace("__", "\")
-                $at = $file.LastIndexOf("_")
-                if ($at -gt 0) { $file = $file.Substring(0, $at) + "." + $file.Substring($at + 1) }
-                if ($file.StartsWith("playgo_")) { $file = "playgo-" + $file.Substring(7) }
-                $file = Join-Path (Join-Path $target "sce_sys") $file
-                [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($file))
-                & $tool pkg_extractentry --passcode $zeroPasscode $package.FullName $index $file 2>$null | Out-Null
-            }
-            if (-not [System.IO.File]::Exists((Join-Path $target "sce_sys\param.sfo"))) {
-                $failure = "The package was unpacked, but its description of the game (param.sfo) could not be read from it.`n`n" + $package.FullName
-            }
-        } catch {
-            $failure = "The package was unpacked, but the game could not be put in`n" + $target + "`n`n" + $_.Exception.Message
-        }
-    }
-    try { [System.IO.Directory]::Delete($work, $true) } catch {}
-    if ($failure) {
-        if ($failure -ne "cancelled") { [void](Show-Box $failure "OK" "Warning") }
-        return $null
-    }
-    Say ("Unpacked into " + $target)
-    $answer = Show-Box ("The game is unpacked and ready.`n`nThe package is not needed any more:`n" + $package.FullName + "`n`nDelete it, to get " + (Gigabytes $package.Length) + " back? (Keep it if it is your only copy of the game.)") "YesNo" "Question" "Button2"
-    if ($answer -eq "Yes") {
-        try { [System.IO.File]::Delete($package.FullName) } catch {
-            [void](Show-Box ("Could not delete the package:`n" + $_.Exception.Message) "OK" "Warning")
-        }
-    }
-    return (Join-Path $target "eboot.bin")
 }
 
 # What a path named in the settings, or picked in the window, gives: the eboot.bin to run, or
@@ -498,6 +415,10 @@ function Use-Path([string]$path) {
     if ([System.IO.Path]::GetExtension($path) -ieq ".pkg") {
         return Expand-Package (New-Object System.IO.FileInfo($path))
     }
+    if ($gameError = Get-GameError $path) {
+        [void](Show-Box $gameError "OK" "Warning")
+        return $null
+    }
     return $path
 }
 
@@ -505,7 +426,7 @@ function Use-Path([string]$path) {
 # (look again) or quit.
 function Show-NotFound {
     $form = New-Object System.Windows.Forms.Form
-    $form.Text = "Astro Bot VR"
+    $form.Text = "Statik VR"
     $form.ClientSize = New-Object System.Drawing.Size(600, 250)
     $form.StartPosition = "CenterScreen"
     $form.FormBorderStyle = "FixedDialog"
@@ -520,7 +441,7 @@ function Show-NotFound {
     $title.SetBounds(16, 14, 568, 26)
     $form.Controls.Add($title)
     $text = New-Object System.Windows.Forms.Label
-    $text.Text = "ASTRO BOT Rescue Mission was not found. AstroQuest does not contain the game: it plays your own copy of it.`n`nPut that copy in the games folder - either the game's folder (the one with eboot.bin in it) or its .pkg file - and choose Look again. Or leave it where it is and show where that is."
+    $text.Text = "Statik: Institute of Retention was not found. StatikQuest does not contain the game: it plays your own copy of it.`n`nPut that copy in the games folder - either the game's folder (the one with eboot.bin in it) or its .pkg file - and choose Look again. Or leave it where it is and show where that is."
     $text.SetBounds(16, 50, 568, 96)
     $form.Controls.Add($text)
     $where = New-Object System.Windows.Forms.Label
@@ -571,7 +492,7 @@ function Show-NotFound {
 # The file picker: the game's eboot.bin or its package, wherever they are.
 function Select-GameFile {
     $dialog = New-Object System.Windows.Forms.OpenFileDialog
-    $dialog.Title = "Where is ASTRO BOT Rescue Mission? Choose its eboot.bin, or its .pkg file"
+    $dialog.Title = "Where is Statik: Institute of Retention? Choose its eboot.bin, or its .pkg file"
     $dialog.Filter = "The game (eboot.bin, *.pkg)|eboot.bin;*.pkg|All files (*.*)|*.*"
     $dialog.CheckFileExists = $true
     if ([System.IO.Directory]::Exists($gamesFolder)) { $dialog.InitialDirectory = $gamesFolder }
@@ -643,11 +564,31 @@ function Get-MissingRuntime([string]$system = "", [string]$beside = "") {
 }
 
 # --- the window -------------------------------------------------------------------------------
+function Ensure-StatikModule {
+    $moduleDir = Join-Path $here "user\custom_modules\CUSA06929"
+    $module = Join-Path $moduleDir "libSceJson2.sprx"
+    if (Test-StatikModule $module) { return $true }
+    [void](Show-Box "Statik requires your own compatible decrypted libSceJson2.sprx system module. Select it in the next window; a copy will be kept in this PC profile.")
+    $dialog = New-Object System.Windows.Forms.OpenFileDialog
+    $dialog.Title = "Select your decrypted libSceJson2.sprx"
+    $dialog.Filter = "JSON system module|libSceJson2.sprx"
+    try {
+        if ($dialog.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return $false }
+        if (-not (Test-StatikModule $dialog.FileName)) {
+            [void](Show-Box "This is not a decrypted ELF module. Select a compatible decrypted libSceJson2.sprx." "OK" "Warning")
+            return $false
+        }
+        [void][IO.Directory]::CreateDirectory($moduleDir)
+        Copy-Item -LiteralPath $dialog.FileName -Destination $module
+        return $true
+    } finally { $dialog.Dispose() }
+}
+
 function Show-Menu {
 
     $form = New-Object System.Windows.Forms.Form
-    $form.Text = "Astro Bot VR"
-    $form.ClientSize = New-Object System.Drawing.Size(560, 514)
+    $form.Text = "Statik VR"
+    $form.ClientSize = New-Object System.Drawing.Size(560, 300)
     $form.StartPosition = "CenterScreen"
     $form.FormBorderStyle = "FixedDialog"
     $form.MaximizeBox = $false
@@ -657,55 +598,17 @@ function Show-Menu {
 
     $y = 14
     $title = New-Object System.Windows.Forms.Label
-    $title.Text = "ASTRO BOT Rescue Mission - PC VR"
+    $title.Text = "Statik: Institute of Retention - PC VR"
     $title.Font = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold)
     $title.SetBounds(16, $y, 520, 26)
     $form.Controls.Add($title)
     $y += 40
 
-    # Resolution.
+    # Console language. Resolution and frame-rate overrides were Astro Bot-specific.
     $label = New-Object System.Windows.Forms.Label
-    $label.Text = "Resolution of each eye"
+    $label.Text = "Console language"
     $label.Font = New-Object System.Drawing.Font("Segoe UI", 9.5, [System.Drawing.FontStyle]::Bold)
     $label.SetBounds(16, $y, 520, 20)
-    $form.Controls.Add($label)
-    $y += 22
-    $resolution = New-Object System.Windows.Forms.TrackBar
-    $resolution.Minimum = 0
-    $resolution.Maximum = $widths.Count - 1
-    $resolution.TickFrequency = 1
-    $resolution.LargeChange = 1
-    $resolution.SetBounds(12, $y, 530, 40)
-    $current = [int](Setting "resolution" "2880")
-    $index = [array]::IndexOf($widths, $current)
-    if ($index -lt 0) { $index = 4 }
-    $resolution.Value = $index
-    $form.Controls.Add($resolution)
-    $y += 42
-    $resolutionText = New-Object System.Windows.Forms.Label
-    $resolutionText.SetBounds(16, $y, 530, 38)
-    $form.Controls.Add($resolutionText)
-    $update = {
-        $w = $widths[$resolution.Value]
-        $h = EyeHeight $w
-        $times = ($w * $h) / (1440.0 * 1536.0)
-        $what = if ($w -eq 1440) { "the console's own, as a PlayStation 4 Pro draws it" } else { "{0:N2} times the pixels of the console" -f $times }
-        $resolutionText.Text = "$w x $h pixels an eye: $what. The game draws smaller by itself when the graphics card cannot keep up."
-    }
-    $resolution.Add_ValueChanged($update)
-    & $update
-    $y += 46
-
-    # Frame rate.
-    $label = New-Object System.Windows.Forms.Label
-    $label.Text = "Frames a second, at most"
-    $label.Font = New-Object System.Drawing.Font("Segoe UI", 9.5, [System.Drawing.FontStyle]::Bold)
-    $label.SetBounds(16, $y, 250, 20)
-    $form.Controls.Add($label)
-    $label = New-Object System.Windows.Forms.Label
-    $label.Text = "Language of the game"
-    $label.Font = New-Object System.Drawing.Font("Segoe UI", 9.5, [System.Drawing.FontStyle]::Bold)
-    $label.SetBounds(284, $y, 260, 20)
     $form.Controls.Add($label)
     $y += 24
     $language = New-Object System.Windows.Forms.ComboBox
@@ -717,26 +620,9 @@ function Show-Menu {
     # another is chosen here.)
     $languageBefore = [array]::IndexOf($gameLanguages, (Setting "language" "windows")) + 1
     $language.SelectedIndex = $languageBefore
-    $language.SetBounds(284, $y, 260, 26)
+    $language.SetBounds(16, $y, 528, 26)
     $form.Controls.Add($language)
-    $fps = New-Object System.Windows.Forms.ComboBox
-    $fps.DropDownStyle = "DropDownList"
-    foreach ($cap in $caps) {
-        $text = "$cap"
-        if ($cap -eq 60) { $text = "60 (the console's own)" }
-        [void]$fps.Items.Add($text)
-    }
-    $fps.SetBounds(16, $y, 200, 26)
-    $index = [array]::IndexOf($caps, [int](Setting "fps" "60"))
-    if ($index -lt 0) { $index = 3 }
-    $fps.SelectedIndex = $index
-    $form.Controls.Add($fps)
-    $y += 32
-    $fpsText = New-Object System.Windows.Forms.Label
-    $fpsText.Text = "A frame lasts a whole number of the headset's refreshes: at 120 Hz, 120, 60, 40 or 30 frames a second; at 90 Hz, 90, 45 or 30; at 80 Hz, 80 or 40. Choose 120 Hz for 60 frames a second. Set it in SteamVR Video settings for an Index, or Virtual Desktop Streaming settings for a Quest."
-    $fpsText.SetBounds(16, $y, 530, 84)
-    $form.Controls.Add($fpsText)
-    $y += 88
+    $y += 40
 
     # Field of view.
     $label = New-Object System.Windows.Forms.Label
@@ -756,7 +642,7 @@ function Show-Menu {
     $fovText = New-Object System.Windows.Forms.Label
     $fovText.SetBounds(316, $y + 4, 230, 40)
     $form.Controls.Add($fovText)
-    $ofPsvr = (Setting "fov_of" "headset") -eq "psvr"
+    $ofPsvr = (Setting "fov_of" "psvr") -eq "psvr"
     $updateFov = {
         $percent = $fov.Value * 5
         if ($percent -eq 100) {
@@ -812,10 +698,17 @@ function Show-Menu {
     $form.Controls.Add($quit)
     $form.CancelButton = $quit
 
+    if ($PreviewPath) {
+        $form.Show(); [System.Windows.Forms.Application]::DoEvents()
+        $bitmap = New-Object System.Drawing.Bitmap($form.Width, $form.Height)
+        try {
+            $form.DrawToBitmap($bitmap, (New-Object System.Drawing.Rectangle(0, 0, $form.Width, $form.Height)))
+            $bitmap.Save([IO.Path]::GetFullPath($PreviewPath))
+        } finally { $bitmap.Dispose(); $form.Dispose() }
+        return $false
+    }
     $result = Show-Form $form
     if ($result -ne [System.Windows.Forms.DialogResult]::OK) { return $false }
-    Save-Setting "resolution" ($widths[$resolution.Value])
-    Save-Setting "fps" ($caps[$fps.SelectedIndex])
     if ($language.SelectedIndex -ne $languageBefore) {
         Save-Setting "language" ($(if ($language.SelectedIndex -le 0) { "windows" } else { $gameLanguages[$language.SelectedIndex - 1] }))
     }
@@ -828,8 +721,24 @@ function Show-Menu {
 }
 
 $emulator = Join-Path $here "shadps4.exe"
+if ($CheckOnly) { return }
+if ($PreviewPath) { $null = Show-Menu; return }
+if (Get-Process shadps4 -ErrorAction SilentlyContinue) {
+    [void](Show-Box "Close the running shadPS4 game before starting another instance." "OK" "Warning")
+    exit 1
+}
+# Create only missing clean defaults; never replace a player's existing profile.
+$profile = Join-Path $here 'user'
+[void][IO.Directory]::CreateDirectory($profile)
+$configPath = Join-Path $profile 'config.json'
+if (-not (Test-Path -LiteralPath $configPath)) {
+    Copy-Item -LiteralPath (Join-Path $here 'default_config.json') -Destination $configPath
+}
+foreach ($name in @('savedata','trophy','inputs')) {
+    [void][IO.Directory]::CreateDirectory((Join-Path $profile "home\1000\$name"))
+}
 if (-not [System.IO.File]::Exists($emulator)) {
-    [void](Show-Box ("The emulator, shadps4.exe, is missing from`n" + $here + "`n`nUnzip the whole AstroQuest package again. (Built from the source: run tools/make-pc-vr.sh.)") "OK" "Error")
+    [void](Show-Box ("The emulator, shadps4.exe, is missing from`n" + $here + "`n`nUnzip the whole StatikQuest package again. (Built from the source: run tools/make-pc-vr.sh.)") "OK" "Error")
     exit 1
 }
 # (Never a dead end: whoever has installed it and is still told it is missing can go on, and
@@ -837,7 +746,7 @@ if (-not [System.IO.File]::Exists($emulator)) {
 $missingRuntime = Get-MissingRuntime "" $here
 if ($missingRuntime.Count -gt 0) {
     Say ("Of the Microsoft Visual C++ runtime, not found on this PC: " + ($missingRuntime -join ", ")) "Yellow"
-    $answer = Show-Box ("The emulator needs the Microsoft Visual C++ runtime (64-bit), and this PC seems to lack it: " + ($missingRuntime -join ", ") + " not found.`n`nYes: download its installer from Microsoft. Run it, then start Play Astro Bot VR again.`nNo: it is installed, start the game all the same.`nCancel: quit.") "YesNoCancel" "Warning"
+    $answer = Show-Box ("The emulator needs the Microsoft Visual C++ runtime (64-bit), and this PC seems to lack it: " + ($missingRuntime -join ", ") + " not found.`n`nYes: download its installer from Microsoft. Run it, then start Play Statik VR again.`nNo: it is installed, start the game all the same.`nCancel: quit.") "YesNoCancel" "Warning"
     if ($answer -eq "Yes") { Start-Process "https://aka.ms/vs/17/release/vc_redist.x64.exe" }
     if ($answer -ne "No") { exit 1 }
 }
@@ -846,14 +755,9 @@ $game = Resolve-Game
 if (-not $game) { exit 0 }
 Say ("The game: " + $game)
 $info = Get-GameInfo $game
-if ($info.Count -eq 0) {
-    Say "sce_sys\param.sfo is missing next to it: this is not a complete copy of the game, and the emulator may not know it." "Yellow"
-} elseif ($info["TITLE_ID"] -ne $madeFor) {
-    Say ("This is " + $info["TITLE"] + ", " + $info["TITLE_ID"] + ". AstroQuest is made for ASTRO BOT Rescue Mission in its European release, " + $madeFor + ": its fixes for the game's speed and picture do not apply to another, and it may not run.") "Yellow"
-} elseif (@("01.00", "01.04") -notcontains $info["APP_VER"]) {
-    # (What decides is the executable itself, which the emulator looks at as it loads it and
-    # names below; what the game says its version is can be wrong.)
-    Say ("This copy of the game says it is version " + $info["APP_VER"] + ". AstroQuest knows versions 01.00 and 01.04 from inside: another plays in slow motion where frames take long, and at the console's resolution.") "Yellow"
+if ($gameError = Get-GameError $game) {
+    [void](Show-Box $gameError "OK" "Warning")
+    exit 1
 }
 $gameFolder = [System.IO.Path]::GetDirectoryName($game)
 if ($info["TITLE_ID"] -eq $madeFor -and -not [System.IO.File]::Exists([System.IO.Path]::Combine($gameFolder, "sce_module", "libc.prx"))) {
@@ -861,35 +765,28 @@ if ($info["TITLE_ID"] -eq $madeFor -and -not [System.IO.File]::Exists([System.IO
     exit 1
 }
 if ($gameFolder.Length + 1 + $longestInside -gt 259) {
-    [void](Show-Box ("The game is in`n" + $gameFolder + "`n`nThat path is too long: some of the game's files have a path of more than 259 characters there, which the emulator cannot open, and the game would stop when it needs them. Move the folder somewhere with a shorter path, for example C:\Games\AstroQuest, and start again.") "OK" "Warning")
+    [void](Show-Box ("The game is in`n" + $gameFolder + "`n`nThat path is too long: some of the game's files have a path of more than 259 characters there, which the emulator cannot open, and the game would stop when it needs them. Move the folder somewhere with a shorter path, for example C:\Games\StatikQuest, and start again.") "OK" "Warning")
     exit 1
 }
 
 if (-not $NoMenu -and (Setting "menu" "1") -ne "0") {
     if (-not (Show-Menu)) { exit 0 }
 }
+if (-not (Ensure-StatikModule)) { exit 1 }
 
 # What the settings mean to the emulator.
-# resolution: the width of an eye (1440 the console's; larger ones are the game's sizes grown,
-# with the memory that takes). game: the console's sizes, chosen by the game itself.
-$resolution = Setting "resolution" "2880"
-$dynamic = (Setting "dynamic" "1") -ne "0"
-if ($resolution -eq "game") {
-    $env:SHADPS4_TITLE_RESOLUTION = "title"
-} else {
-    $width = 0
-    if (-not [int]::TryParse($resolution, [ref]$width)) { $width = 2880 }
-    # (The console's other sizes, 816 to 1200, as they were offered before.)
-    $smaller = @{ 816 = "3"; 960 = "4"; 1200 = "5" }
-    if ($smaller.ContainsKey($width)) {
-        $env:SHADPS4_TITLE_RESOLUTION = $smaller[$width]
-    } else {
-        $width = [math]::Max(1440, [math]::Min(4320, [int]([math]::Round($width / 8) * 8)))
-        if ($width -gt 1440) { $env:SHADPS4_TITLE_EYE_WIDTH = "$width" }
-        # Left to choose, the emulator draws smaller where the graphics card falls behind.
-        if (-not $dynamic) { $env:SHADPS4_TITLE_RESOLUTION = "6" }
-    }
-}
+# Statik uses the game's own rendering size and cadence. Do not export Astro Bot patches.
+Get-ChildItem Env: | Where-Object Name -Like 'SHADPS4_*' | ForEach-Object { Remove-Item ('Env:' + $_.Name) }
+$env:SHADPS4_VR = "1"
+$env:SHADPS4_JSON = "0"
+$headset = (Setting "headset" "1") -ne "0"
+$env:SHADPS4_OPENXR = $(if ($headset) { "1" } else { "0" })
+$env:SHADPS4_VR_DEMO = $(if ($headset) { "0" } else { "1" })
+$env:SHADPS4_XR_HEAD = "1"
+$env:SHADPS4_XR_HANDS = "1"
+$env:SHADPS4_XR_GRIPS = "1"
+$env:SHADPS4_XR_CONTROLLERS = "1"
+$env:SHADPS4_XR_PAUSE = $(if ($headset -and (Setting "pause" "1") -ne "0") { "1" } else { "0" })
 $env:SHADPS4_VR_SHARPEN = Setting "sharpen" "0.3"
 $env:SHADPS4_VR_DESKTOP_VIEW = Get-DesktopView
 $env:SHADPS4_VR_DESKTOP_CROP = $(if ((Setting "desktop_crop" "0") -eq "1") { "1" } else { "0" })
@@ -900,17 +797,11 @@ if ((Setting "predict_ms") -ne "") { $env:SHADPS4_XR_PREDICT_MS = Setting "predi
 if ((Setting "stick_touchpad" "1") -eq "0") { $env:SHADPS4_STICK_TOUCHPAD = "0" }
 if ((Setting "mic_gain") -ne "") { $env:SHADPS4_MIC_GAIN = Setting "mic_gain" }
 if ((Setting "surround" "1") -eq "0") { $env:SHADPS4_VIRTUAL_SURROUND = "0" }
-if ((Setting "real_time" "1") -eq "0") { $env:SHADPS4_TITLE_TIMESTEP = "0" }
 $fovSetting = Setting "fov" "100"
 if ($fovSetting -ne "100") { $env:SHADPS4_VR_FOV = $fovSetting }
 # fov_of: what fov is a percent of. headset: what the headset being worn shows, all of it at 100
 # (the emulator asks the headset as it starts). psvr: a PlayStation VR's, as the game was made.
-if ((Setting "fov_of" "headset") -ne "psvr") { $env:SHADPS4_VR_FOV_OF = "headset" }
-# fps: the most frames a second. (pace, the older way to say it: refreshes of the headset a
-# frame is given, 1 or more.)
-$env:SHADPS4_VR_FPS_CAP = Setting "fps" "60"
-$pace = Setting "pace" ""
-if ($pace -eq "1") { $env:SHADPS4_VR_FASTEST_PACE = "1"; $env:SHADPS4_VR_FPS_CAP = "" } elseif ($pace -ne "" -and $pace -ne "2") { $env:SHADPS4_VR_PACE = $pace }
+if ((Setting "fov_of" "psvr") -ne "psvr") { $env:SHADPS4_VR_FOV_OF = "headset" }
 if ((Setting "headset" "1") -eq "0") { $env:SHADPS4_OPENXR = "0" }
 if ((Setting "pause" "1") -eq "0") { $env:SHADPS4_XR_PAUSE = "0" }
 if ((Setting "controllers" "1") -eq "0") { $env:SHADPS4_XR_CONTROLLERS = "0" }
@@ -924,10 +815,7 @@ foreach ($pair in $extraEnv) {
 }
 
 # --- what is there ----------------------------------------------------------------------------
-Say "ASTRO BOT Rescue Mission - PC VR" "Cyan"
-if ($env:SHADPS4_TITLE_EYE_WIDTH) {
-    Say ("Each eye up to " + $env:SHADPS4_TITLE_EYE_WIDTH + " x " + (EyeHeight ([int]$env:SHADPS4_TITLE_EYE_WIDTH)) + ", at most " + $env:SHADPS4_VR_FPS_CAP + " frames a second.")
-}
+Say "Statik: Institute of Retention - PC VR" "Cyan"
 $runtime = ""
 if ($env:XR_RUNTIME_JSON) {
     $runtime = $env:XR_RUNTIME_JSON
@@ -946,7 +834,7 @@ if ($runtime -eq "") {
             $exe = Join-Path (Split-Path -Parent (Split-Path -Parent $runtime)) "VirtualDesktop.Streamer.exe"
             if (Test-Path $exe) {
                 Say "Starting Virtual Desktop Streamer..."
-                Start-Process $exe
+                Start-Process $exe -WindowStyle Hidden
             } else {
                 Say "Virtual Desktop Streamer is not running: start it, then connect from the headset." "Yellow"
             }
@@ -959,13 +847,8 @@ if ($env:SHADPS4_OPENXR -ne "0" -and [int]$env:SHADPS4_XR_WAIT -gt 0) {
     Say ("The game waits up to " + $env:SHADPS4_XR_WAIT + " seconds for the headset before it starts on the monitor.")
 }
 Say "Hold OPTIONS for a second (or press the PS button) to reset the view."
-Say "Where the game wants you to blow: into the headset's microphone, or hold the PS button and square"
-Say "(X and Y together on VR controllers)."
-Say "With VR controllers, or a gamepad that has no touchpad, the touchpad is on buttons:"
-Say "  right trigger (R2): press it and hold (water, guns)"
-Say "  right grip (R1): swipe forward (hook, throwing stars, chests)"
-Say "  left trigger (L2): pull back, let go to shoot (the catapult at the end of a level)"
-Say "  right stick: a finger on it, for anything else"
+Say "Use Statik's in-game prompts for the puzzle controls. A PC-connected DualSense is recommended."
+Say "The right stick can stand in for a touchpad finger on controllers without a touchpad."
 Say "Both sticks of VR controllers pressed in reset the view."
 Say "Close the game's window to quit."
 Say ""
@@ -1026,9 +909,9 @@ function Show-Log {
                 Say ("  " + $Matches[1])
             } elseif ($line -match '^\[Input\] <Warning> \([^)]*\) \S+ (?:\w+: )?(Controller .*)$') {
                 Say ("  " + $Matches[1]) "Yellow"
-            } elseif ($line -match '^\[Core\] <Info> \([^)]*\) \S+ (?:\w+: )?(CUSA12392 in a build .*|The title draws at up to .*|The scene is drawn at .*|Frames are given .*|The console.s language: .*)$') {
+            } elseif ($line -match '^\[Core\] <Info> \([^)]*\) \S+ (?:\w+: )?(CUSA06929 in a build .*|The title draws at up to .*|The scene is drawn at .*|Frames are given .*|The console.s language: .*)$') {
                 Say ("  " + $Matches[1])
-            } elseif ($line -match '^\[Core\] <Warning> \([^)]*\) \S+ (?:\w+: )?(This build of CUSA12392 .*)$') {
+            } elseif ($line -match '^\[Core\] <Warning> \([^)]*\) \S+ (?:\w+: )?(This build of CUSA06929 .*)$') {
                 Say ("  " + $Matches[1]) "Yellow"
             } elseif ($line -match '^\[Lib\.AudioIn\] <(Info|Warning)> \([^)]*\) \S+ (?:\w+: )?(Microphone: .*)$') {
                 if ($Matches[1] -eq "Warning") { Say ("  " + $Matches[2]) "Yellow" } else { Say ("  " + $Matches[2]) }

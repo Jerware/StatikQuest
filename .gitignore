@@ -7,14 +7,10 @@
 !/.gitmodules
 !/.github/
 !/README.md
-!/README-QUEST-VR.md
 !/README-PC-VR.md
-!/README-STATIK.md
-!/Play Statik VR.cmd
+!/Play Statik VR.bat
 !/LICENSE
 !/THIRD-PARTY-NOTICES.md
-!/Play Astro Bot VR.bat
-!/quest-host/
 !/shadps4-arm64-main/
 
 # The PC play folder: only the launcher and its settings, not the emulator built into it, nor
@@ -23,14 +19,8 @@
 /pc-vr/*
 !/pc-vr/launch.ps1
 !/pc-vr/settings.txt
-
-# Statik release tooling only; never include generated packages or user data.
-!/statik_beta/
-/statik_beta/*
-!/statik_beta/*.ps1
-!/statik_beta/*.cmd
-!/statik_beta/*.txt
-!/statik_beta/default_config.json
+!/pc-vr/package_setup.ps1
+!/pc-vr/default_config.json
 
 # Scripts yes, toolchains and downloads no (clang, CMake, Ninja, Windows SDK, sysroot, jadx,
 # apktool, PkgTool, the OpenXR loader for Android: see README.md, "Building").

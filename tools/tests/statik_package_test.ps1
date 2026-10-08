@@ -1,5 +1,5 @@
 $ErrorActionPreference='Stop'
-. (Join-Path $PSScriptRoot '..\..\statik_beta\package_setup.ps1')
+. (Join-Path $PSScriptRoot '..\..\pc-vr\package_setup.ps1')
 $temp=Join-Path ([IO.Path]::GetTempPath()) ('statik_pkg_'+[Guid]::NewGuid().ToString('N')+'.pkg')
 try {
     $header=New-Object byte[] 128

@@ -1,5 +1,5 @@
 $ErrorActionPreference='Stop'
-. (Join-Path $PSScriptRoot '..\..\statik_beta\package_setup.ps1')
+. (Join-Path $PSScriptRoot '..\..\pc-vr\package_setup.ps1')
 $base=[IO.Path]::GetFullPath([IO.Path]::GetTempPath())
 $root=Join-Path $base ('spc_'+[Guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($root)

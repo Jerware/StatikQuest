@@ -18,6 +18,6 @@ foreach($test in $tests) {
     if($LASTEXITCODE -ne 0) { throw "Test failed: $test" }
     Write-Output "PASS $test"
 }
-foreach($test in @('statik_launcher','statik_package','statik_package_cancel','statik_distribution')) {
+foreach($test in @('statik_launcher','statik_package','statik_package_cancel','statik_launcher_layout')) {
     & "$PSScriptRoot\tests\${test}_test.ps1"
 }

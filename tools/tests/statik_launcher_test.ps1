@@ -1,10 +1,10 @@
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path (Split-Path $PSScriptRoot)
-. (Join-Path $repo 'statik_beta\launcher.ps1') -CheckOnly | Out-Null
+. (Join-Path $repo 'pc-vr\launch.ps1') -CheckOnly | Out-Null
 if (-not (Get-GameError '')) { throw 'Empty game must be rejected.' }
 if (-not (Get-GameError (Join-Path $repo 'LICENSE'))) { throw 'Non-game file must be rejected.' }
 $tokens = $null; $errors = $null
-[void][Management.Automation.Language.Parser]::ParseFile((Join-Path $repo 'statik_beta\launcher.ps1'),[ref]$tokens,[ref]$errors)
+[void][Management.Automation.Language.Parser]::ParseFile((Join-Path $repo 'pc-vr\launch.ps1'),[ref]$tokens,[ref]$errors)
 if ($errors.Count) { throw $errors[0] }
 Write-Output 'Launcher parsing and invalid-game checks passed.'
 $testRoot=Join-Path ([IO.Path]::GetTempPath()) ('statik_sfo_'+[Guid]::NewGuid().ToString('N'))

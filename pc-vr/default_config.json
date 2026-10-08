@@ -9,7 +9,7 @@
     "sdl_padSpk_output_device": "Default Device"
   },
   "Debug": {
-    "config_version": "9f42c44d4e838e3a0df67913e350c4f098110862",
+    "config_version": "",
     "debug_dump": false,
     "shader_collect": false
   },
@@ -77,14 +77,14 @@
   },
   "Log": {
     "append": false,
-    "enable": false,
-    "filter": "*:Critical",
+    "enable": true,
+    "filter": "*:Warning Core.Vr:Info Input:Info",
     "max_skip_duration": 5000,
     "separate": false,
     "size_limit": 52428800,
     "skip_duplicate": true,
     "sync": false,
-    "type": "wincolor"
+    "type": "file"
   },
   "Vulkan": {
     "gpu_id": -1,
