@@ -81,7 +81,7 @@ The full commands and requirements are in [docs/BUILDING.md](docs/BUILDING.md). 
 
 StatikQuest is free software, licensed under the [GNU General Public License, version 2 or (at your option) any later version](LICENSE) (GPL-2.0-or-later), the license of shadPS4 it is built on.
 
-The third-party components it uses or ships keep their own licenses, including PkgTool (LGPL-3.0), the Khronos OpenXR SDK (Apache-2.0) and the libraries under `shadps4-arm64-main/externals`. See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for notices and outstanding source/license obligations that must be addressed before a public binary release.
+The third-party components it uses or ships keep their own licenses, including PkgTool (LGPL-3.0), the Khronos OpenXR SDK (Apache-2.0) and the libraries under `shadps4-arm64-main/externals`. See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for their notices and sources.
 
 This project is not affiliated with, endorsed or sponsored by the game's publisher, Sony, Meta or headset vendors. It contains no game, firmware, keys or other copyrighted console files: use it only with software you own and have dumped yourself.
 

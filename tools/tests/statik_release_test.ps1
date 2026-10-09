@@ -40,7 +40,7 @@ try {
             if ($config.General.$key -ne '') { throw "Personal path/device in $path" }
         }
         if (@($config.General.install_dirs).Count -ne 0 -or $config.Input.default_controller_id -ne '' -or $config.Vulkan.gpu_id -ne -1) { throw 'Personal device/game configuration included.' }
-        if ($configText -match '[A-Za-z]:[\\/]|jer\.williams@gmail\.com') { throw 'Private content in config.' }
+        if ($configText -match '[A-Za-z]:[\\/]|[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[A-Za-z0-9.-]+') { throw 'Private content in config.' }
     }
     $readme = Read-ZipText $entries['README.txt']
     if ($readme -match '@VERSION@|ASTRO BOT Rescue Mission|Play Astro Bot|120 Hz|libSceJson2\.sprx') { throw 'Unadapted release instructions.' }
