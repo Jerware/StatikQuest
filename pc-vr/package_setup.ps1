@@ -69,16 +69,6 @@ function Install-StatikPackage([string]$path, [string]$destinationRoot, [string]
     }
 }
 
-function Test-StatikModule([string]$path) {
-    if ([string]::IsNullOrWhiteSpace($path)) { return $false }
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $false }
-    $stream = [IO.File]::OpenRead($path)
-    try {
-        $header = New-Object byte[] 4
-        return $stream.Read($header, 0, 4) -eq 4 -and [BitConverter]::ToString($header) -eq '7F-45-4C-46'
-    } finally { $stream.Dispose() }
-}
-
 function Get-GameError([string]$path) {
     if ([string]::IsNullOrWhiteSpace($path)) { return 'Choose the eboot.bin from your extracted Statik game.' }
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return 'Choose the eboot.bin from your extracted Statik game.' }

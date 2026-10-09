@@ -13,6 +13,14 @@
 !/THIRD-PARTY-NOTICES.md
 !/shadps4-arm64-main/
 
+# Reviewed documentation assets only; emulator screenshots stay in its ignored profile.
+!/docs/
+/docs/*
+!/docs/BUILDING.md
+!/docs/images/
+/docs/images/*
+!/docs/images/statik-gameplay.png
+
 # The PC play folder: only the launcher and its settings, not the emulator built into it, nor
 # its user folder (saves, logs, shader cache).
 !/pc-vr/

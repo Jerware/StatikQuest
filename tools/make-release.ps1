@@ -16,7 +16,11 @@ foreach ($file in @('PkgTool.exe','LibOrbisPkg.dll','LICENSE.txt','README.md')) 
 [void][IO.Directory]::CreateDirectory((Join-Path $dest 'pc-vr\user'))
 [void][IO.Directory]::CreateDirectory((Join-Path $dest 'pc-vr\pkgtool'))
 [void][IO.Directory]::CreateDirectory((Join-Path $dest 'games'))
+[void][IO.Directory]::CreateDirectory((Join-Path $dest 'docs\images'))
 foreach ($file in @('Play Statik VR.bat','README.md','README-PC-VR.md','LICENSE','THIRD-PARTY-NOTICES.md')) {
+    Copy-Item -LiteralPath (Join-Path $repo $file) -Destination (Join-Path $dest $file)
+}
+foreach ($file in @('docs\BUILDING.md','docs\images\statik-gameplay.png')) {
     Copy-Item -LiteralPath (Join-Path $repo $file) -Destination (Join-Path $dest $file)
 }
 foreach ($file in @('launch.ps1','settings.txt','package_setup.ps1','default_config.json')) {

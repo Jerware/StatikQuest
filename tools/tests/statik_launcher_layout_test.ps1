@@ -7,7 +7,8 @@ if ($errors.Count) { throw $errors[0] }
 $text=[IO.File]::ReadAllText($launcher)
 foreach ($forbidden in @('Frames a second, at most','Resolution of each eye','Save-Setting "fps"',
     'Save-Setting "resolution"','SHADPS4_TITLE_EYE_WIDTH','SHADPS4_VR_FPS_CAP','SHADPS4_TITLE_RESOLUTION',
-    'SHADPS4_VR_FASTEST_PACE','SHADPS4_TITLE_TIMESTEP','ASTRO BOT Rescue Mission','Astro Bot VR','CUSA12392')) {
+    'SHADPS4_VR_FASTEST_PACE','SHADPS4_TITLE_TIMESTEP','ASTRO BOT Rescue Mission','Astro Bot VR','CUSA12392',
+    'Ensure-StatikModule','Test-StatikModule','libSceJson2.sprx')) {
     if ($text.Contains($forbidden)) { throw "Obsolete Astro-only launcher feature: $forbidden" }
 }
 foreach ($required in @('Console language','Field of view','Desktop view','Show this window at every start','Statik VR')) {
@@ -27,7 +28,7 @@ foreach ($runtime in @('steamvr','virtualdesktop','')) {
     $instructions=(Get-VrInstructions $runtime)-join "`n"
     if ($instructions -match 'jump|punch|catapult|throwing stars') { throw 'Astro Bot controls remain in Statik instructions.' }
 }
-if (Test-StatikModule (Join-Path $repo 'LICENSE')) { throw 'Non-ELF file accepted as a system module.' }
+if ($text -match '\$env:SHADPS4_JSON\s*=') { throw "Launcher must use AstroQuest's default built-in JSON support." }
 $defaults=[IO.File]::ReadAllText((Join-Path $repo 'pc-vr\settings.txt'))
 if ($defaults -match '(?m)^\s*(resolution|fps|dynamic|pace|real_time)\s*=') { throw 'Astro-only settings remain in template.' }
-Write-Output 'PASS Statik launcher layout: no resolution/FPS overrides, Statik-only branding, .bat entry point and shared VR settings retained.'
+Write-Output 'PASS Statik launcher layout: built-in JSON without a module prompt, no resolution/FPS overrides, Statik-only branding and .bat entry point.'

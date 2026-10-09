@@ -1,91 +1,91 @@
-> [!WARNING]
-> # 🚧 UNDER CONSTRUCTION 🚧
-> This project is under active development and is not yet ready for general use.
-
 # StatikQuest
 
-Statik: Institute of Retention (PS4 / PlayStation VR), played on a Windows PC
-through a PS4 emulator and shown in a headset through OpenXR. Based on
-[AstroQuest](https://github.com/bigmak94/AstroQuest) and
-[shadPS4](https://github.com/shadps4-emu/shadPS4).
+**Statik: Institute of Retention (PS4 / PlayStation VR) in virtual reality**, played from your own copy of the game through a PS4 emulator. Ways to play:
 
-This is a **Statik-only PC VR fork**. Quest headsets work through a PC connection
-such as Virtual Desktop or SteamVR; there is no standalone Quest app or APK build.
+- **On a Windows PC, shown in the Quest through Virtual Desktop**: the PC runs the emulator, and Virtual Desktop connects the headset through its VDXR OpenXR runtime.
+- **On a Windows PC with a SteamVR headset**: the same PC build uses SteamVR's OpenXR runtime and a controller connected to the PC. Other PC headsets use an OpenXR runtime of their own; not all headset/controller combinations have been tested with Statik.
 
-No game, firmware, system modules, keys or proprietary SDK files are included.
-Bring your own game dump and compatible decrypted `libSceJson2.sprx` module.
+There is no standalone Quest build: **a Windows PC is required**.
+
+The emulator is [shadPS4](https://github.com/shadps4-emu/shadPS4), with inherited work from [AstroQuest](https://github.com/bigmak94/AstroQuest) and [shadps4-arm64](https://github.com/zenithblue-oss/shadps4-arm64). This fork adapts that work for Statik, with fixes for stereo rendering, tracking, reprojection and other issues under emulation.
+
+> **No game files are included or distributed.** You need your own copy of Statik: Institute of Retention, dumped from your own PlayStation 4.
+
+![Statik gameplay: the puzzle box held in front of the laboratory desk](docs/images/statik-gameplay.png)
 
 ## Status
 
-The Statik compatibility work was ported onto the newer AstroQuest fork. The
-Release build and quick regression checks passed; desktop preview reached Statik's
-start screen in both eyes. Full headset acceptance testing remains pending.
+Work in progress. Most levels have been tested, but not all. The current Windows build has passed regression checks and a headset play test; full-game completion and compatibility with every headset, controller and PC have not been verified. Expect rough edges, and please report what you find.
 
-Support is currently for the European base game, **CUSA06929**. Other regions and
-updates have not been verified. The launcher rejects other games and update-only
-packages; it does not launch Astro Bot.
+## What you need
 
-## Playing on PC VR
+- **A VR headset connected to a Windows PC**, through Virtual Desktop or a PC OpenXR runtime such as SteamVR. There is no app to install on the headset itself.
+- **For positional controller tracking through Virtual Desktop**, enable hand tracking on the headset and Virtual Desktop's **Forward tracking data to PC** feature so the controller can be positioned using your tracked hands.
+- **Something to play with.** A PS5 DualSense controller is the closest match to the PS4 controller the game expects, with buttons, sticks, touchpad and motion sensors. A DualShock 4 is another option. Alternative gamepads and VR-controller replacement have not been fully verified with Statik.
+- **Statik: Institute of Retention, European base release CUSA06929**, dumped from your own console and game: either as the game's folder (the one with `eboot.bin`, `sce_sys` and `sce_module` in it), or as the `.pkg` package made from the dump, which the PC launcher unpacks by itself. A package downloaded from the PlayStation Store is encrypted and cannot be used; a package that is only the game's update is not the game. Other regions and updates are unverified.
+- **A 64-bit Windows PC**, a Vulkan-capable graphics card and suitable driver, and the [Microsoft Visual C++ Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe) (the launcher says so if it is missing). For Quest through Virtual Desktop, you need [Virtual Desktop](https://www.vrdesktop.net/) on the headset and its Streamer on the PC.
 
-1. Connect your headset through Virtual Desktop or start its OpenXR runtime
-   (SteamVR for headsets that use it). The launcher uses the active runtime
-   without changing it.
-2. Connect a DualSense/DualShock to the PC itself by USB or Bluetooth. Disable
-   Steam Input if launching from a Steam shortcut.
-3. Start **Play Statik VR.bat**. Put your own extracted game in `games`, or
-   select its `eboot.bin` when asked. PkgTool can unpack a compatible unencrypted
-   base-game `.pkg`, keeping the original and protecting existing installations.
-4. Select your compatible decrypted `libSceJson2.sprx` when asked. A private copy
-   is kept in `pc-vr/user/custom_modules/CUSA06929`.
-5. Choose console language, field of view and desktop view, then press Play.
-   Follow Statik's in-game prompts for the puzzle controls.
+## Installing: PC VR through Virtual Desktop
 
-The launcher retains AstroQuest's Windows interface, adapted for Statik. Its
-Astro Bot-specific resolution and maximum-frame-rate controls are removed:
-Statik controls its own rendering size and cadence. Shared VR/input features
-still need verification in Statik. See [the PC VR guide](README-PC-VR.md).
+A source checkout does not include the emulator executable: follow [Building from source](#building-from-source) first. With a prepared PC build, keep the whole folder together, then:
 
-## Repository layout
+1. **Put it in a folder with a short path**, e.g. `C:\Games\StatikQuest`. Some of the game's files have long names, and the emulator cannot open a file whose full path exceeds Windows' path limit. The launcher warns if the game path is too long.
+2. **Put your copy of the game in its `games` folder**, anywhere in it: the game's folder (the one with `eboot.bin` in it) or its `.pkg` file. A compatible package is unpacked the first time you start. You can also leave the game where it is: when the launcher finds none, a window asks where it is and remembers the answer. The original package is kept; existing installations are not overwritten.
+3. **Set up Virtual Desktop**: install the Streamer on the PC and, in its Options, choose **VDXR** as the OpenXR runtime.
+4. **Connect the DualSense to the PC**, by USB cable or by Bluetooth paired with the PC, not with the headset: paired with the headset, it can reach the PC without motion sensors or touchpad. Disable Steam Input if using a Steam shortcut.
+5. **Connect to the PC with Virtual Desktop**, then start **`Play Statik VR.bat`** on the desktop you see in the headset. The first time, it offers to unpack the game if it is a package (or asks where the game is). Then a small window lets you choose the console language (Windows' own unless you choose another), field of view and desktop view; Play starts the game.
 
-- `pc-vr/`: launcher, default settings and package validation. Generated emulator,
-  personal settings, private modules and saves are ignored.
-- `shadps4-arm64-main/`: inherited emulator source and pinned dependencies.
-  Its upstream folder name is retained; it does not imply a standalone Quest app.
-- `tools/`: build/staging scripts, developer tools and regression tests.
-- `build/`: ignored local build output.
+Leave the settings at their defaults for your first run and follow Statik's in-game prompts.
 
-Standalone-Quest and separate beta-release preparation files are no longer in
-the active project. Previous versions remain recoverable from Git history.
+For a SteamVR headset, start SteamVR with SteamVR selected as the OpenXR runtime instead of setting up Virtual Desktop. The launcher uses the active runtime; it does not change your system's runtime setting.
+
+All settings and what to do when something does not work are in [README-PC-VR.md](README-PC-VR.md).
+
+## Common questions
+
+**How do I get the game onto my computer?** This project gives no information on how to get games, and this repository does not include any game data.
+
+**Which headsets?** A PC-connected headset with an OpenXR runtime on Windows. Quest headsets connect through a PC VR connection such as Virtual Desktop; SteamVR headsets use SteamVR. This is not a claim that every headset has been tested with Statik. There is no standalone Quest app.
+
+**Do I need a PlayStation controller?** A DualSense or DualShock 4 is the intended starting point. Statik's puzzles use the gamepad's controls and motion; alternative controllers and VR-controller replacement are not fully verified.
+
+**Without Virtual Desktop?** For a SteamVR headset, use SteamVR as the OpenXR runtime. Start SteamVR first, then `Play Statik VR.bat`; see [README-PC-VR.md](README-PC-VR.md).
+
+**Where is the option to unpack the game?** When the launcher cannot find a game, choose **Show where it is...** and select its `.pkg`, or put the package in `games` and choose **Look again**. If an extracted game is already found, that setup window is skipped. The launcher supports compatible unencrypted base-game `.pkg` files, not `.iso` files or update-only packages.
+
+**Where are my saves?** Under `pc-vr/user/home`. Keep that profile when updating. Personal settings, modules, saves, logs and caches are excluded from Git, but a used play folder still contains them: do not zip and share the whole working folder as a release.
+
+**How do I report a problem?** Include your headset/controller, PC specifications, game version and what happened. Logs are in `pc-vr/user/log`; check them for private information before sharing. Do not include game files, modules or saves.
 
 ## Building from source
 
-On Windows, use Visual Studio C++ Build Tools with a Windows SDK, CMake/Ninja,
-Git and LLVM (`clang-cl`, `llvm-lib`, `llvm-rc`). LLVM 21.1.8 was used locally.
-No Sony SDK is required.
+Clone with the submodules:
 
-```powershell
-git submodule update --init --recursive
-.\tools\build_pcvr_release.ps1 -LlvmDirectory C:\path\to\llvm\bin
-.\tools\test_pcvr_release.ps1 -LlvmDirectory C:\path\to\llvm\bin -BuildDirectory .\build\pcvr_release
-.\tools\make-pc-vr.ps1 -PkgToolDirectory C:\path\to\pkgtool
+```sh
+git clone --recurse-submodules https://github.com/Jerware/StatikQuest.git
 ```
 
-PkgTool/LibOrbisPkg v0.2.231 is optional for already extracted games. Staging
-updates the playable emulator without overwriting an existing profile or copying
-games, modules or saves from another workspace. `tools/make-pc-vr.sh` is the
-equivalent Git Bash entry point.
+The PC build uses Visual Studio C++ Build Tools with a Windows SDK and CMake/Ninja, plus LLVM (`clang-cl`, `llvm-lib` and `llvm-rc`). LLVM 21.1.8 was used locally. No Sony SDK is required.
 
-`tools/make-release.sh <version>` makes a clean, PC-only local staging archive.
-It does not upload a release or establish distribution/license clearance.
+- **PC build**: `tools/build_pcvr_release.ps1` builds the emulator, then `tools/make-pc-vr.ps1` puts it in `pc-vr/`.
+- **Regression checks**: `tools/test_pcvr_release.ps1` runs the native and launcher tests.
+- `tools/make-release.sh <version>` packs clean PC-only staging files into `build/release/`. It uses PkgTool 0.2.231 for package extraction.
 
-## License and credits
+The full commands and requirements are in [docs/BUILDING.md](docs/BUILDING.md). Packaging does not upload a release or establish binary-distribution clearance.
 
-StatikQuest is GPL-2.0-or-later; see [LICENSE](LICENSE) and
-[third-party notices](THIRD-PARTY-NOTICES.md). Inherited release-audit concerns,
-including FDK-AAC compatibility and static dependency source/relinking obligations,
-remain unresolved. Local build checks are not public-release clearance.
+## License
 
-Thanks to bigmak94/AstroQuest, the shadPS4 and shadps4-arm64 contributors, and the
-OpenXR/Vulkan and third-party library authors. Original ownership and license
-notices remain in the source. This project is not affiliated with or endorsed by
-the game's publisher, Sony, Meta or headset vendors.
+StatikQuest is free software, licensed under the [GNU General Public License, version 2 or (at your option) any later version](LICENSE) (GPL-2.0-or-later), the license of shadPS4 it is built on.
+
+The third-party components it uses or ships keep their own licenses, including PkgTool (LGPL-3.0), the Khronos OpenXR SDK (Apache-2.0) and the libraries under `shadps4-arm64-main/externals`. See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for notices and outstanding source/license obligations that must be addressed before a public binary release.
+
+This project is not affiliated with, endorsed or sponsored by the game's publisher, Sony, Meta or headset vendors. It contains no game, firmware, keys or other copyrighted console files: use it only with software you own and have dumped yourself.
+
+## Thanks
+
+- **[bigmak94/AstroQuest](https://github.com/bigmak94/AstroQuest)**, for the project and PSVR work this fork builds on.
+- **The [shadPS4](https://github.com/shadps4-emu/shadPS4) team and contributors.** None of this would exist without their PlayStation 4 emulator: everything here is built on top of their years of work. Thank you!
+- [zenithblue-oss/shadps4-arm64](https://github.com/zenithblue-oss/shadps4-arm64), for the inherited emulator source.
+- [LibOrbisPkg](https://github.com/maxton/LibOrbisPkg), whose PkgTool unpacks game packages for the PC launcher.
+- Everyone who reported what went wrong, and those who sent fixes along in AstroQuest and shadPS4, including the shared OpenXR and spectator-view work.
+- [The Khronos Group](https://www.khronos.org/) for OpenXR and Vulkan, and [Virtual Desktop](https://www.vrdesktop.net/) for the PC streaming path.

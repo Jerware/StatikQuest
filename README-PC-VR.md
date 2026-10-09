@@ -10,8 +10,8 @@ runtime. For an Index or another SteamVR headset, start SteamVR and select it as
 your OpenXR runtime. Other PC OpenXR runtimes use the same path. The launcher
 does not change system/runtime settings. There is no standalone Quest app.
 
-Start with a headset refresh rate of 120 Hz; Statik's rendering cadence is
-game-controlled. A desktop startup check is not physical-headset verification.
+Statik's rendering cadence is game-controlled. A desktop startup check is not
+physical-headset verification.
 
 Connect your DualSense/DualShock to the PC itself, not the headset, so the
 emulator receives its motion sensors and touchpad. Disable Steam Input for any
@@ -20,20 +20,22 @@ place the gamepad; without tracked position, shared VR code provides a fixed
 position. VR-controller replacement, positional tracking, recenter shortcuts
 and puzzle interactions still need verification in Statik.
 
-## Game and module
+## Game
 
 Use the CUSA06929 European **base game**: its extracted `eboot.bin`, its folder,
 or a compatible unencrypted `.pkg`. Other games/regions and update-only packages
-are rejected. PkgTool is required only for package extraction.
+are rejected. PkgTool is required only for package extraction; `.iso` files are
+not supported by the launcher.
+
+If no game is found, the launcher shows **Where is the game?** Choose **Show
+where it is...** to select `eboot.bin` or a `.pkg`, or place your copy in the
+`games` folder and choose **Look again**. Once a game is found, this setup window
+is skipped on subsequent starts, following AstroQuest's flow.
 
 The extractor uses a separate temporary folder and validates the game's metadata
 before installation. It never overwrites an existing installation. Failure or
 cancellation retains partial files/logs, and the original package is kept. Keep
 installation paths short.
-
-Statik also needs your own compatible decrypted `libSceJson2.sprx`. If missing,
-the launcher asks for it, checks its ELF header and keeps a private copy in
-`pc-vr/user/custom_modules/CUSA06929`. Do not upload your game or module.
 
 ## Launcher settings
 
@@ -61,9 +63,10 @@ under `pc-vr/user`, with saves under `user/home`. Updating the executable preser
 the profile. Used play folders contain private data: do not upload them as a
 release package.
 
-The old AstroQuest development folder and its original launchers were not changed.
+Most levels have been tested, but not all. The current build has passed a headset
+play test; full-game completion and broad hardware compatibility remain unverified.
 
-For headset acceptance, check stereo depth/eye alignment, head and controller
+When testing your setup, check stereo depth/eye alignment, head and controller
 tracking, recentering, pause/menu overlays and effects in both eyes, sound, a
 level transition, save/load and normal exit. Logs are in `pc-vr/user/log`; check
 for private paths before sharing them, and never include games, modules or saves.

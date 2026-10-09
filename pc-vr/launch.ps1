@@ -564,26 +564,6 @@ function Get-MissingRuntime([string]$system = "", [string]$beside = "") {
 }
 
 # --- the window -------------------------------------------------------------------------------
-function Ensure-StatikModule {
-    $moduleDir = Join-Path $here "user\custom_modules\CUSA06929"
-    $module = Join-Path $moduleDir "libSceJson2.sprx"
-    if (Test-StatikModule $module) { return $true }
-    [void](Show-Box "Statik requires your own compatible decrypted libSceJson2.sprx system module. Select it in the next window; a copy will be kept in this PC profile.")
-    $dialog = New-Object System.Windows.Forms.OpenFileDialog
-    $dialog.Title = "Select your decrypted libSceJson2.sprx"
-    $dialog.Filter = "JSON system module|libSceJson2.sprx"
-    try {
-        if ($dialog.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return $false }
-        if (-not (Test-StatikModule $dialog.FileName)) {
-            [void](Show-Box "This is not a decrypted ELF module. Select a compatible decrypted libSceJson2.sprx." "OK" "Warning")
-            return $false
-        }
-        [void][IO.Directory]::CreateDirectory($moduleDir)
-        Copy-Item -LiteralPath $dialog.FileName -Destination $module
-        return $true
-    } finally { $dialog.Dispose() }
-}
-
 function Show-Menu {
 
     $form = New-Object System.Windows.Forms.Form
@@ -772,13 +752,11 @@ if ($gameFolder.Length + 1 + $longestInside -gt 259) {
 if (-not $NoMenu -and (Setting "menu" "1") -ne "0") {
     if (-not (Show-Menu)) { exit 0 }
 }
-if (-not (Ensure-StatikModule)) { exit 1 }
 
 # What the settings mean to the emulator.
 # Statik uses the game's own rendering size and cadence. Do not export Astro Bot patches.
 Get-ChildItem Env: | Where-Object Name -Like 'SHADPS4_*' | ForEach-Object { Remove-Item ('Env:' + $_.Name) }
 $env:SHADPS4_VR = "1"
-$env:SHADPS4_JSON = "0"
 $headset = (Setting "headset" "1") -ne "0"
 $env:SHADPS4_OPENXR = $(if ($headset) { "1" } else { "0" })
 $env:SHADPS4_VR_DEMO = $(if ($headset) { "0" } else { "1" })
