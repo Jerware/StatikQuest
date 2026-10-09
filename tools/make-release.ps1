@@ -80,4 +80,4 @@ Write-ReleaseText $checksums ($checksumLine + "`n")
 Write-Output "Local PC staging archive: $zip"
 Write-Output $checksumLine
 Write-Output "Release checksums: $checksums"
-Write-Warning 'Local staging only: inherited source/license release audit remains unresolved. Nothing was uploaded.'
+Write-Output 'Local staging only. Nothing was uploaded.'

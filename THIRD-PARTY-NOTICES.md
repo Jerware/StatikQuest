@@ -18,15 +18,6 @@ No standalone Quest APK or Android runtime is packaged by this fork's release
 scripts. Generic upstream architecture code/attributions remain in the inherited
 emulator source; their presence is not a standalone Quest distribution.
 
-## Release preparation status
-
-The previous local beta's source/license preparation records are historical,
-not clearance for this port. FDK-AAC compatibility, static dependency source and
-relinking obligations, and provenance review remain unresolved. A clean local
-package allowlist and successful build are not public distribution clearance.
-Do not publish binaries until those obligations are addressed. No new public
-binary release is made by the layout/launcher changes.
-
 ## Not included
 
 No game data, PS4 firmware, decrypted system modules, keys, saves or proprietary

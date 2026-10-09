@@ -50,9 +50,8 @@ used profile. It follows AstroQuest's PC release layout: a short `README.txt`,
 `LICENSE.txt`, a game-folder hint, PkgTool and a pristine input/save profile.
 Controller bindings are derived from the emulator source, not a played profile.
 It excludes personal settings, games, decrypted modules and saves.
-It does not upload anything or establish release clearance: review the unresolved
-obligations in [third-party notices](../THIRD-PARTY-NOTICES.md) before distributing
-binaries.
+It does not upload anything. Third-party licenses and sources are listed in
+[third-party notices](../THIRD-PARTY-NOTICES.md).
 
 ## Source layout
 

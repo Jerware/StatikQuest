@@ -73,7 +73,7 @@ The PC build uses Visual Studio C++ Build Tools with a Windows SDK and CMake/Nin
 - **Regression checks**: `tools/test_pcvr_release.ps1` runs the native and launcher tests.
 - `tools/make-release.sh <version>` packs clean PC-only staging files into `build/release/`. It uses PkgTool 0.2.231 for package extraction.
 
-The full commands and requirements are in [docs/BUILDING.md](docs/BUILDING.md). Packaging does not upload a release or establish binary-distribution clearance.
+The full commands and requirements are in [docs/BUILDING.md](docs/BUILDING.md). Packaging does not upload a release.
 
 ## License
 
