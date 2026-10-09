@@ -1,0 +1,11 @@
+Put your own copy of Statik: Institute of Retention (European base release CUSA06929) in
+this folder, then start "Play Statik VR.bat". Either form will do, anywhere in here:
+
+- the game's folder, the one with eboot.bin in it, or
+- the game's .pkg file: it is unpacked the first time.
+  Only a compatible unencrypted package made from your own game dump can be unpacked.
+  One downloaded from the PlayStation Store is encrypted and cannot be used. A package
+  that is only the game's update is not the game. Other regions and updates are unverified.
+
+If the game is somewhere else, just start: a window asks where it is.
+The launcher does not unpack .iso files. No game files are included.

@@ -27,6 +27,8 @@ Work in progress. Most levels have been tested, but not all. The current Windows
 
 ## Installing: PC VR through Virtual Desktop
 
+Download the Windows PC ZIP from the [latest release](https://github.com/Jerware/StatikQuest/releases/latest) and unzip it. There is no standalone Quest APK.
+
 A source checkout does not include the emulator executable: follow [Building from source](#building-from-source) first. With a prepared PC build, keep the whole folder together, then:
 
 1. **Put it in a folder with a short path**, e.g. `C:\Games\StatikQuest`. Some of the game's files have long names, and the emulator cannot open a file whose full path exceeds Windows' path limit. The launcher warns if the game path is too long.

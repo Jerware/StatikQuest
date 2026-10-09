@@ -40,12 +40,16 @@ staging script.
 ## Local packaging
 
 `tools/make-release.ps1 -Version <version> -PkgToolDirectory C:\path\to\pkgtool`
-makes a new PC-only staging folder and ZIP under `build/release`. The equivalent
+makes a new PC-only staging folder, ZIP and `SHA256SUMS.txt` under
+`build/release/<version>`. The equivalent
 Git Bash entry point is `tools/make-release.sh <version>`; supply PkgTool under
 `tools/pkgtool` for its defaults. Existing staging folders are never overwritten.
 
 Packaging uses an explicit allowlist and fresh default configuration, not your
-used profile. It excludes personal settings, games, decrypted modules and saves.
+used profile. It follows AstroQuest's PC release layout: a short `README.txt`,
+`LICENSE.txt`, a game-folder hint, PkgTool and a pristine input/save profile.
+Controller bindings are derived from the emulator source, not a played profile.
+It excludes personal settings, games, decrypted modules and saves.
 It does not upload anything or establish release clearance: review the unresolved
 obligations in [third-party notices](../THIRD-PARTY-NOTICES.md) before distributing
 binaries.

@@ -38,6 +38,7 @@
 !/tools/re/
 !/tools/shims/
 !/tools/tests/
+!/tools/release-assets/
 /tools/*.local
 
 # Never anywhere: game files and packages.
