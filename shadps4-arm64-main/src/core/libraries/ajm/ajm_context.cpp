@@ -53,9 +53,9 @@ s32 AjmContext::ModuleRegister(AjmCodecType type) {
     if (std::to_underlying(type) >= NumAjmCodecs) {
         return ORBIS_AJM_ERROR_INVALID_PARAMETER;
     }
-    // StatikQuest leaves out the FDK AAC decoder, whose license is incompatible with the GPL.
-    // Statik registers only ATRAC9. Refusing registration also keeps AAC instances from being
-    // created, since InstanceCreate requires a registered codec.
+    // AAC decoding is not included in this build; Statik uses only ATRAC9. Refusing
+    // registration also keeps AAC instances from being created, since InstanceCreate requires
+    // a registered codec.
     if (type == AjmCodecType::M4aacDec) {
         LOG_WARNING(Lib_Ajm, "AAC decoding is not supported in this build");
         return ORBIS_AJM_ERROR_CODEC_NOT_SUPPORTED;
