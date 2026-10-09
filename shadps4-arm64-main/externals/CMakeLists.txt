@@ -276,8 +276,6 @@ if (WIN32)
 add_subdirectory(ext-wepoll)
 endif()
 
-add_subdirectory(aacdec)
-
 #nlohmann json 
 if (NOT TARGET nlohmann_json::nlohmann_json)
 set(JSON_BuildTests OFF CACHE INTERNAL "")

@@ -105,9 +105,6 @@
 [submodule "externals/miniz"]
 	path = externals/miniz
 	url = https://github.com/richgel999/miniz
-[submodule "externals/aacdec/fdk-aac"]
-	path = externals/aacdec/fdk-aac
-	url = https://android.googlesource.com/platform/external/aac
 [submodule "externals/freetype"]
 	path = externals/freetype
 	url = https://github.com/freetype/freetype.git

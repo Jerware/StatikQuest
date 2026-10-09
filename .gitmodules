@@ -105,9 +105,6 @@
 [submodule "shadps4-arm64-main/externals/miniz"]
 	path = shadps4-arm64-main/externals/miniz
 	url = https://github.com/richgel999/miniz
-[submodule "shadps4-arm64-main/externals/aacdec/fdk-aac"]
-	path = shadps4-arm64-main/externals/aacdec/fdk-aac
-	url = https://android.googlesource.com/platform/external/aac
 [submodule "shadps4-arm64-main/externals/freetype"]
 	path = shadps4-arm64-main/externals/freetype
 	url = https://github.com/freetype/freetype.git
