@@ -45,6 +45,8 @@ installation paths short.
   `fov_of=headset` uses the headset's reported view. Test eye alignment.
 - **Desktop view**: stereo, single-eye spectator or combined-eye spectator,
   optionally cropping top/bottom to fill the window.
+- **PS4 Pro mode**: on by default. Statik renders each eye at 1728×1944, as on
+  a PS4 Pro, instead of 1392×1566. Untick to run it as on a base PS4.
 - **Show this window at every start**: untick to skip the menu next time.
 
 There is no resolution slider or maximum-frame-rate selector. Those upstream

@@ -299,6 +299,11 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
                      Common::ConsoleLanguageName(EmulatorSettings.GetConsoleLanguage()), wanted);
         }
     }
+    // SHADPS4_NEO_MODE: "1" to run as a PS4 Pro, "0" as a base PS4, whatever the configuration
+    // files say. Set as this title's own value, so it also wins over a per-game file.
+    if (const char* neo = std::getenv("SHADPS4_NEO_MODE"); neo != nullptr && neo[0] != '\0') {
+        EmulatorSettings.SetNeo(neo[0] != '0', true);
+    }
 
     auto guest_eboot_path = "/app0/" + eboot_name.generic_string();
     const auto eboot_path = mnt->GetHostPath(guest_eboot_path);

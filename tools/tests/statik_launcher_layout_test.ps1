@@ -11,7 +11,7 @@ foreach ($forbidden in @('Frames a second, at most','Resolution of each eye','Sa
     'Ensure-StatikModule','Test-StatikModule','libSceJson2.sprx')) {
     if ($text.Contains($forbidden)) { throw "Obsolete Astro-only launcher feature: $forbidden" }
 }
-foreach ($required in @('Console language','Field of view','Desktop view','Show this window at every start','Statik VR')) {
+foreach ($required in @('Console language','Field of view','Desktop view','Show this window at every start','PS4 Pro mode','Statik VR')) {
     if (-not $text.Contains($required)) { throw "Missing retained launcher feature: $required" }
 }
 $bat=[IO.File]::ReadAllText((Join-Path $repo 'Play Statik VR.bat'))

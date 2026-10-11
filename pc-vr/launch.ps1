@@ -568,7 +568,7 @@ function Show-Menu {
 
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "Statik VR"
-    $form.ClientSize = New-Object System.Drawing.Size(560, 300)
+    $form.ClientSize = New-Object System.Drawing.Size(560, 332)
     $form.StartPosition = "CenterScreen"
     $form.FormBorderStyle = "FixedDialog"
     $form.MaximizeBox = $false
@@ -659,6 +659,15 @@ function Show-Menu {
     $form.Controls.Add($desktopCrop)
     $y += 40
 
+    # Statik renders each eye at 1728x1944 on a PS4 Pro, 1392x1566 on a base PS4.
+    $pro = New-Object System.Windows.Forms.CheckBox
+    $pro.Name = "pro"
+    $pro.Text = "PS4 Pro mode: sharper picture (1728x1944 per eye, not 1392x1566)"
+    $pro.Checked = (Setting "pro" "1") -ne "0"
+    $pro.SetBounds(16, $y, 528, 24)
+    $form.Controls.Add($pro)
+    $y += 32
+
     $again = New-Object System.Windows.Forms.CheckBox
     $again.Text = "Show this window at every start"
     $again.Checked = (Setting "menu" "1") -ne "0"
@@ -696,6 +705,7 @@ function Show-Menu {
     Save-Setting "menu" ($(if ($again.Checked) { "1" } else { "0" }))
     Save-Setting "desktop_view" ($desktopModes[$desktopView.SelectedIndex])
     Save-Setting "desktop_crop" ($(if ($desktopCrop.Checked) { "1" } else { "0" }))
+    Save-Setting "pro" ($(if ($pro.Checked) { "1" } else { "0" }))
     Read-Settings
     return $true
 }
@@ -786,6 +796,7 @@ if ((Setting "controllers" "1") -eq "0") { $env:SHADPS4_XR_CONTROLLERS = "0" }
 if ((Setting "controller_hand" "right") -eq "left") { $env:SHADPS4_XR_PAD_HAND = "left" }
 $env:SHADPS4_XR_WAIT = Setting "wait" "60"
 $env:SHADPS4_CONSOLE_LANGUAGE = Get-GameLanguage
+$env:SHADPS4_NEO_MODE = $(if ((Setting "pro" "1") -ne "0") { "1" } else { "0" })
 if ((Setting "turn") -ne "") { $env:SHADPS4_VR_TURN = Setting "turn" }
 foreach ($pair in $extraEnv) {
     $at = $pair.IndexOf("=")
