@@ -172,8 +172,9 @@ size_t WaveformDecoder::DecodeFrame(const u8* data, size_t size, std::vector<flo
         const size_t start = out.size();
         out.resize(start + static_cast<size_t>(frame_samples) * channels);
         int used = 0;
-        if (Atrac9DecodeF32(atrac9, data, out.data() + start, &used, 0) != 0 || used <= 0 ||
-            used > superframe_remaining) {
+        const int ret =
+            Atrac9DecodeF32(atrac9, data, superframe_remaining, out.data() + start, &used, 0);
+        if (ret != 0 || used <= 0 || used > superframe_remaining) {
             // A frame that does not decode is played as silence, the stream stays in step.
             std::fill(out.begin() + static_cast<std::ptrdiff_t>(start), out.end(), 0.0f);
             used = superframe_remaining;
