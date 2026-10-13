@@ -10,7 +10,7 @@ desktop_view=stereo
 desktop_crop=0
 # PS4 Pro mode: each eye at 1728x1944 instead of 1392x1566. 0 for a base PS4.
 pro=1
-# Frame rate: 90 or 120 (headset at that rate), or 60 as on PlayStation VR (headset at 120 Hz).
+# Frame rate: 90 fps (headset at 90 Hz), 120 fps (headset at 120 Hz), or 60 fps as on PSVR (headset at 120 Hz).
 frame_rate=90
 sharpen=0.3
 # Connect the DualSense to the PC, not the headset.

@@ -14,9 +14,9 @@ OpenXR runtime of its own. https://github.com/Jerware/StatikQuest
    Disable Steam Input if using a Steam shortcut.
 4. Connect Virtual Desktop to this PC, then start "Play Statik VR.bat": its window has the
    game's language, field of view, desktop view, frame rate and PS4 Pro mode to choose.
-   Leave the defaults for your first run, with Virtual Desktop's frame rate at 90 to match
-   the default 90 fps (120 for the 60 and 120 fps settings). If the Microsoft Visual C++
-   runtime is missing, the launcher says so.
+   Leave the defaults for your first run, with Virtual Desktop's frame rate at 90 Hz to
+   match the default of 90 fps (120 Hz for the 60 fps and 120 fps settings). If the
+   Microsoft Visual C++ runtime is missing, the launcher says so.
 
 Follow Statik's in-game prompts for the puzzle controls. Only the European base release,
 CUSA06929, is supported. Most levels have been tested, but not all. There is no standalone

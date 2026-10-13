@@ -106,7 +106,7 @@ function Get-VrInstructions([string]$runtime) {
     if ($runtime -match 'steamvr|steamxr') {
         return @(
             "Start SteamVR and check that the headset is ready (an Index: with its base stations). Virtual Desktop is not needed."
-            "Use a headset refresh rate of 120 Hz to start; Statik's rendering cadence is game-controlled."
+            "In SteamVR, set the headset's refresh rate to the one given below for the frame rate chosen."
             "The DualSense: connect it to THIS PC by USB or Bluetooth. It keeps its motion sensors, touchpad and rumble."
             "If launching through a Steam shortcut, disable Steam Input for that shortcut so the emulator can read the DualSense."
             "SteamVR does not track bare hands: the gamepad in the game stays in front of you and turns with its own sensors."
@@ -144,10 +144,11 @@ function Get-DesktopView {
     return "stereo"
 }
 
-# The frame rate, 90 unless chosen otherwise. At 60 the game draws as on PlayStation VR, a frame for every two refreshes of a
-# 120 Hz headset. 90 and 120 are its own modes for a headset that refreshes at that rate, chosen
-# in the engine settings it reads from its folder (deadlock\saved\config\ps4\engine.ini, which
-# on a console is on the read-only disc). Only a file this launcher wrote is replaced or removed.
+# The frame rate, 90 fps unless chosen otherwise. At 60 fps the game draws as on PlayStation VR,
+# a frame for every two refreshes of a 120 Hz headset. 90 fps and 120 fps are its own modes for
+# a headset that refreshes at 90 Hz or 120 Hz, chosen in the engine settings it reads from its
+# folder (deadlock\saved\config\ps4\engine.ini, which on a console is on the read-only disc).
+# Only a file this launcher wrote is replaced or removed.
 $frameRates = @("60", "90", "120")
 $frameRateMark = "; Written by the StatikQuest launcher"
 function Get-FrameRate {
@@ -184,7 +185,7 @@ function Set-FrameRate([string]$gameFolder, [string]$rate) {
         [void][System.IO.Directory]::CreateDirectory($folder)
         # The game's engine also holds it to 62 frames a second unless told otherwise.
         [System.IO.File]::WriteAllLines($file, [string[]]@(
-            "$frameRateMark for $rate frames a second; choosing 60 there removes it.",
+            "$frameRateMark for $rate fps; choosing 60 fps there removes it.",
             "[/Script/MorpheusEditor.MorpheusRuntimeSettings]",
             "PSVRFrameSequence=$sequence",
             "",
@@ -916,7 +917,7 @@ Get-VrInstructions $runtime | ForEach-Object { Say $_ }
 if ($env:SHADPS4_OPENXR -ne "0" -and [int]$env:SHADPS4_XR_WAIT -gt 0) {
     Say ("The game waits up to " + $env:SHADPS4_XR_WAIT + " seconds for the headset before it starts on the monitor.")
 }
-Say ("Frame rate: " + $frameRateChosen + " frames a second, with the headset at " + (Get-FrameRateRefresh $frameRateChosen) + " Hz.")
+Say ("Frame rate: " + $frameRateChosen + " fps, with the headset at " + (Get-FrameRateRefresh $frameRateChosen) + " Hz.")
 Say "Hold OPTIONS for a second (or press the PS button) to reset the view."
 Say "Use Statik's in-game prompts for the puzzle controls. A PC-connected DualSense is recommended."
 Say "The right stick can stand in for a touchpad finger on controllers without a touchpad."
