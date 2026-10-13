@@ -144,16 +144,16 @@ function Get-DesktopView {
     return "stereo"
 }
 
-# The frame rate. At 60 the game draws as on PlayStation VR, a frame for every two refreshes of a
+# The frame rate, 90 unless chosen otherwise. At 60 the game draws as on PlayStation VR, a frame for every two refreshes of a
 # 120 Hz headset. 90 and 120 are its own modes for a headset that refreshes at that rate, chosen
 # in the engine settings it reads from its folder (deadlock\saved\config\ps4\engine.ini, which
 # on a console is on the read-only disc). Only a file this launcher wrote is replaced or removed.
 $frameRates = @("60", "90", "120")
 $frameRateMark = "; Written by the StatikQuest launcher"
 function Get-FrameRate {
-    $rate = Setting "frame_rate" "60"
+    $rate = Setting "frame_rate" "90"
     if ($frameRates -contains $rate) { return $rate }
-    return "60"
+    return "90"
 }
 function Get-FrameRateRefresh([string]$rate) {
     if ($rate -eq "90") { return "90" }

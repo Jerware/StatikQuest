@@ -52,9 +52,9 @@ $frameRoot=Join-Path ([IO.Path]::GetTempPath()) ('statik_fps_'+[Guid]::NewGuid()
 try {
     $ini=[IO.Path]::Combine($frameRoot,'deadlock','saved','config','ps4','engine.ini')
     $script:settings=[ordered]@{frame_rate='240'}
-    if((Get-FrameRate) -ne '60') { throw 'An unknown frame rate must fall back to 60.' }
-    $script:settings=[ordered]@{frame_rate='90'}
-    if((Get-FrameRate) -ne '90' -or (Get-FrameRateRefresh '90') -ne '90' -or (Get-FrameRateRefresh '60') -ne '120') { throw 'Frame rate or headset refresh misread.' }
+    if((Get-FrameRate) -ne '90') { throw 'An unknown frame rate must fall back to 90.' }
+    $script:settings=[ordered]@{frame_rate='60'}
+    if((Get-FrameRate) -ne '60' -or (Get-FrameRateRefresh '90') -ne '90' -or (Get-FrameRateRefresh '60') -ne '120') { throw 'Frame rate or headset refresh misread.' }
     Set-FrameRate $frameRoot '120'
     $text=[IO.File]::ReadAllText($ini)
     if($text -notmatch 'PSVRFrameSequence=Render120Scanout120' -or $text -notmatch 'bSmoothFrameRate=False' -or $text -notmatch 't\.MaxFPS=0') { throw '120 frames a second not written.' }
@@ -67,7 +67,7 @@ try {
     Set-FrameRate $frameRoot '120' 6>$null
     Set-FrameRate $frameRoot '60' 6>$null
     if([IO.File]::ReadAllText($ini) -ne "[Core.System]`r`n") { throw "An engine.ini the launcher did not write was changed." }
-    Write-Output 'PASS launcher frame rate: 120 and 90 written, 60 removes them and their empty folders, unknown values fall back to 60, a foreign engine.ini is left alone.'
+    Write-Output 'PASS launcher frame rate: 120 and 90 written, 60 removes them and their empty folders, unknown values fall back to 90, a foreign engine.ini is left alone.'
 } finally {
     $resolved=[IO.Path]::GetFullPath($frameRoot)
     $parent=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')

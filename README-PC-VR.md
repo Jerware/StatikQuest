@@ -47,11 +47,11 @@ installation paths short.
   optionally cropping top/bottom to fill the window.
 - **PS4 Pro mode**: on by default. Statik renders each eye at 1728×1944, as on
   a PS4 Pro, instead of 1392×1566. Untick to run it as on a base PS4.
-- **Frame rate**: 60 fps as on PlayStation VR, or Statik's own 90 or 120 fps
-  modes. Set the headset to 120 Hz for 60 and 120 fps, and to 90 Hz for 90 fps
-  (in Virtual Desktop, its frame rate). For 90 and 120 the launcher writes
-  `deadlock\saved\config\ps4\engine.ini` in the game's folder; choosing 60
-  removes it. 120 fps needs a fast PC.
+- **Frame rate**: 90 fps by default, or 120: Statik's own native modes. 60 fps
+  is as on PlayStation VR. Set the headset to 90 Hz for 90 fps, and to 120 Hz for
+  60 and 120 fps (in Virtual Desktop, its frame rate). For 90 and 120 the
+  launcher writes `deadlock\saved\config\ps4\engine.ini` in the game's folder;
+  choosing 60 removes it. 120 fps needs a fast PC.
 - **Show this window at every start**: untick to skip the menu next time.
 
 There is no resolution slider. Upstream's resolution and frame-rate controls
