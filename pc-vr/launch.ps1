@@ -144,6 +144,61 @@ function Get-DesktopView {
     return "stereo"
 }
 
+# The frame rate. At 60 the game draws as on PlayStation VR, a frame for every two refreshes of a
+# 120 Hz headset. 90 and 120 are its own modes for a headset that refreshes at that rate, chosen
+# in the engine settings it reads from its folder (deadlock\saved\config\ps4\engine.ini, which
+# on a console is on the read-only disc). Only a file this launcher wrote is replaced or removed.
+$frameRates = @("60", "90", "120")
+$frameRateMark = "; Written by the StatikQuest launcher"
+function Get-FrameRate {
+    $rate = Setting "frame_rate" "60"
+    if ($frameRates -contains $rate) { return $rate }
+    return "60"
+}
+function Get-FrameRateRefresh([string]$rate) {
+    if ($rate -eq "90") { return "90" }
+    return "120"
+}
+function Set-FrameRate([string]$gameFolder, [string]$rate) {
+    $folder = [System.IO.Path]::Combine($gameFolder, "deadlock", "saved", "config", "ps4")
+    $file = Join-Path $folder "engine.ini"
+    if ([System.IO.File]::Exists($file)) {
+        $first = @(Get-Content -LiteralPath $file -TotalCount 1)
+        if ($first.Count -eq 0 -or -not $first[0].StartsWith($frameRateMark)) {
+            Say ("The game's folder has engine settings of its own, which decide its frame rate: " + $file) "Yellow"
+            return
+        }
+    }
+    try {
+        if ($rate -eq "60") {
+            if ([System.IO.File]::Exists($file)) { [System.IO.File]::Delete($file) }
+            # (The folders go too where they are empty: the launcher made them.)
+            foreach ($path in @($folder, (Split-Path $folder), (Split-Path (Split-Path $folder)))) {
+                if ([System.IO.Directory]::Exists($path) -and @([System.IO.Directory]::GetFileSystemEntries($path)).Count -eq 0) {
+                    [System.IO.Directory]::Delete($path)
+                }
+            }
+            return
+        }
+        $sequence = $(if ($rate -eq "90") { "Render90Scanout90" } else { "Render120Scanout120" })
+        [void][System.IO.Directory]::CreateDirectory($folder)
+        # The game's engine also holds it to 62 frames a second unless told otherwise.
+        [System.IO.File]::WriteAllLines($file, [string[]]@(
+            "$frameRateMark for $rate frames a second; choosing 60 there removes it.",
+            "[/Script/MorpheusEditor.MorpheusRuntimeSettings]",
+            "PSVRFrameSequence=$sequence",
+            "",
+            "[/Script/Engine.Engine]",
+            "bSmoothFrameRate=False",
+            "SmoothedFrameRateRange=(LowerBound=(Type=Inclusive,Value=22),UpperBound=(Type=Exclusive,Value=250))",
+            "",
+            "[SystemSettings]",
+            "t.MaxFPS=0"))
+    } catch {
+        Say ("The frame rate could not be set in the game's folder: " + $_.Exception.Message) "Yellow"
+    }
+}
+
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
@@ -568,7 +623,7 @@ function Show-Menu {
 
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "Statik VR"
-    $form.ClientSize = New-Object System.Drawing.Size(560, 332)
+    $form.ClientSize = New-Object System.Drawing.Size(560, 394)
     $form.StartPosition = "CenterScreen"
     $form.FormBorderStyle = "FixedDialog"
     $form.MaximizeBox = $false
@@ -659,6 +714,29 @@ function Show-Menu {
     $form.Controls.Add($desktopCrop)
     $y += 40
 
+    $label = New-Object System.Windows.Forms.Label
+    $label.Text = "Frame rate"
+    $label.Font = New-Object System.Drawing.Font("Segoe UI", 9.5, [System.Drawing.FontStyle]::Bold)
+    $label.SetBounds(16, $y, 520, 20)
+    $form.Controls.Add($label)
+    $y += 22
+    $frameRate = New-Object System.Windows.Forms.ComboBox
+    $frameRate.Name = "frameRate"
+    $frameRate.DropDownStyle = "DropDownList"
+    $frameRate.Items.AddRange(@("60 fps, as on PlayStation VR", "90 fps", "120 fps"))
+    $frameRate.SelectedIndex = [array]::IndexOf($frameRates, (Get-FrameRate))
+    $frameRate.SetBounds(16, $y, 248, 26)
+    $form.Controls.Add($frameRate)
+    $frameRateText = New-Object System.Windows.Forms.Label
+    $frameRateText.SetBounds(284, $y + 4, 260, 20)
+    $form.Controls.Add($frameRateText)
+    $updateFrameRate = {
+        $frameRateText.Text = "Set the headset to " + (Get-FrameRateRefresh $frameRates[$frameRate.SelectedIndex]) + " Hz"
+    }
+    $frameRate.Add_SelectedIndexChanged($updateFrameRate)
+    & $updateFrameRate
+    $y += 40
+
     # Statik renders each eye at 1728x1944 on a PS4 Pro, 1392x1566 on a base PS4.
     $pro = New-Object System.Windows.Forms.CheckBox
     $pro.Name = "pro"
@@ -706,6 +784,7 @@ function Show-Menu {
     Save-Setting "desktop_view" ($desktopModes[$desktopView.SelectedIndex])
     Save-Setting "desktop_crop" ($(if ($desktopCrop.Checked) { "1" } else { "0" }))
     Save-Setting "pro" ($(if ($pro.Checked) { "1" } else { "0" }))
+    Save-Setting "frame_rate" $frameRates[$frameRate.SelectedIndex]
     Read-Settings
     return $true
 }
@@ -802,6 +881,8 @@ foreach ($pair in $extraEnv) {
     $at = $pair.IndexOf("=")
     if ($at -ge 1) { Set-Item -Path ("Env:" + $pair.Substring(0, $at)) -Value $pair.Substring($at + 1) }
 }
+$frameRateChosen = Get-FrameRate
+Set-FrameRate $gameFolder $frameRateChosen
 
 # --- what is there ----------------------------------------------------------------------------
 Say "Statik: Institute of Retention - PC VR" "Cyan"
@@ -835,6 +916,7 @@ Get-VrInstructions $runtime | ForEach-Object { Say $_ }
 if ($env:SHADPS4_OPENXR -ne "0" -and [int]$env:SHADPS4_XR_WAIT -gt 0) {
     Say ("The game waits up to " + $env:SHADPS4_XR_WAIT + " seconds for the headset before it starts on the monitor.")
 }
+Say ("Frame rate: " + $frameRateChosen + " frames a second, with the headset at " + (Get-FrameRateRefresh $frameRateChosen) + " Hz.")
 Say "Hold OPTIONS for a second (or press the PS button) to reset the view."
 Say "Use Statik's in-game prompts for the puzzle controls. A PC-connected DualSense is recommended."
 Say "The right stick can stand in for a touchpad finger on controllers without a touchpad."

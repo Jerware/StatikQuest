@@ -11,7 +11,7 @@ foreach ($forbidden in @('Frames a second, at most','Resolution of each eye','Sa
     'Ensure-StatikModule','Test-StatikModule','libSceJson2.sprx')) {
     if ($text.Contains($forbidden)) { throw "Obsolete Astro-only launcher feature: $forbidden" }
 }
-foreach ($required in @('Console language','Field of view','Desktop view','Show this window at every start','PS4 Pro mode','Statik VR')) {
+foreach ($required in @('Console language','Field of view','Desktop view','Show this window at every start','PS4 Pro mode','Frame rate','Save-Setting "frame_rate"','Statik VR')) {
     if (-not $text.Contains($required)) { throw "Missing retained launcher feature: $required" }
 }
 $bat=[IO.File]::ReadAllText((Join-Path $repo 'Play Statik VR.bat'))
@@ -31,4 +31,4 @@ foreach ($runtime in @('steamvr','virtualdesktop','')) {
 if ($text -match '\$env:SHADPS4_JSON\s*=') { throw "Launcher must use AstroQuest's default built-in JSON support." }
 $defaults=[IO.File]::ReadAllText((Join-Path $repo 'pc-vr\settings.txt'))
 if ($defaults -match '(?m)^\s*(resolution|fps|dynamic|pace|real_time)\s*=') { throw 'Astro-only settings remain in template.' }
-Write-Output 'PASS Statik launcher layout: built-in JSON without a module prompt, no resolution/FPS overrides, Statik-only branding and .bat entry point.'
+Write-Output 'PASS Statik launcher layout: built-in JSON without a module prompt, no Astro Bot resolution/FPS patches, Statik frame-rate modes, Statik-only branding and .bat entry point.'
