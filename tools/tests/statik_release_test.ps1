@@ -43,8 +43,8 @@ try {
         if ($configText -match '[A-Za-z]:[\\/]|[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[A-Za-z0-9.-]+') { throw 'Private content in config.' }
     }
     $readme = Read-ZipText $entries['README.txt']
-    if ($readme -match '@VERSION@|ASTRO BOT Rescue Mission|Play Astro Bot|120 Hz|libSceJson2\.sprx') { throw 'Unadapted release instructions.' }
-    if ($readme -notmatch 'Forward tracking data to PC' -or $readme -notmatch 'CUSA06929') { throw 'Statik setup requirements missing.' }
+    if ($readme -match '@VERSION@|ASTRO BOT Rescue Mission|Play Astro Bot|libSceJson2\.sprx') { throw 'Unadapted release instructions.' }
+    if ($readme -notmatch 'Forward tracking data to PC' -or $readme -notmatch 'CUSA06929' -or $readme -notmatch 'frame rate at 90 Hz') { throw 'Statik setup requirements missing.' }
     $gameHint = Read-ZipText $entries['games/PUT YOUR GAME HERE.txt']
     if ($gameHint -notmatch 'CUSA06929' -or $gameHint -match 'CUSA12392|13 GB') { throw 'Unadapted game hint.' }
     $exeHash = Get-ZipHash $entries['pc-vr/shadps4.exe']
