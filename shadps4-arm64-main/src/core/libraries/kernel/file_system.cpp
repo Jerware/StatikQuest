@@ -373,23 +373,23 @@ struct FileReadPatch {
 };
 
 constexpr std::array FileReadPatches{
-    // Statik, Tug of War: the puzzle device lists the code monitors 0.05 s after it begins play,
-    // which on the console is three frames. At under 60 frames a second that can be before the
-    // level holding them counts as visible: the list stays empty and no code is ever shown.
-    // Half a second is still long before the first code is.
+    // Statik, Directionless (box 4, Tug of War in its files): the puzzle device lists the code
+    // monitors 0.05 s after it begins play, which on the console is three frames. At under 60
+    // frames a second that can be before the level holding them counts as visible: the list
+    // stays empty and no code is ever shown. Half a second is still long before the first is.
     FileReadPatch{"CUSA06929",
                   "deadlock-ps4.pak",
                   0x28508251,
                   {0xcd, 0xcc, 0x4c, 0x3d},
                   {0x00, 0x00, 0x00, 0x3f},
-                  "Tug of War lists its code monitors after 0.5 s instead of 0.05 s"},
+                  "Directionless (box 4) lists its code monitors after 0.5 s instead of 0.05 s"},
     // The same wait before it finds the input monitor.
     FileReadPatch{"CUSA06929",
                   "deadlock-ps4.pak",
                   0x285045d0,
                   {0xcd, 0xcc, 0x4c, 0x3d},
                   {0x00, 0x00, 0x00, 0x3f},
-                  "Tug of War finds its input monitor after 0.5 s instead of 0.05 s"},
+                  "Directionless (box 4) finds its input monitor after 0.5 s instead of 0.05 s"},
 };
 
 void ApplyFileReadPatches(const Common::FS::IOFile& file, u64 position, void* buf, s64 count) {

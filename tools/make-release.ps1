@@ -14,6 +14,12 @@ if (Test-Path -LiteralPath $dest) { throw 'Staging folder already exists. Choose
 if (Test-Path -LiteralPath $zip) { throw 'Archive already exists. Choose another version; nothing will be overwritten.' }
 if (Test-Path -LiteralPath $checksums) { throw 'Checksum file already exists. Choose another version; nothing will be overwritten.' }
 if (-not (Test-Path -LiteralPath $EmulatorPath -PathType Leaf)) { throw 'Build/stage the emulator first.' }
+# The emulator names its build in every log ("StatikQuest build v0.4-0-g1234abc"): it has to be
+# built from a clean checkout at this version's tag, so that the name is the release's.
+$emulatorText = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($EmulatorPath))
+if ($emulatorText -notmatch ('v' + [regex]::Escape($Version) + '-0-g[0-9a-f]+\x00')) {
+    throw "The emulator was not built from a clean checkout at tag v$Version. Tag the commit, rebuild, and stage it first."
+}
 foreach ($file in @('PkgTool.exe','LibOrbisPkg.dll','LICENSE.txt')) {
     if (-not (Test-Path -LiteralPath (Join-Path $PkgToolDirectory $file))) { throw "PkgTool dependency missing: $file" }
 }

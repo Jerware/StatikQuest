@@ -336,6 +336,8 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     LOG_INFO(Loader, "Branch {}", Common::g_scm_branch);
     LOG_INFO(Loader, "Description {}", Common::g_scm_desc);
     LOG_INFO(Loader, "Remote {}", Common::g_scm_remote_url);
+    // (The default log filter keeps this one, so that every log says which build made it.)
+    LOG_INFO(Core_Vr, "StatikQuest build {} ({})", Common::g_scm_desc, Common::g_scm_branch);
 
     LOG_INFO(Config, "Game-specific config used: {}",
              EmulatorState::GetInstance()->IsGameSpecifigConfigUsed());
