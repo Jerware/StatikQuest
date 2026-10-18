@@ -1,12 +1,16 @@
 // SPDX-FileCopyrightText: Copyright 2025 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <array>
 #include <cstdlib>
 #include <map>
 #include <ranges>
+#include <string_view>
+#include <utility>
 #include <magic_enum/magic_enum.hpp>
 
 #include "common/assert.h"
+#include "common/elf_info.h"
 #include "common/error.h"
 #include "common/logging/log.h"
 #include "common/scope_exit.h"
@@ -355,6 +359,80 @@ s64 PS4_SYSV_ABI sceKernelWrite(s32 fd, const void* buf, u64 nbytes) {
     return result;
 }
 
+namespace {
+
+// Bytes a title is given in place of what its own files hold, where that is what makes it work
+// under emulation. Each is applied only where the file has exactly the bytes expected there.
+struct FileReadPatch {
+    std::string_view serial;
+    std::string_view file_name;
+    u64 offset;
+    std::array<u8, 4> original;
+    std::array<u8, 4> replacement;
+    std::string_view what;
+};
+
+constexpr std::array FileReadPatches{
+    // Statik, Tug of War: the puzzle device lists the code monitors 0.05 s after it begins play,
+    // which on the console is three frames. At under 60 frames a second that can be before the
+    // level holding them counts as visible: the list stays empty and no code is ever shown.
+    // Half a second is still long before the first code is.
+    FileReadPatch{"CUSA06929",
+                  "deadlock-ps4.pak",
+                  0x28508251,
+                  {0xcd, 0xcc, 0x4c, 0x3d},
+                  {0x00, 0x00, 0x00, 0x3f},
+                  "Tug of War lists its code monitors after 0.5 s instead of 0.05 s"},
+    // The same wait before it finds the input monitor.
+    FileReadPatch{"CUSA06929",
+                  "deadlock-ps4.pak",
+                  0x285045d0,
+                  {0xcd, 0xcc, 0x4c, 0x3d},
+                  {0x00, 0x00, 0x00, 0x3f},
+                  "Tug of War finds its input monitor after 0.5 s instead of 0.05 s"},
+};
+
+void ApplyFileReadPatches(const Common::FS::IOFile& file, u64 position, void* buf, s64 count) {
+    if (count <= 0) {
+        return;
+    }
+    static std::array<bool, FileReadPatches.size()> logged{};
+    auto* bytes = static_cast<u8*>(buf);
+    for (size_t index = 0; index < FileReadPatches.size(); ++index) {
+        const auto& patch = FileReadPatches[index];
+        if (patch.offset + patch.original.size() <= position ||
+            patch.offset >= position + static_cast<u64>(count) ||
+            Common::ElfInfo::Instance().GameSerial() != patch.serial ||
+            file.GetPath().filename().string() != patch.file_name) {
+            continue;
+        }
+        // A read may hold only part of the bytes: that part is checked and replaced here, the
+        // rest in the read that holds it.
+        const auto covered = [&](size_t i) {
+            return patch.offset + i >= position && patch.offset + i < position + count;
+        };
+        bool expected = true;
+        for (size_t i = 0; i < patch.original.size(); ++i) {
+            if (covered(i) && bytes[patch.offset + i - position] != patch.original[i]) {
+                expected = false;
+            }
+        }
+        if (!expected) {
+            continue;
+        }
+        for (size_t i = 0; i < patch.replacement.size(); ++i) {
+            if (covered(i)) {
+                bytes[patch.offset + i - position] = patch.replacement[i];
+            }
+        }
+        if (!std::exchange(logged[index], true)) {
+            LOG_WARNING(Kernel_Fs, "Title fix: {}", patch.what);
+        }
+    }
+}
+
+} // namespace
+
 s64 ReadFile(Common::FS::IOFile& file, void* buf, u64 nbytes) {
     static const bool trace_reads = [] {
         const char* value = std::getenv("SHADPS4_TRACE_FILE_READS");
@@ -386,6 +464,7 @@ s64 ReadFile(Common::FS::IOFile& file, void* buf, u64 nbytes) {
         LOG_WARNING(Kernel_Fs, "Unexpected short file read: file={} offset={:#x} requested={:#x} returned={:#x} errno={}",
                     file.GetPath().string(), position, nbytes, result, errno);
     }
+    ApplyFileReadPatches(file, position, buf, result);
     if (retain_reads) {
         auto& record = allocation_reads.records[allocation_reads.count++ % allocation_reads.records.size()];
         record.path = file.GetPath().string();
