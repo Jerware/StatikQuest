@@ -70,4 +70,38 @@ private:
     float vag_history[ORBIS_NGS2_MAX_VOICE_CHANNELS][4]{};
 };
 
+/// How the encoded data of a waveform format is cut up. A unit is the codec's own frame (an
+/// ATRAC9 frame, a VAG frame of every channel, a sample of every channel); a frame is the
+/// smallest piece that decodes on its own, and the place where a block can start (an ATRAC9
+/// superframe).
+struct WaveformLayout {
+    u32 unit_size{};
+    u32 unit_samples{};
+    u32 units_per_frame{};
+    /// Samples the decoder puts out before the first sample of the sound.
+    u32 delay_samples{};
+    /// Frames to decode, and throw away, before the one a block is meant to start at, for
+    /// decoders that carry state from one frame to the next.
+    u32 preroll_frames{};
+
+    u32 FrameSize() const {
+        return unit_size * units_per_frame;
+    }
+    u32 FrameSamples() const {
+        return unit_samples * units_per_frame;
+    }
+};
+
+/// Returns ORBIS_OK, or the error that makes `format` unusable.
+s32 GetWaveformLayout(const OrbisNgs2WaveformFormat& format, WaveformLayout& out);
+
+/// sceNgs2ParseWaveformData: describes the RIFF/WAVE file at `data`. `size` may cover only the
+/// start of the file, as long as that holds everything up to the start of the "data" chunk.
+s32 ParseWaveformData(const u8* data, size_t size, OrbisNgs2WaveformInfo& info);
+
+/// sceNgs2CalcWaveformBlock: the block that plays `num_samples` samples from `sample_pos` on.
+/// Its data offset counts from the first frame of the sound, not from the start of the file.
+s32 CalcWaveformBlock(const OrbisNgs2WaveformFormat& format, u32 sample_pos, u32 num_samples,
+                      OrbisNgs2WaveformBlock& block);
+
 } // namespace Libraries::Ngs2

@@ -5,7 +5,9 @@
 #include <cstring>
 
 #include "common/logging/log.h"
+#include "core/libraries/error_codes.h"
 #include "core/libraries/ngs2/ngs2_codec.h"
+#include "core/libraries/ngs2/ngs2_error.h"
 #include "core/libraries/ngs2/ngs2_hevag_table.h"
 
 extern "C" {
@@ -246,6 +248,216 @@ size_t WaveformDecoder::DecodeFrame(const u8* data, size_t size, std::vector<flo
         out[start + i] = ReadPcm(type, data + i * sample_size);
     }
     return frames * frame_size;
+}
+
+namespace {
+
+u32 Read16(const u8* p) {
+    return p[0] | (p[1] << 8);
+}
+
+u32 Read32(const u8* p) {
+    return p[0] | (p[1] << 8) | (p[2] << 16) | (static_cast<u32>(p[3]) << 24);
+}
+
+bool IsChunk(const u8* p, const char* id) {
+    return std::memcmp(p, id, 4) == 0;
+}
+
+/// The WAVE_FORMAT_EXTENSIBLE subformat of ATRAC9.
+constexpr u8 Atrac9Guid[16] = {0xd2, 0x42, 0xe1, 0x47, 0xba, 0x36, 0x8d, 0x4d,
+                               0x88, 0xfc, 0x61, 0x65, 0x4f, 0x8c, 0x83, 0x6c};
+/// The subformats that stand for a plain format tag: the tag, then these bytes.
+constexpr u8 WaveGuidTail[14] = {0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80,
+                                 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71};
+
+/// The waveform type of a WAVE format tag, WaveformNone for one that cannot be played.
+u32 WaveTypeOf(u32 tag, u32 bits) {
+    if (tag == 1) { // WAVE_FORMAT_PCM
+        switch (bits) {
+        case 8:
+            return WaveformPcmU8;
+        case 16:
+            return WaveformPcmI16L;
+        case 24:
+            return WaveformPcmI24L;
+        case 32:
+            return WaveformPcmI32L;
+        }
+    } else if (tag == 3) { // WAVE_FORMAT_IEEE_FLOAT
+        switch (bits) {
+        case 32:
+            return WaveformPcmF32L;
+        case 64:
+            return WaveformPcmF64L;
+        }
+    }
+    return WaveformNone;
+}
+
+} // namespace
+
+s32 GetWaveformLayout(const OrbisNgs2WaveformFormat& format, WaveformLayout& out) {
+    out = {};
+    if (format.waveformType == WaveformAtrac9) {
+        u8 config[4] = {
+            static_cast<u8>(format.configData >> 24), static_cast<u8>(format.configData >> 16),
+            static_cast<u8>(format.configData >> 8), static_cast<u8>(format.configData)};
+        void* handle = Atrac9GetHandle();
+        Atrac9CodecInfo info{};
+        const bool valid = handle != nullptr && Atrac9InitDecoder(handle, config) == 0 &&
+                           Atrac9GetCodecInfo(handle, &info) == 0;
+        if (handle != nullptr) {
+            Atrac9ReleaseHandle(handle);
+        }
+        if (!valid || info.framesInSuperframe <= 0 || info.frameSamples <= 0 ||
+            info.superframeSize <= 0) {
+            return ORBIS_NGS2_ERROR_INVALID_WAVEFORM_CONFIG;
+        }
+        out.unit_size = static_cast<u32>(info.superframeSize / info.framesInSuperframe);
+        out.unit_samples = static_cast<u32>(info.frameSamples);
+        out.units_per_frame = static_cast<u32>(info.framesInSuperframe);
+        // Each frame overlaps the one before it, so the first frame's worth of output is the
+        // decoder starting up. Sony's encoder records the same delay in the "fact" chunk.
+        out.delay_samples = out.unit_samples;
+        out.preroll_frames = 1;
+        return ORBIS_OK;
+    }
+    if (format.numChannels == 0 || format.numChannels > ORBIS_NGS2_MAX_VOICE_CHANNELS) {
+        return ORBIS_NGS2_ERROR_INVALID_WAVEFORM_FORMAT;
+    }
+    if (format.waveformType == WaveformVag) {
+        out.unit_size = static_cast<u32>(VagFrameSize) * format.numChannels;
+        out.unit_samples = static_cast<u32>(VagFrameSamples);
+        out.units_per_frame = 1;
+        // Each sample is predicted from the ones before it.
+        out.preroll_frames = 1;
+        return ORBIS_OK;
+    }
+    const u32 sample_size = PcmSampleSize(format.waveformType);
+    if (sample_size == 0) {
+        return ORBIS_NGS2_ERROR_INVALID_WAVEFORM_TYPE;
+    }
+    out.unit_size = sample_size * format.numChannels;
+    out.unit_samples = 1;
+    out.units_per_frame = 1;
+    return ORBIS_OK;
+}
+
+s32 ParseWaveformData(const u8* data, size_t size, OrbisNgs2WaveformInfo& info) {
+    if (size < 12 || !IsChunk(data, "RIFF") || !IsChunk(data + 8, "WAVE")) {
+        LOG_ERROR(Lib_Ngs2, "not a RIFF/WAVE file ({} bytes)", size);
+        return ORBIS_NGS2_ERROR_UNKNOWN_WAVEFORM_FORMAT;
+    }
+    OrbisNgs2WaveformFormat format{};
+    bool have_format = false;
+    bool have_fact = false;
+    u32 fact_samples = 0;
+    // The chunks follow one another, each padded to an even size; "data" comes after the ones
+    // that describe it.
+    for (size_t pos = 12; pos + 8 <= size;) {
+        const u8* chunk = data + pos;
+        const u32 chunk_size = Read32(chunk + 4);
+        const u8* body = chunk + 8;
+        const size_t available = std::min<size_t>(chunk_size, size - pos - 8);
+        if (IsChunk(chunk, "fmt ")) {
+            if (available < 16) {
+                LOG_ERROR(Lib_Ngs2, "short WAVE format chunk ({} bytes)", available);
+                return ORBIS_NGS2_ERROR_INVALID_WAVEFORM_FORMAT;
+            }
+            u32 tag = Read16(body);
+            const u32 bits = Read16(body + 14);
+            format.numChannels = Read16(body + 2);
+            format.sampleRate = Read32(body + 4);
+            format.waveformType = WaveformNone;
+            if (tag == 0xfffe && available >= 40) { // WAVE_FORMAT_EXTENSIBLE
+                const u8* subformat = body + 24;
+                if (std::memcmp(subformat, Atrac9Guid, sizeof(Atrac9Guid)) == 0 &&
+                    available >= 48) {
+                    format.waveformType = WaveformAtrac9;
+                    // The configuration's four bytes, read as one big-endian number.
+                    format.configData = (static_cast<u32>(body[44]) << 24) | (body[45] << 16) |
+                                        (body[46] << 8) | body[47];
+                } else if (std::memcmp(subformat + 2, WaveGuidTail, sizeof(WaveGuidTail)) == 0) {
+                    tag = Read16(subformat);
+                }
+            }
+            if (format.waveformType == WaveformNone) {
+                format.waveformType = WaveTypeOf(tag, bits);
+            }
+            if (format.waveformType == WaveformNone) {
+                LOG_ERROR(Lib_Ngs2, "unsupported WAVE format {:#x} with {} bits", tag, bits);
+                return ORBIS_NGS2_ERROR_UNKNOWN_WAVEFORM_FORMAT;
+            }
+            have_format = true;
+        } else if (IsChunk(chunk, "fact") && available >= 4) {
+            fact_samples = Read32(body);
+            have_fact = true;
+        } else if (IsChunk(chunk, "data")) {
+            if (!have_format) {
+                break;
+            }
+            WaveformLayout layout;
+            if (const s32 result = GetWaveformLayout(format, layout); result != ORBIS_OK) {
+                LOG_ERROR(Lib_Ngs2, "unusable WAVE format: type {:#x}, {} channels, config {:#x}",
+                          format.waveformType, format.numChannels, format.configData);
+                return result;
+            }
+            u32 num_samples = fact_samples;
+            if (!have_fact) {
+                const u64 decoded = u64{chunk_size / layout.FrameSize()} * layout.FrameSamples();
+                num_samples = static_cast<u32>(
+                    decoded > layout.delay_samples ? decoded - layout.delay_samples : 0);
+            }
+            const u32 data_offset = static_cast<u32>(pos + 8);
+            info = {};
+            info.format = format;
+            info.dataOffset = data_offset;
+            info.dataSize = chunk_size;
+            info.numSamples = num_samples;
+            info.audioUnitSize = layout.unit_size;
+            info.numAudioUnitSamples = layout.unit_samples;
+            info.numAudioUnitPerFrame = layout.units_per_frame;
+            info.audioFrameSize = layout.FrameSize();
+            info.numAudioFrameSamples = layout.FrameSamples();
+            info.numDelaySamples = layout.delay_samples;
+            // Loop points (a "smpl" chunk) are not read: one block plays the whole sound. Its
+            // offset counts from the start of the file, the address titles give the sampler.
+            info.numBlocks = 1;
+            auto& block = info.aBlock[0];
+            block.dataOffset = data_offset;
+            block.dataSize = chunk_size;
+            block.numSkipSamples = layout.delay_samples;
+            block.numSamples = num_samples;
+            return ORBIS_OK;
+        }
+        pos += 8 + size_t{chunk_size} + (chunk_size & 1);
+    }
+    LOG_ERROR(Lib_Ngs2, "no WAVE format and data in {} bytes", size);
+    return ORBIS_NGS2_ERROR_INVALID_WAVEFORM_DATA;
+}
+
+s32 CalcWaveformBlock(const OrbisNgs2WaveformFormat& format, u32 sample_pos, u32 num_samples,
+                      OrbisNgs2WaveformBlock& block) {
+    WaveformLayout layout;
+    if (const s32 result = GetWaveformLayout(format, layout); result != ORBIS_OK) {
+        return result;
+    }
+    // Positions count from the first sample of the sound, which comes after the decoder's delay.
+    // The block starts at a whole frame, one before the frame holding the first sample when the
+    // decoder needs one to settle, and skips the samples up to that first one.
+    const u64 frame_samples = layout.FrameSamples();
+    const u64 start = u64{sample_pos} + layout.delay_samples;
+    const u64 end = start + num_samples;
+    u64 first = start / frame_samples;
+    first -= std::min<u64>(first, layout.preroll_frames);
+    const u64 last = (end + frame_samples - 1) / frame_samples;
+    block = {};
+    block.dataOffset = static_cast<u32>(first * layout.FrameSize());
+    block.dataSize = static_cast<u32>((last - first) * layout.FrameSize());
+    block.numSkipSamples = static_cast<u32>(start - first * frame_samples);
+    block.numSamples = num_samples;
+    return ORBIS_OK;
 }
 
 } // namespace Libraries::Ngs2

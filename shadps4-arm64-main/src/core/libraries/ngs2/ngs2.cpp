@@ -7,6 +7,7 @@
 #include "core/libraries/error_codes.h"
 #include "core/libraries/libs.h"
 #include "core/libraries/ngs2/ngs2.h"
+#include "core/libraries/ngs2/ngs2_codec.h"
 #include "core/libraries/ngs2/ngs2_custom.h"
 #include "core/libraries/ngs2/ngs2_engine.h"
 #include "core/libraries/ngs2/ngs2_error.h"
@@ -21,21 +22,52 @@ namespace Libraries::Ngs2 {
 
 s32 PS4_SYSV_ABI sceNgs2CalcWaveformBlock(const OrbisNgs2WaveformFormat* format, u32 samplePos,
                                           u32 numSamples, OrbisNgs2WaveformBlock* outBlock) {
-    LOG_ERROR(Lib_Ngs2, "samplePos = {}, numSamples = {}", samplePos, numSamples);
-    return ORBIS_OK;
+    LOG_DEBUG(Lib_Ngs2, "samplePos = {}, numSamples = {}", samplePos, numSamples);
+    if (!format) {
+        return ORBIS_NGS2_ERROR_INVALID_WAVEFORM_FORMAT;
+    }
+    if (!outBlock) {
+        return ORBIS_NGS2_ERROR_INVALID_OUT_ADDRESS;
+    }
+    return CalcWaveformBlock(*format, samplePos, numSamples, *outBlock);
 }
 
 s32 PS4_SYSV_ABI sceNgs2GetWaveformFrameInfo(const OrbisNgs2WaveformFormat* format,
                                              u32* outFrameSize, u32* outNumFrameSamples,
                                              u32* outUnitsPerFrame, u32* outNumDelaySamples) {
-    LOG_ERROR(Lib_Ngs2, "called");
+    LOG_DEBUG(Lib_Ngs2, "called");
+    if (!format) {
+        return ORBIS_NGS2_ERROR_INVALID_WAVEFORM_FORMAT;
+    }
+    WaveformLayout layout;
+    if (const s32 result = GetWaveformLayout(*format, layout); result != ORBIS_OK) {
+        return result;
+    }
+    if (outFrameSize) {
+        *outFrameSize = layout.FrameSize();
+    }
+    if (outNumFrameSamples) {
+        *outNumFrameSamples = layout.FrameSamples();
+    }
+    if (outUnitsPerFrame) {
+        *outUnitsPerFrame = layout.units_per_frame;
+    }
+    if (outNumDelaySamples) {
+        *outNumDelaySamples = layout.delay_samples;
+    }
     return ORBIS_OK;
 }
 
 s32 PS4_SYSV_ABI sceNgs2ParseWaveformData(const void* data, size_t dataSize,
                                           OrbisNgs2WaveformInfo* outInfo) {
-    LOG_ERROR(Lib_Ngs2, "dataSize = {}", dataSize);
-    return ORBIS_OK;
+    LOG_DEBUG(Lib_Ngs2, "dataSize = {}", dataSize);
+    if (!data) {
+        return ORBIS_NGS2_ERROR_INVALID_WAVEFORM_ADDRESS;
+    }
+    if (!outInfo) {
+        return ORBIS_NGS2_ERROR_INVALID_OUT_ADDRESS;
+    }
+    return ParseWaveformData(static_cast<const u8*>(data), dataSize, *outInfo);
 }
 
 s32 PS4_SYSV_ABI sceNgs2ParseWaveformFile(const char* path, u64 offset,
